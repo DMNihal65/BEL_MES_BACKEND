@@ -104,6 +104,7 @@ class Operation(db.Entity):
     order = Required(Order)
     operation_number = Required(int)
     work_center = Required(WorkCenter)
+    # machine = Optional('Machine')
     operation_description = Optional(str)
     setup_time = Required(Decimal)
     ideal_cycle_time = Required(Decimal)

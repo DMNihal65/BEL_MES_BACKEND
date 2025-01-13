@@ -5,6 +5,7 @@ from .api.v1.endpoints import auth
 from fastapi.middleware.cors import CORSMiddleware
 from app.models.master_order import db as master_order_db
 from app.api.v1.endpoints import planning
+from app.api.v1.endpoints import machines 
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -42,5 +43,9 @@ app.include_router(
 ) 
 
 app.include_router(planning.router, prefix="/planning", tags=["planning"]) 
+ # Add this import
+
+# Add this line with your other router includes
+app.include_router(machines.router, prefix="/machines", tags=["machines"])
 
 #   uvicorn app.main:app --reload --port 8000
