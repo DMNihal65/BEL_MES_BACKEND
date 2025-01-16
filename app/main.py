@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from .database.connection import connect_to_db
 from .routes import hr_routes, finance_routes, master_order_routes
-from .api.v1.endpoints import auth
+from .api.v1.endpoints import auth, planning
 
 app = FastAPI(title="Company Management API")
 
@@ -19,7 +19,7 @@ async def startup_event():
 # app.include_router(finance_routes.router)
 app.include_router(auth.router)
 app.include_router(master_order_routes.router)
-# app.include_router(planning.router)
+app.include_router(planning.router)
 
 @app.get("/")
 def read_root():
