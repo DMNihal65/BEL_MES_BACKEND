@@ -1,7 +1,7 @@
-from fastapi import FastAPI, File, UploadFile, APIRouter, HTTPException
-from pony.orm import db_session, select
+from fastapi import FastAPI, File, UploadFile, APIRouter, HTTPException, Query
+from pony.orm import db_session, select, commit, count
 from datetime import datetime
-from typing import List
+from typing import List, Optional
 import PyPDF2
 import io
 import re
@@ -12,6 +12,7 @@ from app.models import (
     ProcessPlan, Document, ToolList, JigsAndFixturesList,
     Unit, RawMaterial, InventoryStatus
 )
+from app.schemas.planning import CreateOperationRequest, CreateOrderRequest, OrderUpdateRequest, OperationUpdateRequest
 
 router = APIRouter(prefix="/planning", tags=["planning"])
 
@@ -397,3 +398,290 @@ def get_all_orders():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/search_order")
+async def search_order(
+        part_number: Optional[str] = Query(None, min_length=1),
+        part_description: Optional[str] = Query(None, min_length=1)
+):
+    """Get order details by part number or part description"""
+    try:
+        with db_session:
+            if part_number and part_description:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Please provide either a part number or part description, but not both."
+                )
+
+            if part_number:
+                orders = select(o for o in Order if part_number.lower() in o.part_number.lower())[:]
+            elif part_description:
+                orders = select(o for o in Order if part_description.lower() in o.part_description.lower())[:]
+            else:
+                orders = []
+
+            if not orders:
+                return {"orders": []}
+
+            response_data = {
+                "orders": [
+                    {
+                        "id": order.id,
+                        "production_order": order.production_order,
+                        "sale_order": order.sale_order,
+                        "wbs_element": order.wbs_element,
+                        "part_number": order.part_number,
+                        "part_description": order.part_description,
+                        "total_operations": order.total_operations,
+                        "required_quantity": order.required_quantity,
+                        "launched_quantity": order.launched_quantity,
+                        "plant_id": order.plant_id,
+                        "project": {
+                            "id": order.project.id,
+                            "name": order.project.name,
+                            "priority": order.project.priority,
+                            "start_date": order.project.start_date,
+                            "end_date": order.project.end_date
+                        } if order.project else None,
+                        "operations": [
+                            {
+                                "id": op.id,
+                                "operation_number": op.operation_number,
+                                "operation_description": op.operation_description,
+                                "setup_time": op.setup_time,
+                                "ideal_cycle_time": op.ideal_cycle_time,
+                                "work_center": op.work_center.code if op.work_center else None
+                            }
+                            for op in order.operations
+                        ]
+                    }
+                    for order in orders
+                ]
+            }
+
+            return response_data
+
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
+
+
+@router.put("/update_order/{order_number}")
+async def update_order(order_number: str, update_data: OrderUpdateRequest):
+    try:
+        with db_session:
+            order = Order.get(production_order=order_number)
+            if not order:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Order with number {order_number} not found"
+                )
+
+            # Convert the Pydantic model to dict, excluding None values
+            update_dict = update_data.dict(exclude_unset=True)
+
+            # Handle delivery_date separately if provided
+            if 'delivery_date' in update_dict:
+                epoch_timestamp = update_dict.pop('delivery_date')
+                if epoch_timestamp is not None:
+                    try:
+                        delivery_date = datetime.fromtimestamp(epoch_timestamp)
+                        order.delivery_date = delivery_date
+                        if order.project and delivery_date > order.project.end_date:
+                            order.project.end_date = delivery_date
+                    except ValueError as e:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Invalid delivery date timestamp: {str(e)}"
+                        )
+
+            # Update remaining fields
+            for field, value in update_dict.items():
+                if hasattr(order, field):
+                    setattr(order, field, value)
+
+            commit()
+            return order.to_dict()
+
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/operations/{part_number}/{operation_number}")
+async def update_operation(
+        part_number: str,
+        operation_number: int,
+        operation_data: OperationUpdateRequest
+):
+    try:
+        with db_session:
+            order = Order.get(part_number=part_number)
+            if not order:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"No order found with part number {part_number}"
+                )
+
+            operation = select(op for op in Operation
+                               if op.order == order and op.operation_number == operation_number).first()
+            if not operation:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Operation {operation_number} not found"
+                )
+
+            # Update operation fields from the validated request model
+            update_dict = operation_data.dict(exclude_unset=True)
+
+            if 'operation_description' in update_dict:
+                operation.operation_description = update_dict['operation_description']
+            if 'setup_time' in update_dict:
+                operation.setup_time = update_dict['setup_time']
+            if 'ideal_cycle_time' in update_dict:
+                operation.ideal_cycle_time = update_dict['ideal_cycle_time']
+            if 'work_center_code' in update_dict:
+                work_center = WorkCenter.get(code=update_dict['work_center_code'])
+                if not work_center:
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"Work center {update_dict['work_center_code']} not found"
+                    )
+                operation.work_center = work_center
+
+            commit()
+            return operation.to_dict()
+
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/create_order")
+async def create_order(order_data: CreateOrderRequest):
+    """Create a new order"""
+    try:
+        with db_session:
+            # Check if order already exists
+            existing_order = Order.get(production_order=order_data.production_order)
+            if existing_order:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Production order already exists"
+                )
+
+            # Convert epoch to datetime for delivery_date
+            try:
+                delivery_date = datetime.fromtimestamp(order_data.delivery_date)
+            except ValueError as e:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid delivery date timestamp: {str(e)}"
+                )
+
+            # Get or create project
+            project = Project.get(name=order_data.project_name)
+            if not project:
+                project = Project(
+                    name=order_data.project_name,
+                    priority=1,  # Default priority
+                    start_date=datetime.now(),
+                    end_date=delivery_date
+                )
+
+            # Create new order
+            order = Order(
+                production_order=order_data.production_order,
+                sale_order=order_data.sale_order,
+                wbs_element=order_data.wbs_element,
+                part_number=order_data.part_number,
+                part_description=order_data.part_description,
+                total_operations=order_data.total_operations,
+                required_quantity=order_data.required_quantity,
+                launched_quantity=order_data.launched_quantity,
+                raw_material="",  # Default empty string
+                plant_id=order_data.plant_id,
+                delivery_date=delivery_date,
+                project=project
+            )
+
+            commit()
+            return order.to_dict()
+
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error creating order: {str(e)}"
+        )
+
+@router.post("/operations")
+async def create_operation(operation_data: CreateOperationRequest):
+    """Create a new operation for an existing order"""
+    try:
+        with db_session:
+            # Find the order
+            order = Order.get(id=operation_data.order_id)
+            if not order:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Order not found"
+                )
+
+            # Find the work center
+            work_center = WorkCenter.get(code=operation_data.work_center_code)
+            if not work_center:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Work center {operation_data.work_center_code} not found"
+                )
+
+            # Check if operation number already exists
+            existing_op = select(op for op in Operation
+                               if op.order == order and
+                               op.operation_number == operation_data.operation_number).first()
+            if existing_op:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Operation number {operation_data.operation_number} already exists"
+                )
+
+            # Create new operation
+            operation = Operation(
+                order=order,
+                operation_number=operation_data.operation_number,
+                work_center=work_center,
+                operation_description=operation_data.operation_description,
+                setup_time=operation_data.setup_time,
+                ideal_cycle_time=operation_data.ideal_cycle_time
+            )
+
+            # Update order's total operations
+            order.total_operations = count(op for op in Operation if op.order == order)
+
+            commit()
+            return operation.to_dict()
+
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error creating operation: {str(e)}"
+        )
+
+
+@router.get("/work_centers")
+async def get_work_centers():
+    """Get all work centers"""
+    try:
+        with db_session:
+            work_centers = select(w for w in WorkCenter)[:]
+            return [{"id": wc.id, "code": wc.code} for wc in work_centers]
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error retrieving work centers: {str(e)}"
+        )

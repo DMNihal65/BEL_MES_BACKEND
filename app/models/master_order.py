@@ -141,4 +141,5 @@ class JigsAndFixturesList(db.Entity):
     id = PrimaryKey(int, auto=True)
     order = Required(Order)
     operation = Required(Operation)
-    jigs_id = Required(str) 
+    jigs_id = Required(str)
+
