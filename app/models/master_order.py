@@ -1,6 +1,8 @@
 from datetime import datetime
 from pony.orm import *
 from decimal import Decimal
+
+from app.models.user import User
 from ..database.connection import db  # Import the shared db instance
 
 class WorkCenter(db.Entity):
@@ -47,11 +49,18 @@ class MachineDowntime(db.Entity):
     end_time = Required(datetime)
     is_active = Required(bool, default=True)
 
+class Status(db.Entity):
+    _table_ = ("master_order", "status")
+    id = PrimaryKey(int, auto=True)
+    name = Required(str)
+    description = Optional(str)
+    machine_statuses = Set('MachineStatus', reverse='status')
+
 class MachineStatus(db.Entity):
     _table_ = ("master_order", "machine_status")
     id = PrimaryKey(int, auto=True)
     machine = Required(Machine)
-    status_id = Required(int)
+    status = Required(Status)
     description = Optional(str)
     available_from = Optional(datetime)  # New column
 
@@ -83,6 +92,7 @@ class Order(db.Entity):
     documents = Set('Document')
     tools = Set('ToolList')
     jigs_fixtures = Set('JigsAndFixturesList')
+    mpps = Set('MPP', reverse='order')  # Add this line for MPP relationship
 
 
 class Operation(db.Entity):
@@ -91,7 +101,7 @@ class Operation(db.Entity):
     order = Required(Order)
     operation_number = Required(int)
     work_center = Required(WorkCenter)
-    machine = Required('Machine')  # New column linked to Machine table
+    machine = Required('Machine')
     operation_description = Optional(str)
     setup_time = Required(Decimal)
     ideal_cycle_time = Required(Decimal)
@@ -99,6 +109,7 @@ class Operation(db.Entity):
     tools = Set('ToolList')
     jigs_fixtures = Set('JigsAndFixturesList')
     programs = Set('Program')
+    mpps = Set('MPP', reverse='operation')
 
 class ProcessPlan(db.Entity):
     _table_ = ("master_order", "process_plan") 
@@ -128,6 +139,7 @@ class Document(db.Entity):
     upload_date = Required(datetime)
     revision_date = Optional(datetime)
     version = Required(str)
+    mpps = Set('MPP', reverse='document')
 
 class ToolList(db.Entity):
     _table_ = ("master_order", "tool_list") 
@@ -143,3 +155,23 @@ class JigsAndFixturesList(db.Entity):
     operation = Required(Operation)
     jigs_id = Required(str)
 
+
+class UserLogs(db.Entity):
+    _table_ = ("master_order", "user_logs")
+    id = PrimaryKey(int, auto=True)
+    user = Required('User', reverse='user_logs')  # Update to include proper reverse reference
+    login_timestamp = Required(datetime)
+    logout_timestamp = Optional(datetime)
+
+class MPP(db.Entity):
+    _table_ = ("master_order", "mpp")
+    id = PrimaryKey(int, auto=True)
+    order = Required(Order, reverse='mpps')
+    operation = Required(Operation, reverse='mpps')
+    document = Optional(Document, reverse='mpps')  # Updated with reverse relationship
+    fixture_number = Optional(str)
+    ipid_number = Optional(str)
+    datum_x = Optional(str)
+    datum_y = Optional(str)
+    datum_z = Optional(str)
+    work_instructions = Required(Json, default={"sections": []})
