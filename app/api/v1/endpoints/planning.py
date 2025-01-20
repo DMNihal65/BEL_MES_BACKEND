@@ -466,10 +466,16 @@ async def search_order(
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
 
 
+
 @router.put("/update_order/{order_number}")
 async def update_order(order_number: str, update_data: OrderUpdateRequest):
     try:
+        # Convert plant_id to string if it's an integer
+        if isinstance(update_data.plant_id, int):
+            update_data.plant_id = str(update_data.plant_id)
+
         with db_session:
+            # Fetch the order by its production_order field
             order = Order.get(production_order=order_number)
             if not order:
                 raise HTTPException(
@@ -477,16 +483,27 @@ async def update_order(order_number: str, update_data: OrderUpdateRequest):
                     detail=f"Order with number {order_number} not found"
                 )
 
-            # Convert the Pydantic model to dict, excluding None values
+            # Convert the update_data into a dictionary while excluding unset fields
             update_dict = update_data.dict(exclude_unset=True)
 
-            # Handle delivery_date separately if provided
+            # Validate and convert required_quantity to int
+            if 'required_quantity' in update_dict:
+                try:
+                    update_dict['required_quantity'] = int(update_dict['required_quantity'])
+                except (ValueError, TypeError):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Invalid value for required_quantity. Must be an integer."
+                    )
+
+            # Handle delivery_date separately (if provided as epoch)
             if 'delivery_date' in update_dict:
                 epoch_timestamp = update_dict.pop('delivery_date')
                 if epoch_timestamp is not None:
                     try:
                         delivery_date = datetime.fromtimestamp(epoch_timestamp)
                         order.delivery_date = delivery_date
+                        # Update project end date if needed
                         if order.project and delivery_date > order.project.end_date:
                             order.project.end_date = delivery_date
                     except ValueError as e:
@@ -495,19 +512,21 @@ async def update_order(order_number: str, update_data: OrderUpdateRequest):
                             detail=f"Invalid delivery date timestamp: {str(e)}"
                         )
 
-            # Update remaining fields
+            # Update all remaining fields
             for field, value in update_dict.items():
                 if hasattr(order, field):
                     setattr(order, field, value)
 
+            # Commit the changes
             commit()
+
+            # Return the updated order as a dictionary
             return order.to_dict()
 
     except HTTPException as he:
         raise he
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @router.put("/operations/{part_number}/{operation_number}")
 async def update_operation(

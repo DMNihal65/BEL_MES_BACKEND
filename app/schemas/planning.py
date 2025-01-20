@@ -8,9 +8,9 @@ class OrderUpdateRequest(BaseModel):
     part_number: str
     part_description: str
     total_operations: int
-    required_quantity: float
-    launched_quantity: float
-    plant_id: int
+    required_quantity: int
+    launched_quantity: int
+    plant_id: str
     delivery_date: int
 
 class OperationUpdateRequest(BaseModel):

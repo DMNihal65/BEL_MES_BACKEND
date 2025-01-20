@@ -51,6 +51,8 @@ class MachineUpdate(BaseModel):
 
 class MachineResponse(MachineBase):
     id: int
-    
+    work_center_id: int  # Make sure this field is here
+    work_center: WorkCenterResponse
+
     class Config:
-        from_attributes = True 
+        from_attributes = True

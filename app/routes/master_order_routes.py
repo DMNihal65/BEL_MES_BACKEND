@@ -1,6 +1,8 @@
+from traceback import format_exc
+
 from fastapi import APIRouter, HTTPException, Query, Path
 from typing import List, Optional
-from pony.orm import db_session, commit
+from pony.orm import db_session, commit, select
 from ..models.master_order import WorkCenter, Machine
 from ..schemas.master_order_schemas import (
     WorkCenterCreate, WorkCenterUpdate, WorkCenterResponse,
@@ -134,30 +136,95 @@ def create_machine(machine: MachineCreate):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.get("/machines/", response_model=List[MachineResponse])
 @db_session
-def get_machines(
-    skip: int = Query(0, ge=0),
-    limit: int = Query(100, ge=1, le=100),
-    work_center_id: Optional[int] = None
-):
+def get_machines(work_center_code: Optional[str] = None):
+    """Get all machines, optionally filtered by work center"""
     try:
-        query = Machine.select()
-        if work_center_id:
-            query = query.filter(lambda m: m.work_center.id == work_center_id)
-        return list(query.offset(skip).limit(limit))
+        # Using Pony ORM query syntax
+        if work_center_code:
+            work_center = WorkCenter.get(code=work_center_code)
+            if not work_center:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Work center with code {work_center_code} not found"
+                )
+            machines = select(m for m in Machine if m.work_center.code == work_center_code)
+        else:
+            machines = select(m for m in Machine)
+
+        # Convert to list and map the response using Pony ORM attributes
+        return [
+            MachineResponse(
+                id=machine.id,
+                work_center_id=machine.work_center.id,
+                type=machine.type,
+                make=machine.make,
+                model=machine.model,
+                year_of_installation=machine.year_of_installation,
+                cnc_controller=machine.cnc_controller,
+                cnc_controller_series=machine.cnc_controller_series,
+                remarks=machine.remarks,
+                calibration_date=machine.calibration_date,
+                last_maintenance_date=machine.last_maintenance_date,
+                work_center=WorkCenterResponse(
+                    id=machine.work_center.id,
+                    code=machine.work_center.code,
+                    plant_id=machine.work_center.plant_id,
+                    description=machine.work_center.description,
+                    operation=machine.work_center.work_center_name
+                )
+            ) for machine in machines
+        ]
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error fetching machines: {str(e)}"
+        )
+
 
 @router.get("/machines/{machine_id}", response_model=MachineResponse)
 @db_session
 def get_machine(
-    machine_id: int = Path(..., description="The ID of the machine to get")
+        machine_id: int = Path(..., description="The ID of the machine to get")
 ):
-    machine = Machine.get(id=machine_id)
-    if not machine:
-        raise HTTPException(status_code=404, detail="Machine not found")
-    return machine
+    try:
+        # Get machine by ID
+        machine = Machine.get(id=machine_id)
+        if not machine:
+            raise HTTPException(status_code=404, detail="Machine not found")
+
+        # Return formatted response using Pydantic model
+        return MachineResponse(
+            id=machine.id,
+            work_center_id=machine.work_center.id,
+            type=machine.type,
+            make=machine.make,
+            model=machine.model,
+            year_of_installation=machine.year_of_installation,
+            cnc_controller=machine.cnc_controller,
+            cnc_controller_series=machine.cnc_controller_series,
+            remarks=machine.remarks,
+            calibration_date=machine.calibration_date,
+            last_maintenance_date=machine.last_maintenance_date,
+            work_center=WorkCenterResponse(
+                id=machine.work_center.id,
+                code=machine.work_center.code,
+                plant_id=machine.work_center.plant_id,
+                description=machine.work_center.description,
+                operation=machine.work_center.work_center_name
+            )
+        )
+
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error fetching machine: {str(e)}"
+        )
 
 @router.put("/machines/{machine_id}", response_model=MachineResponse)
 @db_session
@@ -190,4 +257,43 @@ def delete_machine(machine_id: int):
         machine.delete()
         return {"message": "Machine deleted successfully"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) 
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/all-machines/", response_model=List[MachineResponse])
+@db_session
+def get_all_machines():
+    """Get all machines without any filters"""
+    try:
+        # Get all machines using Pony ORM
+        all_machines = select(m for m in Machine)
+
+        # Convert to list and map the response using Pony ORM attributes
+        return [
+            MachineResponse(
+                id=machine.id,
+                work_center_id=machine.work_center.id,
+                type=machine.type,
+                make=machine.make,
+                model=machine.model,
+                year_of_installation=machine.year_of_installation,
+                cnc_controller=machine.cnc_controller,
+                cnc_controller_series=machine.cnc_controller_series,
+                remarks=machine.remarks,
+                calibration_date=machine.calibration_date,
+                last_maintenance_date=machine.last_maintenance_date,
+                work_center=WorkCenterResponse(
+                    id=machine.work_center.id,
+                    code=machine.work_center.code,
+                    plant_id=machine.work_center.plant_id,
+                    description=machine.work_center.description,
+                    operation=machine.work_center.work_center_name
+                )
+            ) for machine in all_machines
+        ]
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error fetching all machines: {str(e)}"
+        )
