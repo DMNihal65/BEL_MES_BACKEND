@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware  # Add this import
 from .database.connection import connect_to_db
 from .routes import hr_routes, finance_routes, master_order_routes
-from .api.v1.endpoints import auth, planning, mpp, operations
+from .api.v1.endpoints import auth, planning, mpp, operations, document_management
 
 app = FastAPI(title="BEL MES API")
 
@@ -24,14 +24,13 @@ async def startup_event():
         print(f"Error connecting to database: {str(e)}")
         raise e
 
-# Include routers
-# app.include_router(hr_routes.router)
-# app.include_router(finance_routes.router)
-app.include_router(auth.router)
-app.include_router(master_order_routes.router)
-app.include_router(planning.router)
-app.include_router(mpp.router, tags=["mpp"])
-app.include_router(operations.router)
+# Include routers with proper prefixes
+app.include_router(auth.router)  # This will now use /api/v1/auth prefix
+app.include_router(master_order_routes.router, prefix="/api/v1")
+app.include_router(planning.router, prefix="/api/v1")
+app.include_router(mpp.router, prefix="/api/v1", tags=["mpp"])
+app.include_router(operations.router, prefix="/api/v1")
+app.include_router(document_management.router, prefix="/api/v1")
 
 @app.get("/")
 def read_root():
@@ -40,3 +39,4 @@ def read_root():
 # uvicorn app.main:app --reload
 
 # uvicorn app.main:app --host 172.18.7.88 --port 2222 --reload
+# uvicorn app.main:app --host 172.18.7.89 --port 2222 --reload

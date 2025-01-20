@@ -9,7 +9,7 @@ import re
 from app.database.connection import db
 from app.models import (
     WorkCenter, Machine, Project, Order, Operation,
-    ProcessPlan, Document, ToolList, JigsAndFixturesList,
+    ProcessPlan,  ToolList, JigsAndFixturesList,
     Unit, RawMaterial, InventoryStatus
 )
 from app.schemas.planning import CreateOperationRequest, CreateOrderRequest, OrderUpdateRequest, OperationUpdateRequest
