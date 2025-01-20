@@ -16,7 +16,7 @@ class WorkCenter(db.Entity):
     operations = Set('Operation')
 
 class Machine(db.Entity):
-    _table_ = ("master_order", "machines")
+    _table_ = ("master_order", "machines") 
     id = PrimaryKey(int, auto=True)
     work_center = Required(WorkCenter)
     type = Required(str)
@@ -34,7 +34,7 @@ class Machine(db.Entity):
     operations = Set('Operation')  # Reverse relationship
 
 class MachineShift(db.Entity):
-    _table_ = ("master_order", "machine_shifts")
+    _table_ = ("master_order", "machine_shifts") 
     id = PrimaryKey(int, auto=True)
     machine = Required(Machine)
     shift_start = Required(datetime)
@@ -42,7 +42,7 @@ class MachineShift(db.Entity):
     is_active = Required(bool, default=True)
 
 class MachineDowntime(db.Entity):
-    _table_ = ("master_order", "machine_downtimes")
+    _table_ = ("master_order", "machine_downtimes") 
     id = PrimaryKey(int, auto=True)
     machine = Required(Machine)
     start_time = Required(datetime)
@@ -55,8 +55,6 @@ class Status(db.Entity):
     name = Required(str)
     description = Optional(str)
     machine_statuses = Set('MachineStatus', reverse='status')
-
-
 
 class MachineStatus(db.Entity):
     _table_ = ("master_order", "machine_status")
@@ -114,7 +112,7 @@ class Operation(db.Entity):
     mpps = Set('MPP', reverse='operation')
 
 class ProcessPlan(db.Entity):
-    _table_ = ("master_order", "process_plan")
+    _table_ = ("master_order", "process_plan") 
     id = PrimaryKey(int, auto=True)
     operation = Required(Operation)
     instructions = Optional(str)
@@ -123,7 +121,7 @@ class ProcessPlan(db.Entity):
     program = Optional('Program', reverse='process_plan')
 
 class Program(db.Entity):
-    _table_ = ("master_order", "programs")
+    _table_ = ("master_order", "programs") 
     id = PrimaryKey(int, auto=True)
     operation = Required(Operation)
     process_plan = Optional(ProcessPlan)
@@ -133,7 +131,7 @@ class Program(db.Entity):
     update_date = Required(datetime)
 
 class Document(db.Entity):
-    _table_ = ("master_order", "documents")
+    _table_ = ("master_order", "documents") 
     id = PrimaryKey(int, auto=True)
     order = Required(Order)
     document_name = Required(str)
@@ -144,14 +142,14 @@ class Document(db.Entity):
     mpps = Set('MPP', reverse='document')
 
 class ToolList(db.Entity):
-    _table_ = ("master_order", "tool_list")
+    _table_ = ("master_order", "tool_list") 
     id = PrimaryKey(int, auto=True)
     order = Required(Order)
     operation = Required(Operation)
     tool_id = Required(str)
 
 class JigsAndFixturesList(db.Entity):
-    _table_ = ("master_order", "jigs_and_fixtures_list")
+    _table_ = ("master_order", "jigs_and_fixtures_list") 
     id = PrimaryKey(int, auto=True)
     order = Required(Order)
     operation = Required(Operation)
@@ -177,12 +175,3 @@ class MPP(db.Entity):
     datum_y = Optional(str)
     datum_z = Optional(str)
     work_instructions = Required(Json, default={"sections": []})
-
-
-
-
-
-
-
-
-

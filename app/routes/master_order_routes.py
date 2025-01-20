@@ -226,23 +226,48 @@ def get_machine(
             detail=f"Error fetching machine: {str(e)}"
         )
 
+
 @router.put("/machines/{machine_id}", response_model=MachineResponse)
 @db_session
 def update_machine(
-    machine_id: int,
-    machine: MachineUpdate
+        machine_id: int,
+        machine: MachineUpdate
 ):
     db_machine = Machine.get(id=machine_id)
     if not db_machine:
         raise HTTPException(status_code=404, detail="Machine not found")
-    
+
     try:
         # Update only provided fields
         for field, value in machine.dict(exclude_unset=True).items():
             setattr(db_machine, field, value)
-        
+
         commit()
-        return db_machine
+
+        # Prepare response data within the database session
+        response_data = {
+            "id": db_machine.id,
+            "work_center_id": db_machine.work_center.id,
+            "type": db_machine.type,
+            "make": db_machine.make,
+            "model": db_machine.model,
+            "year_of_installation": db_machine.year_of_installation,
+            "cnc_controller": db_machine.cnc_controller,
+            "cnc_controller_series": db_machine.cnc_controller_series,
+            "remarks": db_machine.remarks,
+            "calibration_date": db_machine.calibration_date,
+            "last_maintenance_date": db_machine.last_maintenance_date,
+            "work_center": {
+                "id": db_machine.work_center.id,
+                "code": db_machine.work_center.code,
+                "plant_id": db_machine.work_center.plant_id,
+                "description": db_machine.work_center.description,
+                "operation": db_machine.work_center.work_center_name
+            }
+        }
+
+        return response_data
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
