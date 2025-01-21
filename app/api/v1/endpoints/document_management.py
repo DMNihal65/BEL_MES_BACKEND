@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from typing import List, Optional, Dict
-from pony.orm import db_session, select, flush, commit, rollback
+from pony.orm import db_session, select, flush, commit, rollback, desc
 import hashlib
 import json
 import io
@@ -327,49 +327,50 @@ async def download_document(
     current_user: User = Depends(get_current_user)
 ):
     """Download a specific version of a document"""
+    # First db session to get and validate entities
     with db_session:
-        try:
-            document = Document.get(id=document_id)
-            if not document:
-                raise HTTPException(status_code=404, detail="Document not found")
-            if not document.is_active:
-                raise HTTPException(status_code=400, detail="Document is inactive")
-                
-            version = DocumentVersion.get(id=version_id, document=document)
-            if not version:
-                raise HTTPException(status_code=404, detail="Version not found")
-                
-            # Log access
+        document = Document.get(id=document_id)
+        if not document:
+            raise HTTPException(status_code=404, detail="Document not found")
+        if not document.is_active:
+            raise HTTPException(status_code=400, detail="Document is inactive")
+            
+        version = DocumentVersion.get(id=version_id, document=document)
+        if not version:
+            raise HTTPException(status_code=404, detail="Version not found")
+        
+        # Store necessary values
+        minio_object_id = version.minio_object_id
+        file_size = version.file_size
+        document_name = document.document_name
+
+    try:
+        # Get file from MinIO (outside db session)
+        file_stream = minio_service.get_file(minio_object_id)
+        
+        # Create access log in a separate db session
+        with db_session:
             DocumentAccessLog(
-                document=document,
-                version=version,
-                user=current_user,
+                document=Document[document_id],
+                version=DocumentVersion[version_id],
+                user=User[current_user.id],
                 action_type="download"
             )
-            
-            try:
-                # Get file from MinIO
-                file_data, stats = minio_service.get_file(version.minio_object_id)
-                
-                return StreamingResponse(
-                    file_data,
-                    media_type=stats.get("content-type", "application/octet-stream"),
-                    headers={
-                        "Content-Disposition": f'attachment; filename="{document.document_name}"',
-                        "Content-Length": str(version.file_size)
-                    }
-                )
-            except Exception as e:
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Failed to retrieve file: {str(e)}"
-                )
-        except HTTPException:
-            raise
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+            commit()
         
-
+        return StreamingResponse(
+            file_stream,
+            media_type=file_stream.headers.get("content-type", "application/octet-stream"),
+            headers={
+                "Content-Disposition": f'attachment; filename="{document_name}"',
+                "Content-Length": str(file_size)
+            }
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to retrieve file: {str(e)}"
+        )
 
 @router.post("/{document_id}/versions/", response_model=DocumentVersionResponse)
 async def create_document_version(
@@ -436,7 +437,18 @@ async def create_document_version(
                 )
 
                 commit()
-                return DocumentVersionResponse.from_orm(new_version)
+                
+                # Return response in correct format
+                return {
+                    "id": new_version.id,
+                    "version_number": new_version.version_number,
+                    "file_size": new_version.file_size,
+                    "checksum": new_version.checksum,
+                    "metadata": new_version.metadata,
+                    "created_at": new_version.created_at,
+                    "created_by": new_version.created_by.id,
+                    "status": new_version.status
+                }
 
             except HTTPException:
                 rollback()
@@ -447,8 +459,6 @@ async def create_document_version(
 
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Invalid metadata JSON format")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/folder/{folder_id}/documents", response_model=DocumentSearchResponse)
 async def list_folder_documents(
@@ -459,39 +469,84 @@ async def list_folder_documents(
 ):
     """List all documents in a folder with pagination"""
     with db_session:
-        folder = DocFolder.get(id=folder_id)
-        if not folder:
-            raise HTTPException(status_code=404, detail="Folder not found")
+        try:
+            folder = DocFolder.get(id=folder_id)
+            if not folder:
+                raise HTTPException(status_code=404, detail="Folder not found")
             
-        query = select(d for d in Document if d.folder.id == folder_id and d.is_active)
-        total = query.count()
-        documents = query.offset(skip).limit(limit)[:]
-        
-        return DocumentSearchResponse(
-            total=total,
-            documents=[DocumentResponse.from_orm(d) for d in documents],
-            skip=skip,
-            limit=limit
-        )
+            query = select(d for d in Document if d.folder.id == folder_id and d.is_active)
+            total = query.count()
+            documents = query[skip:skip+limit]
+            
+            # Convert Pony entities to dict format
+            doc_list = []
+            for d in documents:
+                latest_ver = d.latest_version
+                versions = list(d.versions)
+                
+                doc_dict = {
+                    "id": d.id,
+                    "folder_id": d.folder.id,
+                    "part_number_id": d.part_number_id.id,
+                    "doc_type_id": d.doc_type.id,
+                    "document_name": d.document_name,
+                    "description": d.description,
+                    "created_at": d.created_at,
+                    "created_by": d.created_by.id,
+                    "is_active": d.is_active,
+                    "latest_version": {
+                        "id": latest_ver.id,
+                        "version_number": latest_ver.version_number,
+                        "file_size": latest_ver.file_size,
+                        "checksum": latest_ver.checksum,
+                        "metadata": latest_ver.metadata,
+                        "created_at": latest_ver.created_at,
+                        "created_by": latest_ver.created_by.id,
+                        "status": latest_ver.status
+                    } if latest_ver else None,
+                    "versions": [{
+                        "id": v.id,
+                        "version_number": v.version_number,
+                        "file_size": v.file_size,
+                        "checksum": v.checksum,
+                        "metadata": v.metadata,
+                        "created_at": v.created_at,
+                        "created_by": v.created_by.id,
+                        "status": v.status
+                    } for v in versions]
+                }
+                doc_list.append(doc_dict)
+            
+            return DocumentSearchResponse(
+                total=total,
+                documents=doc_list,
+                skip=skip,
+                limit=limit
+            )
+            
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/search/", response_model=DocumentSearchResponse)
 async def search_documents(
-    q: Optional[str] = None,
+    search_text: Optional[str] = None,
     doc_type_id: Optional[int] = None,
     folder_id: Optional[int] = None,
     skip: int = 0,
     limit: int = 100,
     current_user: User = Depends(get_current_user)
 ):
-    """Search documents by name, description, or metadata"""
+    """Search documents by name, description"""
     with db_session:
         try:
+            # Base query for active documents
             query = select(d for d in Document if d.is_active)
             
-            if q:
+            # Apply filters
+            if search_text:
                 query = query.filter(lambda d: 
-                    q.lower() in d.document_name.lower() or
-                    (d.description and q.lower() in d.description.lower())
+                    search_text.lower() in d.document_name.lower() or
+                    (d.description and search_text.lower() in d.description.lower())
                 )
             
             if doc_type_id:
@@ -499,33 +554,169 @@ async def search_documents(
                 
             if folder_id:
                 query = query.filter(lambda d: d.folder.id == folder_id)
-                
+            
             total = query.count()
-            documents = query.offset(skip).limit(limit)[:]
+            documents = list(query[skip:skip+limit])
+            
+            doc_list = [{
+                "id": d.id,
+                "folder_id": d.folder.id,
+                "part_number_id": d.part_number_id.id,
+                "doc_type_id": d.doc_type.id,
+                "document_name": d.document_name,
+                "description": d.description,
+                "created_at": d.created_at,
+                "created_by": d.created_by.id,
+                "is_active": d.is_active,
+                "latest_version": {
+                    "id": d.latest_version.id,
+                    "version_number": d.latest_version.version_number,
+                    "file_size": d.latest_version.file_size,
+                    "checksum": d.latest_version.checksum,
+                    "metadata": d.latest_version.metadata,
+                    "created_at": d.latest_version.created_at,
+                    "created_by": d.latest_version.created_by.id,
+                    "status": d.latest_version.status
+                } if d.latest_version else None,
+                "versions": [{
+                    "id": v.id,
+                    "version_number": v.version_number,
+                    "file_size": v.file_size,
+                    "checksum": v.checksum,
+                    "metadata": v.metadata,
+                    "created_at": v.created_at,
+                    "created_by": v.created_by.id,
+                    "status": v.status
+                } for v in d.versions]
+            } for d in documents]
             
             return DocumentSearchResponse(
                 total=total,
-                documents=[DocumentResponse(
-                    id=d.id,
-                    folder_id=d.folder.id,
-                    part_number_id=d.part_number_id.id,
-                    doc_type_id=d.doc_type.id,
-                    document_name=d.document_name,
-                    description=d.description,
-                    created_at=d.created_at,
-                    created_by=d.created_by.id,
-                    is_active=d.is_active,
-                    latest_version=DocumentVersionResponse.from_orm(d.latest_version) if d.latest_version else None,
-                    versions=[DocumentVersionResponse.from_orm(v) for v in d.versions]
-                ) for d in documents],
+                documents=doc_list,
                 skip=skip,
                 limit=limit
             )
+            
         except Exception as e:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to search documents: {str(e)}"
+            raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/by-part-number/", response_model=DocumentSearchResponse)
+async def get_documents_by_part_number(
+    part_number: str,
+    doc_type_id: Optional[int] = None,
+    current_user: User = Depends(get_current_user)
+):
+    """Get documents by part number and optional document type"""
+    with db_session:
+        try:
+            # Find the order by production order number
+            order = Order.get(production_order=part_number)
+            if not order:
+                raise HTTPException(status_code=404, detail="Part number not found")
+
+            # Base query for active documents with matching part number
+            query = select(d for d in Document 
+                         if d.is_active and d.part_number_id.id == order.id)
+            
+            # Apply doc type filter if provided
+            if doc_type_id:
+                query = query.filter(lambda d: d.doc_type.id == doc_type_id)
+            
+            documents = list(query)
+            
+            doc_list = [{
+                "id": d.id,
+                "folder_id": d.folder.id,
+                "part_number_id": d.part_number_id.id,
+                "doc_type_id": d.doc_type.id,
+                "document_name": d.document_name,
+                "description": d.description,
+                "created_at": d.created_at,
+                "created_by": d.created_by.id,
+                "is_active": d.is_active,
+                "latest_version": {
+                    "id": d.latest_version.id,
+                    "version_number": d.latest_version.version_number,
+                    "file_size": d.latest_version.file_size,
+                    "checksum": d.latest_version.checksum,
+                    "metadata": d.latest_version.metadata,
+                    "created_at": d.latest_version.created_at,
+                    "created_by": d.latest_version.created_by.id,
+                    "status": d.latest_version.status
+                } if d.latest_version else None,
+                "versions": [{
+                    "id": v.id,
+                    "version_number": v.version_number,
+                    "file_size": v.file_size,
+                    "checksum": v.checksum,
+                    "metadata": v.metadata,
+                    "created_at": v.created_at,
+                    "created_by": v.created_by.id,
+                    "status": v.status
+                } for v in d.versions]
+            } for d in documents]
+            
+            return DocumentSearchResponse(
+                total=len(documents),
+                documents=doc_list,
+                skip=0,
+                limit=len(documents)
             )
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/{document_id}/download")
+async def download_latest_document(
+    document_id: int,
+    current_user: User = Depends(get_current_user)
+):
+    """Download the latest version of a document"""
+    with db_session:
+        document = Document.get(id=document_id)
+        if not document:
+            raise HTTPException(status_code=404, detail="Document not found")
+        if not document.is_active:
+            raise HTTPException(status_code=400, detail="Document is inactive")
+        
+        latest_version = document.latest_version
+        if not latest_version:
+            raise HTTPException(status_code=404, detail="No versions found for this document")
+        
+        # Store necessary values
+        minio_object_id = latest_version.minio_object_id
+        file_size = latest_version.file_size
+        document_name = document.document_name
+
+    try:
+        # Get file from MinIO (outside db session)
+        file_stream = minio_service.get_file(minio_object_id)
+        
+        # Create access log in a separate db session
+        with db_session:
+            DocumentAccessLog(
+                document=Document[document_id],
+                version=latest_version.id,
+                user=User[current_user.id],
+                action_type="download"
+            )
+            commit()
+        
+        return StreamingResponse(
+            file_stream,
+            media_type=file_stream.headers.get("content-type", "application/octet-stream"),
+            headers={
+                "Content-Disposition": f'attachment; filename="{document_name}"',
+                "Content-Length": str(file_size)
+            }
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to retrieve file: {str(e)}"
+        )
 
 @router.put("/{document_id}", response_model=DocumentResponse)
 async def update_document(
@@ -676,10 +867,17 @@ async def list_versions(
                 raise HTTPException(status_code=404, detail="Document not found")
                 
             versions = list(document.versions)
-            return [DocumentVersionResponse.from_orm(v) for v in versions]
+            return [{
+                "id": v.id,
+                "version_number": v.version_number,
+                "file_size": v.file_size,
+                "checksum": v.checksum,
+                "metadata": v.metadata,
+                "created_at": v.created_at,
+                "created_by": v.created_by.id,
+                "status": v.status
+            } for v in versions]
 
-        except HTTPException:
-            raise
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
@@ -768,3 +966,84 @@ async def delete_folder(
         except Exception as e:
             rollback()
             raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/download-by-part-number")
+async def download_by_part_number_and_type(
+    part_number: str,
+    doc_type_id: int,
+    current_user: User = Depends(get_current_user)
+):
+    """Download the latest version of a document for a specific part number and document type"""
+    with db_session:
+        try:
+            # Find the order by production order number
+            order = Order.get(production_order=part_number)
+            if not order:
+                raise HTTPException(status_code=404, detail="Part number not found")
+
+            # First get all matching documents
+            documents = select(d for d in Document 
+                if d.is_active and 
+                d.part_number_id.id == order.id and 
+                d.doc_type.id == doc_type_id
+            ).order_by(lambda d: desc(d.created_at))
+
+            # Get the first document with a latest version
+            document = None
+            for d in documents:
+                if d.latest_version is not None:
+                    document = d
+                    break
+
+            if not document:
+                raise HTTPException(
+                    status_code=404, 
+                    detail="No document found for this part number and document type"
+                )
+
+            latest_version = document.latest_version
+            if not latest_version:
+                raise HTTPException(
+                    status_code=404, 
+                    detail="No versions found for this document"
+                )
+
+            # Store necessary values
+            minio_object_id = latest_version.minio_object_id
+            file_size = latest_version.file_size
+            document_name = document.document_name
+            version_id = latest_version.id
+            document_id = document.id
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    try:
+        # Get file from MinIO (outside db session)
+        file_stream = minio_service.get_file(minio_object_id)
+        
+        # Create access log in a separate db session
+        with db_session:
+            DocumentAccessLog(
+                document=Document[document_id],
+                version=DocumentVersion[version_id],
+                user=User[current_user.id],
+                action_type="download"
+            )
+            commit()
+        
+        return StreamingResponse(
+            file_stream,
+            media_type=file_stream.headers.get("content-type", "application/octet-stream"),
+            headers={
+                "Content-Disposition": f'attachment; filename="{document_name}"',
+                "Content-Length": str(file_size)
+            }
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to retrieve file: {str(e)}"
+        )

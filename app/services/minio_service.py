@@ -53,11 +53,11 @@ class MinioService:
         except S3Error as e:
             raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
-    def get_file(self, object_name: str) -> tuple[BinaryIO, dict]:
+    def get_file(self, object_name: str) -> BinaryIO:
         """Get a file from MinIO"""
         try:
             response = self.client.get_object(self.bucket_name, object_name)
-            return response, response.stats()
+            return response
         except S3Error as e:
             raise HTTPException(status_code=404, detail=f"File not found: {str(e)}")
 
