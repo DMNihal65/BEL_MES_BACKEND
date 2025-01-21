@@ -46,9 +46,12 @@ def get_work_centers(
         query = WorkCenter.select()
         if plant_id:
             query = query.filter(lambda wc: wc.plant_id == plant_id)
-        return list(query.offset(skip).limit(limit))
+        # Using .page() for pagination
+        results = query.page(skip // limit + 1, pagesize=limit)[:]
+        return results
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.get("/workcenters/{work_center_id}", response_model=WorkCenterResponse)
 @db_session

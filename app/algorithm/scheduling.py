@@ -24,7 +24,42 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
     if df.empty:
         return pd.DataFrame(), datetime.now(), 0.0, {}, {}, []
 
-    # Debug: Detailed Status and Machine Status Investigation
+    # Get delivery dates and create a sorting order
+    part_delivery_dates = {}
+    order_info = {}
+
+    # First gather all order and delivery date information
+    for partno in component_quantities.keys():
+        order = Order.select(lambda o: o.part_number == partno).first()
+        if order:
+            if order.project and order.project.delivery_date:
+                delivery_date = order.project.delivery_date
+            else:
+                delivery_date = datetime(9999, 12, 31)  # Far future date for no delivery date
+
+            part_delivery_dates[partno] = delivery_date
+            order_info[partno] = {
+                'delivery_date': delivery_date,
+                'order_id': order.id
+            }
+
+    # Sort parts by delivery date
+    sorted_parts = sorted(
+        component_quantities.keys(),
+        key=lambda x: (part_delivery_dates.get(x, datetime(9999, 12, 31)))
+    )
+
+    # Debug print the sorting order
+    print("\n--- Scheduling Order ---")
+    for partno in sorted_parts:
+        if partno in order_info:
+            print(f"Part: {partno}, Delivery Date: {order_info[partno]['delivery_date']}")
+
+    # Reorder the dataframe based on sorted parts
+    df['sort_order'] = df['partno'].map({part: idx for idx, part in enumerate(sorted_parts)})
+    df_sorted = df.sort_values(by=['sort_order', 'sequence']).drop('sort_order', axis=1)
+
+    # Debug: Status and Machine Status Investigation
     print("\n--- Status Table Investigation ---")
     status_query = select((s.id, s.name, s.description) for s in Status)[:]
     print("Status Records:")
@@ -50,7 +85,7 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
                                  if o.raw_material and o.raw_material.status == ist)
     raw_materials = {
         part_number: (
-            ist.name == 'Available',  # Adjust based on your InventoryStatus values
+            ist.name == 'Available',
             rm.quantity,
             rm.unit,
             rm.available_from
@@ -72,8 +107,6 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
         } for m, ms, s in machine_statuses_query
     }
 
-    # Pre-process the dataframe
-    df_sorted = df.sort_values(by=['partno', 'sequence'])
     part_operations = {
         partno: group.to_dict('records')
         for partno, group in df_sorted.groupby('partno')
@@ -92,21 +125,17 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
         """Check if a machine is available at a given time"""
         machine_status = machine_statuses.get(machine_id, {})
 
-        # Detailed logging for troubleshooting
         print(f"\nChecking Machine ID: {machine_id}")
         print(f"Machine Status Details: {machine_status}")
 
-        # Default to unavailable if no status found
         if not machine_status:
             print(f"No status found for Machine ID {machine_id}. Assuming unavailable.")
             return False, None
 
-        # Check if machine status is explicitly OFF
         if machine_status.get('status_name', '').upper() == 'OFF':
             print(f"Machine {machine_id} is OFF")
             return False, None
 
-        # Check availability time
         available_from = machine_status.get('available_from')
         if available_from and time < available_from:
             print(f"Machine {machine_id} not available before {available_from}")
@@ -130,7 +159,6 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
                 current_op_time = available_time
 
             last_available = idx
-            # Convert Decimal to float for time calculation
             op_time = float(op['time']) * 60
             current_op_time += timedelta(minutes=op_time)
 
@@ -152,7 +180,7 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
             return [], 0, {}
 
         raw_material_status = order.raw_material.status
-        raw_available = raw_material_status.name == 'Available'  # Adjust based on your InventoryStatus values
+        raw_available = raw_material_status.name == 'Available'
         raw_available_time = order.raw_material.available_from
 
         if not raw_available:
@@ -166,10 +194,6 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
             return [], 0, {}
 
         available_operations = operations[:last_available_idx + 1]
-
-        def calculate_exact_minutes(hours: Decimal) -> float:
-            """Convert Decimal hours to float minutes"""
-            return float(hours) * 60
 
         for op_idx, op in enumerate(available_operations):
             machine_id = op['machine_id']
@@ -187,7 +211,6 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
             if not operation:
                 continue
 
-            # Convert Decimal to float explicitly
             setup_minutes = float(operation.setup_time) * 60
             cycle_minutes = float(operation.ideal_cycle_time) * 60
 
@@ -209,7 +232,6 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
                 shift_end = operation_start.replace(hour=17, minute=0, second=0, microsecond=0)
 
                 if setup_end > shift_end:
-                    # Setup spans multiple shifts
                     batch_schedule.append([
                         partno, op['operation'], machine_id,
                         operation_start, shift_end,
@@ -321,19 +343,14 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
 
         return batch_schedule, len(available_operations), unit_completion_times
 
-    # Main scheduling loop
-    for partno in component_quantities.keys():
+    # Main scheduling loop using sorted_parts
+    for partno in sorted_parts:
         if partno not in part_operations:
             continue
 
         operations = part_operations[partno]
         quantity = component_quantities[partno]
-
-        # Get delivery date from Project table through Order
-        lead_time = None
-        order = Order.select(lambda o: o.part_number == partno).first()
-        if order and order.project:
-            lead_time = order.project.delivery_date
+        lead_time = part_delivery_dates.get(partno)
 
         batch_schedule, completed_ops, unit_completion_times = schedule_batch_operations(
             partno, operations, quantity, start_date
@@ -343,14 +360,13 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
             schedule.extend(batch_schedule)
             latest_completion_time = max(unit_completion_times.values()) if unit_completion_times else None
 
-            # Update part status with new completion info
             part_status[partno] = {
                 'partno': partno,
                 'scheduled_end_time': latest_completion_time,
                 'lead_time': lead_time,
                 'on_time': (latest_completion_time.date() <= lead_time.date() if isinstance(lead_time, datetime) else
-                            latest_completion_time.date() <= lead_time if isinstance(lead_time, date) else None)
-                            if lead_time and latest_completion_time else None,
+                           latest_completion_time.date() <= lead_time if isinstance(lead_time, date) else None)
+                           if lead_time and latest_completion_time else None,
                 'completed_quantity': len(unit_completion_times),
                 'total_quantity': quantity,
                 'lead_time_provided': lead_time is not None
@@ -381,3 +397,4 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
     overall_time = (overall_end_time - start_date).total_seconds() / 60
 
     return schedule_df, overall_end_time, overall_time, daily_production, part_status, partially_completed
+
