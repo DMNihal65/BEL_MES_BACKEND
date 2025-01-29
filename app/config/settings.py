@@ -20,8 +20,8 @@ class Settings(BaseSettings):
 
     # Add MinIO settings
     MINIO_ENDPOINT: str = "localhost:9000"
-    MINIO_ACCESS_KEY: str
-    MINIO_SECRET_KEY: str
+    MINIO_ACCESS_KEY: str = "8BloN2A9ZJWvokaQihs4"
+    MINIO_SECRET_KEY: str = "91CHmrowgeiOBHwJegAuV40hwkc2gmuLLtmayJDT"
     MINIO_BUCKET_NAME: str = "documents"
     MINIO_SECURE: bool = False
 

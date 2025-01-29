@@ -93,6 +93,10 @@ class Order(db.Entity):
     tools = Set('ToolList')
     jigs_fixtures = Set('JigsAndFixturesList')
     mpps = Set('MPP', reverse='order')
+    inventory_requests = Set("InventoryRequest")
+
+    
+    
 
 class Operation(db.Entity):
     _table_ = ("master_order", "operations")
@@ -109,6 +113,7 @@ class Operation(db.Entity):
     jigs_fixtures = Set('JigsAndFixturesList')
     programs = Set('Program')
     mpps = Set('MPP', reverse='operation')
+    inventory_requests = Set("InventoryRequest")
 
 class ProcessPlan(db.Entity):
     _table_ = ("master_order", "process_plan") 

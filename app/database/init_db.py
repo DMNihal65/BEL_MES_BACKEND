@@ -20,7 +20,8 @@ def init_database():
         "master_order",
         "document_management",
         "hr",
-        "finance"
+        "finance",
+        "inventoryv1"
     ]
 
     for schema in schemas:

@@ -2,20 +2,18 @@ from minio import Minio
 from minio.error import S3Error
 from fastapi import HTTPException
 from datetime import timedelta
-import os
-from typing import BinaryIO, Optional
-from ..config.settings import settings
-import io
+from typing import BinaryIO
 
 class MinioService:
     def __init__(self):
+        # Replace these values with your direct MinIO connection settings
         self.client = Minio(
-            endpoint=settings.MINIO_ENDPOINT,
-            access_key=settings.MINIO_ACCESS_KEY,
-            secret_key=settings.MINIO_SECRET_KEY,
-            secure=settings.MINIO_SECURE
+            endpoint="localhost:9000",  # MinIO endpoint
+            access_key="SkSfn28fOBig7L7nraY4",  # MinIO access key
+            secret_key="4oSBg8nSsabb3kF0ZwG0IBz3Sfhkyb4EHLeTZKHn",  # MinIO secret key
+            secure=False  # Set to True if MinIO uses HTTPS
         )
-        self.bucket_name = settings.MINIO_BUCKET_NAME
+        self.bucket_name = "documents2"  # MinIO bucket name
         self._ensure_bucket_exists()
 
     def _ensure_bucket_exists(self):
@@ -33,7 +31,6 @@ class MinioService:
     def upload_file(self, file: BinaryIO, object_name: str, content_type: str) -> dict:
         """Upload a file to MinIO"""
         try:
-            # Get file size
             file.seek(0, 2)  # Go to end of file
             file_size = file.tell()  # Get current position (file size)
             file.seek(0)  # Go back to start of file

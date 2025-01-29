@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware  # Add this import
 from .database.connection import connect_to_db
 from .routes import hr_routes, finance_routes, master_order_routes
-from .api.v1.endpoints import auth, planning, mpp, operations, document_management
+from .api.v1.endpoints import auth, planning, mpp, operations, document_management,inventoryv1
 
 app = FastAPI(title="BEL MES API")
 
@@ -31,6 +31,8 @@ app.include_router(planning.router, prefix="/api/v1")
 app.include_router(mpp.router, prefix="/api/v1", tags=["mpp"])
 app.include_router(operations.router, prefix="/api/v1")
 app.include_router(document_management.router, prefix="/api/v1")
+app.include_router(inventoryv1.router, prefix="/api/v1")
+# router = APIRouter(prefix="/api/inventory", tags=["inventory"])
 
 @app.get("/")
 def read_root():
