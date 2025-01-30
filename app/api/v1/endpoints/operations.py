@@ -17,14 +17,25 @@ router = APIRouter(prefix="/operations", tags=["operations"])
 
 @router.get("/schedule-batch/", response_model=ScheduleResponse)
 async def schedule():
-    """
-    Generate a production schedule based on current operations, quantities, and constraints
-    """
     try:
         with db_session:
             ops_count = Operation.select().count()
             orders_count = Order.select().count()
             print(f"Database counts - Operations: {ops_count}, Orders: {orders_count}")
+
+            # Fetch production orders with their operations
+            production_orders = {}
+            for order in Order.select():
+                operations = []
+                for op in order.operations:
+                    operations.append({
+                        'operation_number': op.operation_number,
+                        'work_center': op.work_center.code,
+                        'machine': f"{op.machine.make}-{op.machine.model}",
+                        'setup_time': float(op.setup_time),
+                        'cycle_time': float(op.ideal_cycle_time)
+                    })
+                production_orders[str(order.production_order)] = operations  # Convert operations to list
 
         df = fetch_operations()
         component_quantities = fetch_component_quantities()
@@ -35,13 +46,13 @@ async def schedule():
 
         scheduled_operations = []
         if not schedule_df.empty:
-            # Get machine names mapping with work center info
             with db_session:
-                # Fetch machines with their work centers
                 machine_details = {}
                 for machine in Machine.select():
                     machine_name = f"{machine.work_center.code}-{machine.make}"
                     machine_details[machine.id] = machine_name
+
+                orders_map = {order.part_number: order.production_order for order in Order.select()}
 
             scheduled_operations = [
                 ScheduledOperation(
@@ -50,7 +61,8 @@ async def schedule():
                     machine=machine_details.get(row['machine_id'], f"Machine-{row['machine_id']}"),
                     start_time=row['start_time'],
                     end_time=row['end_time'],
-                    quantity=row['quantity']
+                    quantity=row['quantity'],
+                    production_order=orders_map.get(row['partno'], '')
                 ) for _, row in schedule_df.iterrows()
             ]
 
@@ -60,11 +72,116 @@ async def schedule():
             overall_time=str(overall_time),
             daily_production=daily_production,
             component_status=component_status,
-            partially_completed=partially_completed
+            partially_completed=partially_completed,
+            production_orders=production_orders
         )
 
     except Exception as e:
         print(f"Error in schedule endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/unit_schedule/", response_model=List[ScheduledOperation])
+async def unit_schedule():
+    try:
+        with db_session:
+            df = fetch_operations()
+            component_quantities = fetch_component_quantities()
+            lead_times = fetch_lead_times()
+
+            # Get production order mapping
+            orders_map = {order.part_number: order.production_order for order in Order.select()}
+
+            schedule_df, _, _, _, _, _ = schedule_operations(df, component_quantities, lead_times)
+
+            if schedule_df.empty:
+                return []
+
+            machine_details = {}
+            for machine in Machine.select():
+                machine_name = f"{machine.work_center.code}-{machine.make}"
+                machine_details[machine.id] = machine_name
+
+            unit_schedule_details = []
+            operation_order = {}
+            current_order = 0
+
+            for _, row in schedule_df.iterrows():
+                if row['operation'] not in operation_order:
+                    operation_order[row['operation']] = current_order
+                    current_order += 1
+
+                try:
+                    quantity_info = str(row['quantity'])
+                    machine_name = machine_details.get(row['machine_id'], f"Machine-{row['machine_id']}")
+                    production_order = orders_map.get(row['partno'], '')
+
+                    if quantity_info.startswith('Setup'):
+                        unit_schedule_details.append(ScheduledOperation(
+                            component=row['partno'],
+                            description=row['operation'],
+                            machine=machine_name,
+                            start_time=row['start_time'],
+                            end_time=row['end_time'],
+                            quantity="setuptime",
+                            production_order=production_order
+                        ))
+                    elif quantity_info.startswith('Process'):
+                        process_info = quantity_info.strip('Process()').split('/')
+                        if len(process_info) == 2:
+                            completed_pieces = int(process_info[0].strip('pcs'))
+                            total_pieces = int(process_info[1].strip('pcs'))
+
+                            operation = select(o for o in Operation
+                                            if o.order.part_number == row['partno']
+                                            and o.operation_description == row['operation']).first()
+
+                            if operation:
+                                previous_pieces = sum(1 for op in unit_schedule_details
+                                                    if op.component == row['partno']
+                                                    and op.description == row['operation']
+                                                    and op.quantity != "setuptime")
+
+                                pieces_in_block = completed_pieces - previous_pieces
+
+                                if pieces_in_block > 0:
+                                    total_time = (row['end_time'] - row['start_time']).total_seconds()
+                                    time_per_piece = total_time / pieces_in_block
+
+                                    for piece_idx in range(pieces_in_block):
+                                        piece_number = previous_pieces + piece_idx + 1
+                                        piece_start = row['start_time'] + timedelta(seconds=piece_idx * time_per_piece)
+                                        piece_end = piece_start + timedelta(seconds=time_per_piece)
+
+                                        unit_schedule_details.append(ScheduledOperation(
+                                            component=row['partno'],
+                                            description=row['operation'],
+                                            machine=machine_name,
+                                            start_time=piece_start,
+                                            end_time=piece_end,
+                                            quantity=f"{piece_number}/{total_pieces}",
+                                            production_order=production_order
+                                        ))
+
+                except Exception as e:
+                    print(f"Error processing operation: {str(e)}")
+                    continue
+
+            def sort_key(x):
+                operation_seq = operation_order.get(x.description, float('inf'))
+                is_setup = x.quantity == "setuptime"
+                unit_number = 0
+                if not is_setup:
+                    try:
+                        unit_number = int(x.quantity.split('/')[0])
+                    except:
+                        pass
+                return (operation_seq, not is_setup, unit_number, x.start_time)
+
+            sorted_schedule = sorted(unit_schedule_details, key=sort_key)
+            return sorted_schedule
+
+    except Exception as e:
+        print(f"Error in unit_schedule endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -112,118 +229,3 @@ async def get_machine_schedules(
 
 
 
-@router.get("/unit_schedule/", response_model=List[ScheduledOperation])
-async def unit_schedule():
-    """
-    Get schedule broken down to individual units
-    """
-    try:
-        with db_session:
-            df = fetch_operations()
-            component_quantities = fetch_component_quantities()
-            lead_times = fetch_lead_times()
-
-            schedule_df, _, _, _, _, _ = schedule_operations(df, component_quantities, lead_times)
-
-            if schedule_df.empty:
-                return []
-
-            # Get machine names mapping with work center info
-            machine_details = {}
-            for machine in Machine.select():
-                machine_name = f"{machine.work_center.code}-{machine.make}"
-                machine_details[machine.id] = machine_name
-
-            unit_schedule_details = []
-            operation_order = {}
-            current_order = 0
-
-            for _, row in schedule_df.iterrows():
-                if row['operation'] not in operation_order:
-                    operation_order[row['operation']] = current_order
-                    current_order += 1
-
-                try:
-                    quantity_info = str(row['quantity'])
-                    machine_name = machine_details.get(row['machine_id'], f"Machine-{row['machine_id']}")
-
-                    # Handle setup operations
-                    if quantity_info.startswith('Setup'):
-                        setup_info = quantity_info.strip('Setup()').split('/')
-                        if len(setup_info) == 2:
-                            unit_schedule_details.append(ScheduledOperation(
-                                component=row['partno'],
-                                description=row['operation'],
-                                machine=machine_name,
-                                start_time=row['start_time'],
-                                end_time=row['end_time'],
-                                quantity="setuptime"
-                            ))
-
-                    # Handle process operations
-                    elif quantity_info.startswith('Process'):
-                        process_info = quantity_info.strip('Process()').split('/')
-                        if len(process_info) == 2:
-                            completed_pieces = int(process_info[0].strip('pcs'))
-                            total_pieces = int(process_info[1].strip('pcs'))
-
-                            # Get operation details
-                            operation = select(o for o in Operation
-                                               if o.order.part_number == row['partno']
-                                               and o.operation_description == row['operation']).first()
-
-                            if operation:
-                                # Calculate pieces in this block
-                                previous_pieces = sum(1 for op in unit_schedule_details
-                                                      if op.component == row['partno']
-                                                      and op.description == row['operation']
-                                                      and op.quantity != "setuptime")
-
-                                pieces_in_block = completed_pieces - previous_pieces
-
-                                if pieces_in_block > 0:
-                                    # Calculate time per piece
-                                    total_time = (row['end_time'] - row['start_time']).total_seconds()
-                                    time_per_piece = total_time / pieces_in_block
-
-                                    # Create individual piece operations
-                                    for piece_idx in range(pieces_in_block):
-                                        piece_number = previous_pieces + piece_idx + 1
-                                        piece_start = row['start_time'] + timedelta(seconds=piece_idx * time_per_piece)
-                                        piece_end = piece_start + timedelta(seconds=time_per_piece)
-
-                                        unit_schedule_details.append(ScheduledOperation(
-                                            component=row['partno'],
-                                            description=row['operation'],
-                                            machine=machine_name,
-                                            start_time=piece_start,
-                                            end_time=piece_end,
-                                            quantity=f"{piece_number}/{total_pieces}"
-                                        ))
-
-                except ValueError as ve:
-                    print(f"Warning: Error processing operation: {str(ve)}")
-                    continue
-                except Exception as e:
-                    print(f"Error processing operation: {str(e)}")
-                    continue
-
-            # Custom sorting function
-            def sort_key(x):
-                operation_seq = operation_order.get(x.description, float('inf'))
-                is_setup = x.quantity == "setuptime"
-                unit_number = 0
-                if not is_setup:
-                    try:
-                        unit_number = int(x.quantity.split('/')[0])
-                    except:
-                        pass
-                return (operation_seq, not is_setup, unit_number, x.start_time)
-
-            # Sort and return the schedule outside the loop
-            sorted_schedule = sorted(unit_schedule_details, key=sort_key)
-            return sorted_schedule
-
-    except Exception as e:
-        print(f"Error in unit_schedule endpoint: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
