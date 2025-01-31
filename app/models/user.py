@@ -21,3 +21,5 @@ class User(db.Entity):
     is_active = Required(bool, default=True)
     # Add reverse relationships
     user_logs = Set('UserLogs', reverse='user')
+    reschedule_histories = Set('RescheduleHistory', reverse='rescheduled_by_operator')
+    production_logs = Set('ProductionLog', reverse='operator')

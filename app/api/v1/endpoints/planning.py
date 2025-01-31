@@ -320,6 +320,14 @@ def save_to_database(data):
             raw_material=raw_material
         )
 
+        # Create initial 'inactive' status for scheduling
+        part_status = PartScheduleStatus.get(part_number=data["Part No"])
+        if not part_status:
+            PartScheduleStatus(
+                part_number=data["Part No"],
+                status='inactive'  # Default to inactive when OARC is uploaded
+            )
+
         # Create documents
         for doc_type, doc_info in data["Document Verification"].items():
             Document(
@@ -332,6 +340,7 @@ def save_to_database(data):
 
         # Create operations and work centers
         for op in data["Operations"]:
+            # Check if work center exists
             work_center = WorkCenter.get(code=op["Wc/Plant"])
             if not work_center:
                 work_center = WorkCenter(
@@ -341,15 +350,20 @@ def save_to_database(data):
                     description=op["Operation"]
                 )
 
-            # Create a default machine for the operation
-            machine = Machine.get(work_center=work_center, type="Default")
-            if not machine:
+            # Get all existing machines for this work center
+            existing_machines = select(m for m in Machine if m.work_center == work_center)[:]
+
+            # If no machines exist for this work center, create a default one
+            if not existing_machines:
                 machine = Machine(
                     work_center=work_center,
                     type="Default",
                     make="Default",
                     model="Default"
                 )
+            else:
+                # Use the first existing machine
+                machine = existing_machines[0]
 
             operation = Operation(
                 order=master_order,
@@ -366,6 +380,7 @@ def save_to_database(data):
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
+
 
 
 @router.get("/all_orders")
@@ -624,6 +639,14 @@ async def create_order(order_data: CreateOrderRequest):
                 delivery_date=delivery_date,
                 project=project
             )
+
+            # Create initial 'inactive' status for scheduling
+            part_status = PartScheduleStatus.get(part_number=order_data.part_number)
+            if not part_status:
+                PartScheduleStatus(
+                    part_number=order_data.part_number,
+                    status='inactive'  # Default to inactive when order is created
+                )
 
             commit()
             return order.to_dict()

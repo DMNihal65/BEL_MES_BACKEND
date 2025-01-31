@@ -19,6 +19,7 @@ class ScheduledOperation(BaseModel):
     start_time: datetime
     end_time: datetime
     quantity: str
+    production_order: str
 
 class ScheduleResponse(BaseModel):
     scheduled_operations: List[ScheduledOperation]
@@ -27,6 +28,7 @@ class ScheduleResponse(BaseModel):
     daily_production: Dict[str, Dict[datetime, int]]
     component_status: Dict[str, dict]
     partially_completed: List[str]
+    production_orders: Dict[str, List[dict]]
 
 class MachineSchedulesOut(BaseModel):
     machine_schedules: Dict[str, List[dict]]
