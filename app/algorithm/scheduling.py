@@ -57,25 +57,6 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
     if not active_parts:
         return pd.DataFrame(), datetime.now(), 0.0, {}, {}, ["No parts are marked as active for scheduling"]
 
-    # Debug: Status and Machine Status Investigation
-    print("\n--- Status Table Investigation ---")
-    status_query = select((s.id, s.name, s.description) for s in Status)[:]
-    print("Status Records:")
-    for status in status_query:
-        print(f"ID: {status[0]}, Name: {status[1]}, Description: {status[2]}")
-
-    print("\n--- Machine Status Investigation ---")
-    machine_status_query = select((m.id, m.make, ms.id, ms.description, ms.status.name, ms.available_from)
-                                  for m in Machine
-                                  for ms in m.status)[:]
-    print("Machine Status Records:")
-    for record in machine_status_query:
-        print(f"Machine ID: {record[0]}, Make: {record[1]}, "
-              f"MachineStatus ID: {record[2]}, "
-              f"MachineStatus Description: {record[3]}, "
-              f"Status Name: {record[4]}, "
-              f"Available From: {record[5]}")
-
     # Get delivery dates and create a sorting order
     part_delivery_dates = {}
     order_info = {}
@@ -100,12 +81,6 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
         active_parts.keys(),
         key=lambda x: (part_delivery_dates.get(x, datetime(9999, 12, 31)))
     )
-
-    # Debug print the sorting order
-    print("\n--- Scheduling Order ---")
-    for partno in sorted_parts:
-        if partno in order_info:
-            print(f"Part: {partno}, Delivery Date: {order_info[partno]['delivery_date']}")
 
     # Reorder the dataframe based on sorted parts
     df['sort_order'] = df['partno'].map({part: idx for idx, part in enumerate(sorted_parts)})
@@ -259,30 +234,114 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
             current_time = max(current_time, machine_end_times.get(machine_id, current_time))
             operation_start = current_time
 
-            # Perform setup processing
+            # Handle setup time
             if not operation_setup_done[operation_key]:
                 setup_end = operation_start + timedelta(minutes=setup_minutes)
-                batch_schedule.append([
-                    partno, op['operation'], machine_id,
-                    operation_start, setup_end,
-                    f"Setup({setup_minutes}/{setup_minutes}min)"
-                ])
-                operation_start = setup_end
-                current_time = setup_end
+                shift_end = operation_start.replace(hour=17, minute=0, second=0, microsecond=0)
+
+                if setup_end > shift_end:
+                    batch_schedule.append([
+                        partno, op['operation'], machine_id,
+                        operation_start, shift_end,
+                        f"Setup({int((shift_end - operation_start).total_seconds() / 60)}/{setup_minutes}min)"
+                    ])
+
+                    next_day = shift_end + timedelta(days=1)
+                    next_start = next_day.replace(hour=9, minute=0, second=0, microsecond=0)
+                    remaining_setup = setup_minutes - (shift_end - operation_start).total_seconds() / 60
+
+                    while remaining_setup > 0:
+                        current_shift_end = next_start.replace(hour=17, minute=0, second=0, microsecond=0)
+                        setup_possible = min(remaining_setup, (current_shift_end - next_start).total_seconds() / 60)
+                        current_end = next_start + timedelta(minutes=setup_possible)
+
+                        batch_schedule.append([
+                            partno, op['operation'], machine_id,
+                            next_start, current_end,
+                            f"Setup({setup_minutes - remaining_setup + setup_possible}/{setup_minutes}min)"
+                        ])
+
+                        remaining_setup -= setup_possible
+                        if remaining_setup > 0:
+                            next_start = (current_shift_end + timedelta(days=1)).replace(hour=9, minute=0, second=0,
+                                                                                         microsecond=0)
+
+                        current_time = current_end
+                    operation_start = current_end
+                else:
+                    batch_schedule.append([
+                        partno, op['operation'], machine_id,
+                        operation_start, setup_end,
+                        f"Setup({setup_minutes}/{setup_minutes}min)"
+                    ])
+                    operation_start = setup_end
+                    current_time = setup_end
+
                 operation_setup_done[operation_key] = True
 
-            # Processing time calculation
+            # Process production
             total_processing_time = cycle_minutes * quantity
             processing_end = operation_start + timedelta(minutes=total_processing_time)
+            shift_end = operation_start.replace(hour=17, minute=0, second=0, microsecond=0)
 
-            batch_schedule.append([
-                partno, op['operation'], machine_id,
-                operation_start, processing_end,
-                f"Process({quantity}/{quantity}pcs)"
-            ])
+            if processing_end > shift_end:
+                # Split processing across shifts
+                work_minutes_today = (shift_end - operation_start).total_seconds() / 60
+                completion_ratio = work_minutes_today / total_processing_time if total_processing_time > 0 else 0
+                pieces_today = int(quantity * completion_ratio)
 
-            current_time = processing_end
-            machine_end_times[machine_id] = processing_end
+                new_cumulative = min(cumulative_pieces[operation_key] + pieces_today, quantity)
+                if work_minutes_today > 0:
+                    batch_schedule.append([
+                        partno, op['operation'], machine_id,
+                        operation_start, shift_end,
+                        f"Process({new_cumulative}/{quantity}pcs)"
+                    ])
+                    cumulative_pieces[operation_key] = new_cumulative
+
+                remaining_time = total_processing_time - work_minutes_today
+                remaining_pieces = quantity - new_cumulative
+
+                next_day = shift_end + timedelta(days=1)
+                next_start = next_day.replace(hour=9, minute=0, second=0, microsecond=0)
+
+                while remaining_time > 0:
+                    current_shift_end = next_start.replace(hour=17, minute=0, second=0, microsecond=0)
+                    work_possible = min(remaining_time, (current_shift_end - next_start).total_seconds() / 60)
+                    current_end = next_start + timedelta(minutes=work_possible)
+
+                    shift_completion_ratio = work_possible / remaining_time
+                    pieces_this_shift = min(remaining_pieces,
+                                            remaining_pieces if work_possible >= remaining_time
+                                            else int(remaining_pieces * shift_completion_ratio))
+
+                    new_cumulative = min(cumulative_pieces[operation_key] + pieces_this_shift, quantity)
+
+                    batch_schedule.append([
+                        partno, op['operation'], machine_id,
+                        next_start, current_end,
+                        f"Process({new_cumulative}/{quantity}pcs)"
+                    ])
+
+                    cumulative_pieces[operation_key] = new_cumulative
+                    remaining_pieces = quantity - new_cumulative
+                    remaining_time -= work_possible
+
+                    if remaining_time > 0:
+                        next_start = (current_shift_end + timedelta(days=1)).replace(hour=9, minute=0, second=0,
+                                                                                     microsecond=0)
+
+                    current_time = current_end
+                    machine_end_times[machine_id] = current_end
+            else:
+                cumulative_pieces[operation_key] = quantity
+                batch_schedule.append([
+                    partno, op['operation'], machine_id,
+                    operation_start, processing_end,
+                    f"Process({quantity}/{quantity}pcs)"
+                ])
+                current_time = processing_end
+                machine_end_times[machine_id] = processing_end
 
             if op_idx == len(available_operations) - 1:
                 for unit_number in range(1, quantity + 1):
@@ -292,7 +351,7 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
 
         return batch_schedule, len(available_operations), unit_completion_times
 
-    # Main scheduling loop using sorted parts
+    # Main scheduling loop using sorted_parts
     for partno in sorted_parts:
         if partno not in part_operations:
             continue
@@ -345,4 +404,4 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
     overall_end_time = max(schedule_df['end_time'])
     overall_time = (overall_end_time - start_date).total_seconds() / 60
 
-    return schedule_df, overall_end_time, overall_time, daily_production, part_status, skipped_parts
+    return schedule_df, overall_end_time, overall_time, daily_production, part_status, partially_completed

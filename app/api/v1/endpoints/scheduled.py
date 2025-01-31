@@ -114,7 +114,7 @@ def extract_quantity(quantity_str: str) -> int:
 
 @db_session
 def store_schedule(schedule_df, component_status):
-    """Store the generated schedule in the database"""
+    """Store the generated schedule in the database, preventing duplicates"""
     try:
         stored_items = []
 
@@ -141,18 +141,7 @@ def store_schedule(schedule_df, component_status):
                 print(f"No operations found for: {row['operation']} in order {row['partno']}")
                 continue
 
-            if len(matching_operations) > 1:
-                print(f"\nMultiple operations found for Order: {row['partno']}, Operation: {row['operation']}")
-                for op in matching_operations:
-                    print(
-                        f"- Operation ID: {op.id}, Number: {op.operation_number}, Description: {op.operation_description}")
-                print("Using first matching operation.")
-
             operation = matching_operations[0]  # Use the first matching operation
-            if not operation:
-                print(f"Operation not found: {row['operation']} for order {row['partno']}")
-                continue
-
             machine = Machine[row['machine_id']]
             if not machine:
                 print(f"Machine not found with ID: {row['machine_id']}")
@@ -162,26 +151,56 @@ def store_schedule(schedule_df, component_status):
             quantity = extract_quantity(row['quantity'])
             print(f"Extracted quantity: {quantity} from string: {row['quantity']}")
 
-            # Create PlannedScheduleItem with proper FK relationships
+            # Convert pandas Timestamp to Python datetime
+            start_time = row['start_time'].to_pydatetime()
+            end_time = row['end_time'].to_pydatetime()
+
+            # Check for existing schedule item with same criteria
+            existing_schedule = PlannedScheduleItem.select(
+                lambda s: s.order == order and
+                          s.operation == operation and
+                          s.machine == machine and
+                          s.initial_start_time == start_time and
+                          s.initial_end_time == end_time and
+                          s.total_quantity == quantity
+            ).first()
+
+            if existing_schedule:
+                print(
+                    f"Schedule already exists for: Order={order.part_number}, Operation={operation.operation_description}")
+                active_version = existing_schedule.schedule_versions.select(
+                    lambda v: v.is_active == True
+                ).first()
+                if active_version:
+                    stored_items.append({
+                        'schedule_item_id': existing_schedule.id,
+                        'version_id': active_version.id,
+                        'quantity': quantity,
+                        'status': 'existing'
+                    })
+                continue
+
+            # Create new PlannedScheduleItem if no duplicate exists
             schedule_item = PlannedScheduleItem(
                 order=order,
                 operation=operation,
                 machine=machine,
-                initial_start_time=row['start_time'],
-                initial_end_time=row['end_time'],
+                initial_start_time=start_time,
+                initial_end_time=end_time,
                 total_quantity=quantity,
                 remaining_quantity=quantity,
                 status='scheduled',
                 current_version=1
             )
 
-            # Create initial ScheduleVersion
+            # Create new version
             schedule_version = ScheduleVersion(
                 schedule_item=schedule_item,
                 version_number=1,
-                planned_start_time=row['start_time'],
-                planned_end_time=row['end_time'],
+                planned_start_time=start_time,
+                planned_end_time=end_time,
                 planned_quantity=quantity,
+                completed_quantity=0,  # Added this field as it's required
                 remaining_quantity=quantity,
                 is_active=True
             )
@@ -189,7 +208,8 @@ def store_schedule(schedule_df, component_status):
             stored_items.append({
                 'schedule_item_id': schedule_item.id,
                 'version_id': schedule_version.id,
-                'quantity': quantity
+                'quantity': quantity,
+                'status': 'new'
             })
 
         return stored_items
@@ -197,9 +217,6 @@ def store_schedule(schedule_df, component_status):
     except Exception as e:
         print(f"Error storing schedule: {str(e)}")
         raise e
-
-
-
 
 
 # Modified schedule endpoint
