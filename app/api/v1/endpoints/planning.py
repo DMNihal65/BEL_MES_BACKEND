@@ -745,6 +745,7 @@ async def create_operation(operation_data: CreateOperationRequest):
             detail=f"Error creating operation: {str(e)}"
         )
 
+
 @router.get("/work_centers")
 async def get_work_centers():
     """Get all work centers"""
