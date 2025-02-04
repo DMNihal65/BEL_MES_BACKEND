@@ -3,7 +3,8 @@ import pandas as pd
 from typing import Dict, Tuple, List
 from decimal import Decimal
 from pony.orm import select, db_session
-from app.models import Operation, Order, Machine, Status, RawMaterial, Project, InventoryStatus, MachineStatus
+from app.models import Operation, Order, Machine, Status, RawMaterial, Project, InventoryStatus, MachineStatus, \
+    PartScheduleStatus
 
 
 def adjust_to_shift_hours(time: datetime) -> datetime:
@@ -24,18 +25,50 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
     if df.empty:
         return pd.DataFrame(), datetime.now(), 0.0, {}, {}, []
 
+    # Gather all order and part status information upfront
+    part_status_map = {}
+    for part_status in PartScheduleStatus.select():
+        part_status_map[part_status.part_number] = part_status.status
+
+    # Filter quantities to only include active parts
+    active_parts = {
+        partno: qty
+        for partno, qty in component_quantities.items()
+        if part_status_map.get(partno, 'inactive') == 'active'
+    }
+
+    # Debug print the active parts
+    print("\n--- Active Parts ---")
+    for partno, qty in active_parts.items():
+        print(f"Part: {partno}, Quantity: {qty}")
+
+    # Track skipped parts
+    skipped_parts = [
+        f"Skipped {partno}: Status inactive"
+        for partno in component_quantities.keys()
+        if part_status_map.get(partno, 'inactive') != 'active'
+    ]
+
+    # Print skipped parts
+    print("\n--- Skipped Parts ---")
+    for skipped in skipped_parts:
+        print(skipped)
+
+    if not active_parts:
+        return pd.DataFrame(), datetime.now(), 0.0, {}, {}, ["No parts are marked as active for scheduling"]
+
     # Get delivery dates and create a sorting order
     part_delivery_dates = {}
     order_info = {}
 
     # First gather all order and delivery date information
-    for partno in component_quantities.keys():
+    for partno in active_parts.keys():
         order = Order.select(lambda o: o.part_number == partno).first()
         if order:
             if order.project and order.project.delivery_date:
                 delivery_date = order.project.delivery_date
             else:
-                delivery_date = datetime(9999, 12, 31)  # Far future date for no delivery date
+                delivery_date = datetime(2025, 12, 31)  # Far future date for no delivery date
 
             part_delivery_dates[partno] = delivery_date
             order_info[partno] = {
@@ -45,38 +78,13 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
 
     # Sort parts by delivery date
     sorted_parts = sorted(
-        component_quantities.keys(),
+        active_parts.keys(),
         key=lambda x: (part_delivery_dates.get(x, datetime(9999, 12, 31)))
     )
 
-    # Debug print the sorting order
-    print("\n--- Scheduling Order ---")
-    for partno in sorted_parts:
-        if partno in order_info:
-            print(f"Part: {partno}, Delivery Date: {order_info[partno]['delivery_date']}")
-
     # Reorder the dataframe based on sorted parts
     df['sort_order'] = df['partno'].map({part: idx for idx, part in enumerate(sorted_parts)})
-    df_sorted = df.sort_values(by=['sort_order', 'sequence']).drop('sort_order', axis=1)
-
-    # Debug: Status and Machine Status Investigation
-    print("\n--- Status Table Investigation ---")
-    status_query = select((s.id, s.name, s.description) for s in Status)[:]
-    print("Status Records:")
-    for status in status_query:
-        print(f"ID: {status[0]}, Name: {status[1]}, Description: {status[2]}")
-
-    print("\n--- Machine Status Investigation ---")
-    machine_status_query = select((m.id, m.make, ms.id, ms.description, ms.status.name, ms.available_from)
-                                  for m in Machine
-                                  for ms in m.status)[:]
-    print("Machine Status Records:")
-    for record in machine_status_query:
-        print(f"Machine ID: {record[0]}, Make: {record[1]}, "
-              f"MachineStatus ID: {record[2]}, "
-              f"MachineStatus Description: {record[3]}, "
-              f"Status Name: {record[4]}, "
-              f"Available From: {record[5]}")
+    df_sorted = df[df['partno'].isin(active_parts)].sort_values(by=['sort_order', 'sequence']).drop('sort_order', axis=1)
 
     # Fetch raw materials with their InventoryStatus
     raw_materials_query = select((o.part_number, o.raw_material, ist)
@@ -397,4 +405,3 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
     overall_time = (overall_end_time - start_date).total_seconds() / 60
 
     return schedule_df, overall_end_time, overall_time, daily_production, part_status, partially_completed
-

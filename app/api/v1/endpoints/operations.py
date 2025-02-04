@@ -12,6 +12,8 @@ from app.crud.leadtime import fetch_lead_times
 from app.algorithm.scheduling import schedule_operations
 from app.models import Operation, Order, Machine, WorkCenter
 
+
+
 router = APIRouter(prefix="/operations", tags=["operations"])
 
 
@@ -46,7 +48,9 @@ async def schedule():
 
         scheduled_operations = []
         if not schedule_df.empty:
+            # Get machine names mapping with work center info
             with db_session:
+                # Fetch machines with their work centers
                 machine_details = {}
                 for machine in Machine.select():
                     machine_name = f"{machine.work_center.code}-{machine.make}"
@@ -80,8 +84,56 @@ async def schedule():
         print(f"Error in schedule endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@router.get("/machine_schedules/", response_model=MachineSchedulesOut)
+async def get_machine_schedules(
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None
+):
+    """
+    Get schedules grouped by machine
+    """
+    with db_session:
+        df = fetch_operations()
+        component_quantities = fetch_component_quantities()
+        lead_times = fetch_lead_times()
+
+        schedule_df, _, _, _, _, _ = schedule_operations(
+            df, component_quantities, lead_times
+        )
+
+        machine_schedules = {}
+        if not schedule_df.empty:
+            # Get machine names mapping with work center info
+            machine_details = {}
+            for machine in Machine.select():
+                machine_name = f"{machine.work_center.code}-{machine.make}"
+                machine_details[machine.id] = machine_name
+
+            for _, row in schedule_df.iterrows():
+                machine_id = row['machine_id']
+                machine_name = machine_details.get(machine_id, f"Machine-{machine_id}")
+
+                if machine_name not in machine_schedules:
+                    machine_schedules[machine_name] = []
+
+                machine_schedules[machine_name].append({
+                    "part_number": row['partno'],
+                    "operation": row['operation'],
+                    "start_time": row['start_time'],
+                    "end_time": row['end_time'],
+                    "duration_minutes": (row['end_time'] - row['start_time']).total_seconds() / 60
+                })
+
+        return MachineSchedulesOut(machine_schedules=machine_schedules)
+
+
+
 @router.get("/unit_schedule/", response_model=List[ScheduledOperation])
 async def unit_schedule():
+    """
+    Get schedule broken down to individual units
+    """
     try:
         with db_session:
             df = fetch_operations()
@@ -96,6 +148,7 @@ async def unit_schedule():
             if schedule_df.empty:
                 return []
 
+            # Get machine names mapping with work center info
             machine_details = {}
             for machine in Machine.select():
                 machine_name = f"{machine.work_center.code}-{machine.make}"
@@ -115,6 +168,7 @@ async def unit_schedule():
                     machine_name = machine_details.get(row['machine_id'], f"Machine-{row['machine_id']}")
                     production_order = orders_map.get(row['partno'], '')
 
+                    # Handle setup operations
                     if quantity_info.startswith('Setup'):
                         unit_schedule_details.append(ScheduledOperation(
                             component=row['partno'],
@@ -131,11 +185,13 @@ async def unit_schedule():
                             completed_pieces = int(process_info[0].strip('pcs'))
                             total_pieces = int(process_info[1].strip('pcs'))
 
+                            # Get operation details
                             operation = select(o for o in Operation
                                             if o.order.part_number == row['partno']
                                             and o.operation_description == row['operation']).first()
 
                             if operation:
+                                # Calculate pieces in this block
                                 previous_pieces = sum(1 for op in unit_schedule_details
                                                     if op.component == row['partno']
                                                     and op.description == row['operation']
@@ -144,9 +200,11 @@ async def unit_schedule():
                                 pieces_in_block = completed_pieces - previous_pieces
 
                                 if pieces_in_block > 0:
+                                    # Calculate time per piece
                                     total_time = (row['end_time'] - row['start_time']).total_seconds()
                                     time_per_piece = total_time / pieces_in_block
 
+                                    # Create individual piece operations
                                     for piece_idx in range(pieces_in_block):
                                         piece_number = previous_pieces + piece_idx + 1
                                         piece_start = row['start_time'] + timedelta(seconds=piece_idx * time_per_piece)
@@ -162,10 +220,14 @@ async def unit_schedule():
                                             production_order=production_order
                                         ))
 
+                except ValueError as ve:
+                    print(f"Warning: Error processing operation: {str(ve)}")
+                    continue
                 except Exception as e:
                     print(f"Error processing operation: {str(e)}")
                     continue
 
+            # Custom sorting function
             def sort_key(x):
                 operation_seq = operation_order.get(x.description, float('inf'))
                 is_setup = x.quantity == "setuptime"
@@ -177,6 +239,7 @@ async def unit_schedule():
                         pass
                 return (operation_seq, not is_setup, unit_number, x.start_time)
 
+            # Sort and return the schedule outside the loop
             sorted_schedule = sorted(unit_schedule_details, key=sort_key)
             return sorted_schedule
 
@@ -226,6 +289,3 @@ async def get_machine_schedules(
                 })
 
         return MachineSchedulesOut(machine_schedules=machine_schedules)
-
-
-

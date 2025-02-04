@@ -7,7 +7,7 @@ class WorkCenterBase(BaseModel):
     code: str = Field(..., description="Work center code")
     plant_id: str = Field(..., description="Plant ID")
     description: Optional[str] = Field(None, description="Work center description")
-    operation: Optional[str] = Field(None, description="Operation type")
+    work_center_name: Optional[str] = Field(None, description="Work center name")  # Changed from operation
 
 class WorkCenterCreate(WorkCenterBase):
     pass
@@ -15,6 +15,7 @@ class WorkCenterCreate(WorkCenterBase):
 class WorkCenterUpdate(WorkCenterBase):
     code: Optional[str] = None
     plant_id: Optional[str] = None
+    work_center_name: Optional[str] = None  # Changed from operation
 
 class WorkCenterResponse(WorkCenterBase):
     id: int

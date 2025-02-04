@@ -32,6 +32,8 @@ class Machine(db.Entity):
     downtimes = Set('MachineDowntime')
     status = Set('MachineStatus')
     operations = Set('Operation')  # Reverse relationship
+    planned_schedule_items = Set('PlannedScheduleItem', reverse='machine')
+
 
 class MachineShift(db.Entity):
     _table_ = ("master_order", "machine_shifts") 
@@ -93,6 +95,7 @@ class Order(db.Entity):
     tools = Set('ToolList')
     jigs_fixtures = Set('JigsAndFixturesList')
     mpps = Set('MPP', reverse='order')  # Add this line for MPP relationship
+    planned_schedule_items = Set('PlannedScheduleItem', reverse='order')
 
 
 class Operation(db.Entity):
@@ -110,6 +113,8 @@ class Operation(db.Entity):
     jigs_fixtures = Set('JigsAndFixturesList')
     programs = Set('Program')
     mpps = Set('MPP', reverse='operation')
+    planned_schedule_items = Set('PlannedScheduleItem', reverse='operation')
+
 
 class ProcessPlan(db.Entity):
     _table_ = ("master_order", "process_plan") 

@@ -23,12 +23,12 @@ def create_work_center(work_center: WorkCenterCreate):
                 status_code=400,
                 detail=f"Work center with code {work_center.code} already exists"
             )
-        
+
         db_work_center = WorkCenter(
             code=work_center.code,
             plant_id=work_center.plant_id,
             description=work_center.description,
-            operation=work_center.operation
+            work_center_name=work_center.work_center_name  # Changed from operation
         )
         commit()
         return db_work_center
@@ -121,7 +121,7 @@ def create_machine(machine: MachineCreate):
                 status_code=404,
                 detail="Work center not found"
             )
-        
+
         db_machine = Machine(
             work_center=work_center,
             type=machine.type,
@@ -135,10 +135,30 @@ def create_machine(machine: MachineCreate):
             last_maintenance_date=machine.last_maintenance_date
         )
         commit()
-        return db_machine
+
+        # Explicitly return a dictionary that matches the MachineResponse schema
+        return {
+            "id": db_machine.id,
+            "work_center_id": work_center.id,  # Explicitly set work_center_id
+            "type": db_machine.type,
+            "make": db_machine.make,
+            "model": db_machine.model,
+            "year_of_installation": db_machine.year_of_installation,
+            "cnc_controller": db_machine.cnc_controller,
+            "cnc_controller_series": db_machine.cnc_controller_series,
+            "remarks": db_machine.remarks,
+            "calibration_date": db_machine.calibration_date,
+            "last_maintenance_date": db_machine.last_maintenance_date,
+            "work_center": {
+                "id": work_center.id,
+                "code": work_center.code,
+                "plant_id": work_center.plant_id,
+                "description": work_center.description,
+                "operation": work_center.work_center_name
+            }
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @router.get("/machines/", response_model=List[MachineResponse])
 @db_session

@@ -10,7 +10,7 @@ from app.database.connection import db
 from app.models import (
     WorkCenter, Machine, Project, Order, Operation,
     ProcessPlan, Document, ToolList, JigsAndFixturesList,
-    Unit, RawMaterial, InventoryStatus
+    Unit, RawMaterial, InventoryStatus, PartScheduleStatus
 )
 from app.schemas.planning import CreateOperationRequest, CreateOrderRequest, OrderUpdateRequest, OperationUpdateRequest
 
@@ -320,6 +320,14 @@ def save_to_database(data):
             raw_material=raw_material
         )
 
+        # Create initial 'inactive' status for scheduling
+        part_status = PartScheduleStatus.get(part_number=data["Part No"])
+        if not part_status:
+            PartScheduleStatus(
+                part_number=data["Part No"],
+                status='inactive'  # Default to inactive when OARC is uploaded
+            )
+
         # Create documents
         for doc_type, doc_info in data["Document Verification"].items():
             Document(
@@ -372,6 +380,7 @@ def save_to_database(data):
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
+
 
 
 @router.get("/all_orders")
@@ -534,6 +543,7 @@ async def update_order(order_number: str, update_data: OrderUpdateRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.put("/operations/{part_number}/{operation_number}")
 async def update_operation(
         part_number: str,
@@ -575,6 +585,22 @@ async def update_operation(
                     )
                 operation.work_center = work_center
 
+            # Add machine ID update
+            if 'machine_id' in update_dict:
+                machine = Machine.get(id=update_dict['machine_id'])
+                if not machine:
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"Machine with ID {update_dict['machine_id']} not found"
+                    )
+                # Ensure the machine belongs to the same work center
+                if machine.work_center != operation.work_center:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Machine {update_dict['machine_id']} does not belong to work center {operation.work_center.code}"
+                    )
+                operation.machine = machine
+
             commit()
             return operation.to_dict()
 
@@ -582,6 +608,7 @@ async def update_operation(
         raise he
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.post("/create_order")
 async def create_order(order_data: CreateOrderRequest):
@@ -630,6 +657,14 @@ async def create_order(order_data: CreateOrderRequest):
                 delivery_date=delivery_date,
                 project=project
             )
+
+            # Create initial 'inactive' status for scheduling
+            part_status = PartScheduleStatus.get(part_number=order_data.part_number)
+            if not part_status:
+                PartScheduleStatus(
+                    part_number=order_data.part_number,
+                    status='inactive'  # Default to inactive when order is created
+                )
 
             commit()
             return order.to_dict()
