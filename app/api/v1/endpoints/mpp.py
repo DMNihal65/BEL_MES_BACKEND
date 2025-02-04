@@ -3,7 +3,7 @@ from typing import List
 from pony.orm import db_session, select, commit
 from datetime import datetime
 
-from app.models.master_order import MPP, Operation, Document, Order
+from app.models.master_order import MPP, Operation,  Order
 from app.schemas.mpp import MPPResponse, NewMPPCreate, UpdateMPPSections
 
 router = APIRouter()

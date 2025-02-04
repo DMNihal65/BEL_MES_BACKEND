@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, Depends, Body,status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from datetime import timedelta
 from typing import Any, List
-from app.config import settings
+from ....config.settings import settings
 from ....core.security import create_access_token
 from ....schemas.user import UserCreate, Token, UserLogin, UserResponse, UserRoleCreate, UserRoleResponse, UserRoleUpdate
 from ....crud.user import create_user, authenticate_user, get_user_by_email
@@ -10,8 +10,8 @@ from ....models.user import UserRole, User
 from pony.orm import db_session, select,commit,flush, desc
 import json
 
-router = APIRouter()
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"/auth/login")
+router = APIRouter(prefix="/api/v1/auth", tags=["Authentication"])
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 
 @router.post("/register", response_model=UserResponse)
 async def register_user(user_data: UserCreate = Body(...)) -> Any:
@@ -60,13 +60,13 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()) -> Any:
             if not user:
                 raise HTTPException(
                     status_code=401,
-                    detail="Incorrect email or password"
+                    detail="Incorrect username or password"
                 )
             
-            access_token_expires = timedelta(30)
+            access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
             access_token = create_access_token(
                 data={
-                    "sub": user.username,
+                    "sub": user.email,
                     "role": user.role.role_name
                 },
                 expires_delta=access_token_expires

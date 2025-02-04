@@ -21,7 +21,12 @@ def connect_to_db():
     db.execute("CREATE SCHEMA IF NOT EXISTS master_order")
     db.execute("CREATE SCHEMA IF NOT EXISTS inventory")
     db.execute("CREATE SCHEMA IF NOT EXISTS scheduling")
-    
+    db.execute("CREATE SCHEMA IF NOT EXISTS inventoryv1")
+    db.execute("CREATE SCHEMA IF NOT EXISTS document_management")
+    db.execute("CREATE SCHEMA IF NOT EXISTS auth")
+
+    # db.execute("CREATE SCHEMA IF NOT EXISTS mpp")
+
     # Import all models to ensure they're registered with the database
     from ..models import hr_models, finance_models, master_order, user
     

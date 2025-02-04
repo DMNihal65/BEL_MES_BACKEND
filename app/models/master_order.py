@@ -91,11 +91,12 @@ class Order(db.Entity):
     plant_id = Required(str)
     project = Required('Project')  # ProjectID linked here
     operations = Set('Operation')
-    documents = Set('Document')
+    documents = Set('Document', reverse='part_number_id')  # Update reverse reference
     tools = Set('ToolList')
     jigs_fixtures = Set('JigsAndFixturesList')
     mpps = Set('MPP', reverse='order')  # Add this line for MPP relationship
     planned_schedule_items = Set('PlannedScheduleItem', reverse='order')
+    inventory_requests = Set("InventoryRequest")
 
 
 class Operation(db.Entity):
@@ -115,6 +116,7 @@ class Operation(db.Entity):
     mpps = Set('MPP', reverse='operation')
     planned_schedule_items = Set('PlannedScheduleItem', reverse='operation')
 
+    inventory_requests = Set("InventoryRequest")
 
 class ProcessPlan(db.Entity):
     _table_ = ("master_order", "process_plan") 
@@ -135,17 +137,6 @@ class Program(db.Entity):
     version = Required(str)
     update_date = Required(datetime)
 
-class Document(db.Entity):
-    _table_ = ("master_order", "documents") 
-    id = PrimaryKey(int, auto=True)
-    order = Required(Order)
-    document_name = Required(str)
-    type = Required(str)
-    upload_date = Required(datetime)
-    revision_date = Optional(datetime)
-    version = Required(str)
-    mpps = Set('MPP', reverse='document')
-
 class ToolList(db.Entity):
     _table_ = ("master_order", "tool_list") 
     id = PrimaryKey(int, auto=True)
@@ -160,6 +151,16 @@ class JigsAndFixturesList(db.Entity):
     operation = Required(Operation)
     jigs_id = Required(str)
 
+# class Document(db.Entity):
+#     _table_ = ("master_order", "documents")
+#     id = PrimaryKey(int, auto=True)
+#     order = Required(Order)
+#     document_name = Required(str)
+#     type = Required(str)
+#     upload_date = Required(datetime)
+#     revision_date = Optional(datetime)
+#     version = Required(str)
+#     mpps = Set('MPP', reverse='document')
 
 class UserLogs(db.Entity):
     _table_ = ("master_order", "user_logs")
@@ -173,7 +174,7 @@ class MPP(db.Entity):
     id = PrimaryKey(int, auto=True)
     order = Required(Order, reverse='mpps')
     operation = Required(Operation, reverse='mpps')
-    document = Optional(Document, reverse='mpps')  # Updated with reverse relationship
+    document = Optional('Document', reverse='mpps')  # Use string reference
     fixture_number = Optional(str)
     ipid_number = Optional(str)
     datum_x = Optional(str)

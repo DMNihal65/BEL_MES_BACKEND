@@ -545,7 +545,6 @@ async def update_order(order_number: str, update_data: OrderUpdateRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.put("/operations/{part_number}/{operation_number}")
 async def update_operation(
         part_number: str,
