@@ -2,6 +2,7 @@ from pydantic import BaseModel, Field
 from typing import Optional, List, Dict
 from datetime import datetime
 from enum import Enum
+from pydantic import validator
 
 class DocTypeBase(BaseModel):
     type_name: str = Field(..., description="Name of the document type")
@@ -107,3 +108,25 @@ class UploadDocumentRequest(BaseModel):
 class DocumentVersionUpdateRequest(BaseModel):
     status: str = Field(..., description="New status for the version")
     metadata: Optional[Dict] = Field(None, description="Updated metadata")
+
+class DocumentVersionFileUpdate(BaseModel):
+    version_number: Optional[str] = Field(None, description="New version number (optional)")
+    metadata: Optional[Dict] = Field(None, description="Updated metadata (optional)")
+
+class FolderOperation(BaseModel):
+    destination_folder_id: int = Field(..., description="Destination folder ID")
+    operation_type: str = Field(..., description="Operation type: 'copy' or 'cut'")
+
+    @validator('operation_type')
+    def validate_operation_type(cls, v):
+        if v not in ['copy', 'cut']:
+            raise ValueError('Operation type must be either "copy" or "cut"')
+        return v
+
+class FolderOperationResponse(BaseModel):
+    success: bool
+    message: str
+    new_folder_id: Optional[int] = None
+    
+    class Config:
+        from_attributes = True

@@ -5,12 +5,14 @@ from pony.orm import db_session, select, flush, commit, rollback, desc
 import hashlib
 import json
 import io
+import shutil
 
 from app.schemas.document_schemas import (
     DocTypeCreate, DocTypeResponse, FolderCreate, FolderResponse,
     DocumentCreate, DocumentResponse, DocumentUpdate, DocumentVersionCreate,
     DocumentVersionResponse, DocumentSearchResponse, UploadDocumentRequest,
-    DocumentVersionUpdateRequest
+    DocumentVersionUpdateRequest, DocumentVersionFileUpdate, FolderOperation,
+    FolderOperationResponse
 )
 from app.models.document_management import DocFolder, DocType, Document, DocumentVersion, DocumentAccessLog
 from app.services.minio_service import MinioService
@@ -1047,3 +1049,423 @@ async def download_by_part_number_and_type(
             status_code=500,
             detail=f"Failed to retrieve file: {str(e)}"
         )
+
+@router.put("/{document_id}/versions/{version_id}/file", response_model=DocumentVersionResponse)
+async def update_version_file(
+    document_id: int,
+    version_id: int,
+    file: UploadFile = File(...),
+    version_number: Optional[str] = Form(None),
+    metadata: Optional[str] = Form("{}"),
+    current_user: User = Depends(get_current_user)
+):
+    """Update a version with a new file, replacing the existing one"""
+    try:
+        file_contents = await file.read()
+        checksum = hashlib.sha256(file_contents).hexdigest()
+        file_size = len(file_contents)
+        file_ext = file.filename.split('.')[-1].lower()
+        user_id = current_user.id
+        
+        # Parse metadata
+        try:
+            metadata_dict = json.loads(metadata) if metadata else {}
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="Invalid metadata JSON format")
+
+        with db_session:
+            try:
+                document = Document.get(id=document_id)
+                if not document:
+                    raise HTTPException(status_code=404, detail="Document not found")
+                if not document.is_active:
+                    raise HTTPException(status_code=400, detail="Document is inactive")
+
+                version = DocumentVersion.get(id=version_id, document=document)
+                if not version:
+                    raise HTTPException(status_code=404, detail="Version not found")
+
+                # Validate file extension
+                if file_ext not in [ext.lower().strip('.') for ext in document.doc_type.file_extensions]:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"File type .{file_ext} not allowed for this document type"
+                    )
+
+                # Store old MinIO object ID for deletion
+                old_object_id = version.minio_object_id
+
+                # Generate new object name
+                object_name = minio_service.generate_object_path(
+                    str(document.part_number_id.production_order),
+                    document.doc_type.type_name,
+                    document_id,
+                    version_id
+                )
+
+                # Upload new file to MinIO
+                file_data = io.BytesIO(file_contents)
+                minio_service.upload_file(
+                    file=file_data,
+                    object_name=object_name,
+                    content_type=file.content_type or "application/octet-stream"
+                )
+
+                # Update version details
+                version.minio_object_id = object_name
+                version.file_size = file_size
+                version.checksum = checksum
+                
+                if version_number:
+                    version.version_number = version_number
+                if metadata_dict is not None:
+                    version.metadata = metadata_dict
+
+                # Create access log
+                DocumentAccessLog(
+                    document=document,
+                    version=version,
+                    user=User[user_id],
+                    action_type="update_version_file"
+                )
+
+                commit()
+
+                # Delete old file from MinIO after successful commit
+                try:
+                    minio_service.delete_file(old_object_id)
+                except Exception as e:
+                    # Log error but don't fail the request
+                    print(f"Error deleting old file from MinIO: {str(e)}")
+
+                return DocumentVersionResponse(
+                    id=version.id,
+                    version_number=version.version_number,
+                    file_size=version.file_size,
+                    checksum=version.checksum,
+                    metadata=version.metadata,
+                    created_at=version.created_at,
+                    created_by=version.created_by.id,
+                    status=version.status
+                )
+
+            except HTTPException:
+                rollback()
+                raise
+            except Exception as e:
+                rollback()
+                raise HTTPException(status_code=500, detail=str(e))
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/folders/{folder_id}/operation", response_model=FolderOperationResponse)
+async def folder_operation(
+    folder_id: int,
+    operation: FolderOperation,
+    current_user: User = Depends(get_current_user)
+):
+    """Copy or cut (move) a folder to another location"""
+    with db_session:
+        try:
+            # Get source folder
+            source_folder = DocFolder.get(id=folder_id)
+            if not source_folder:
+                raise HTTPException(status_code=404, detail="Source folder not found")
+            if not source_folder.is_active:
+                raise HTTPException(status_code=400, detail="Source folder is inactive")
+
+            # Get destination folder
+            dest_folder = DocFolder.get(id=operation.destination_folder_id)
+            if not dest_folder:
+                raise HTTPException(status_code=404, detail="Destination folder not found")
+            if not dest_folder.is_active:
+                raise HTTPException(status_code=400, detail="Destination folder is inactive")
+
+            # Prevent moving folder to itself or its subfolder
+            if operation.operation_type == 'cut':
+                current = dest_folder
+                while current:
+                    if current.id == source_folder.id:
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Cannot move folder into itself or its subfolder"
+                        )
+                    current = DocFolder.get(id=current.parent_folder) if current.parent_folder else None
+
+            # Generate new folder path
+            new_folder_name = source_folder.folder_name
+            new_parent_path = dest_folder.folder_path
+            new_folder_path = f"{new_parent_path}/{new_folder_name}".lstrip("/")
+
+            # Check if destination path already exists
+            existing = DocFolder.get(folder_path=new_folder_path)
+            if existing:
+                # Append number to folder name if it exists
+                counter = 1
+                while True:
+                    new_folder_name = f"{source_folder.folder_name}_{counter}"
+                    new_folder_path = f"{new_parent_path}/{new_folder_name}".lstrip("/")
+                    existing = DocFolder.get(folder_path=new_folder_path)
+                    if not existing:
+                        break
+                    counter += 1
+
+            if operation.operation_type == 'copy':
+                # Create new folder
+                new_folder = DocFolder(
+                    parent_folder=operation.destination_folder_id,
+                    folder_name=new_folder_name,
+                    folder_path=new_folder_path,
+                    created_by=current_user,
+                    is_active=True
+                )
+                flush()
+
+                # Store document data for copying
+                docs_to_copy = []
+                for doc in select(d for d in Document if d.folder == source_folder and d.is_active):
+                    doc_data = {
+                        'part_number_id': doc.part_number_id,
+                        'doc_type': doc.doc_type,
+                        'document_name': doc.document_name,
+                        'description': doc.description,
+                        'versions': []
+                    }
+                    
+                    for ver in doc.versions:
+                        ver_data = {
+                            'version_number': ver.version_number,
+                            'minio_object_id': ver.minio_object_id,
+                            'file_size': ver.file_size,
+                            'checksum': ver.checksum,
+                            'metadata': ver.metadata,
+                            'status': ver.status,
+                            'is_latest': ver == doc.latest_version
+                        }
+                        doc_data['versions'].append(ver_data)
+                    
+                    docs_to_copy.append(doc_data)
+
+                # Process each document
+                for doc_data in docs_to_copy:
+                    new_doc = Document(
+                        folder=new_folder,
+                        part_number_id=doc_data['part_number_id'],
+                        doc_type=doc_data['doc_type'],
+                        document_name=doc_data['document_name'],
+                        description=doc_data['description'],
+                        created_by=current_user,
+                        is_active=True
+                    )
+                    flush()
+
+                    # Copy versions
+                    for ver_data in doc_data['versions']:
+                        # Generate new MinIO path
+                        new_object_name = minio_service.generate_object_path(
+                            str(doc_data['part_number_id'].production_order),
+                            doc_data['doc_type'].type_name,
+                            new_doc.id,
+                            len(new_doc.versions) + 1
+                        )
+
+                        # Copy file in MinIO
+                        try:
+                            file_stream = minio_service.get_file(ver_data['minio_object_id'])
+                            minio_service.upload_file(
+                                file=file_stream,
+                                object_name=new_object_name,
+                                content_type=file_stream.headers.get("content-type", "application/octet-stream")
+                            )
+                        except Exception as e:
+                            rollback()
+                            raise HTTPException(
+                                status_code=500,
+                                detail=f"Failed to copy file in storage: {str(e)}"
+                            )
+
+                        # Create new version
+                        new_version = DocumentVersion(
+                            document=new_doc,
+                            version_number=ver_data['version_number'],
+                            minio_object_id=new_object_name,
+                            file_size=ver_data['file_size'],
+                            checksum=ver_data['checksum'],
+                            metadata=ver_data['metadata'],
+                            created_by=current_user,
+                            status=ver_data['status']
+                        )
+                        if ver_data['is_latest']:
+                            new_doc.latest_version = new_version
+
+                commit()
+                return FolderOperationResponse(
+                    success=True,
+                    message=f"Folder copied successfully as '{new_folder_name}'",
+                    new_folder_id=new_folder.id
+                )
+
+            else:  # Cut operation
+                # Update folder path and parent
+                source_folder.parent_folder = operation.destination_folder_id
+                source_folder.folder_name = new_folder_name
+                source_folder.folder_path = new_folder_path
+
+                # Update paths of all subfolders
+                old_path_prefix = f"{source_folder.folder_path}/"
+                for subfolder in select(f for f in DocFolder if f.folder_path.startswith(old_path_prefix)):
+                    subfolder.folder_path = f"{new_folder_path}/{subfolder.folder_path[len(old_path_prefix):]}"
+
+                commit()
+                return FolderOperationResponse(
+                    success=True,
+                    message=f"Folder moved successfully as '{new_folder_name}'",
+                    new_folder_id=source_folder.id
+                )
+
+        except HTTPException:
+            rollback()
+            raise
+        except Exception as e:
+            rollback()
+            raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete("/{document_id}/versions/{version_id}", response_model=DocumentResponse)
+async def delete_document_version(
+    document_id: int,
+    version_id: int,
+    current_user: User = Depends(get_current_user)
+):
+    """Delete a specific version of a document"""
+    # First transaction: Get necessary data and validate
+    with db_session:
+        try:
+            document = Document.get(id=document_id)
+            if not document:
+                raise HTTPException(status_code=404, detail="Document not found")
+            if not document.is_active:
+                raise HTTPException(status_code=400, detail="Document is inactive")
+
+            version = DocumentVersion.get(id=version_id, document=document)
+            if not version:
+                raise HTTPException(status_code=404, detail="Version not found")
+
+            # Check if this is the only version
+            versions_count = len(document.versions)
+            if versions_count == 1:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Cannot delete the only version of a document"
+                )
+
+            # Store necessary data
+            minio_object_id = version.minio_object_id
+            is_latest = document.latest_version.id == version_id if document.latest_version else False
+            new_latest_id = None
+
+            if is_latest:
+                # Find the new latest version
+                other_versions = select(
+                    v for v in DocumentVersion 
+                    if v.document == document and v.id != version_id
+                ).order_by(lambda v: desc(v.created_at))
+                
+                if other_versions:
+                    new_latest_id = other_versions.first().id
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    # Second transaction: Update and delete
+    with db_session:
+        try:
+            document = Document.get(id=document_id)
+            version = DocumentVersion.get(id=version_id, document=document)
+
+            # Update latest version if needed
+            if is_latest and new_latest_id:
+                new_latest = DocumentVersion.get(id=new_latest_id)
+                document.latest_version = new_latest
+            elif is_latest:
+                document.latest_version = None
+
+            # Create access log
+            DocumentAccessLog(
+                document=document,
+                user=current_user,
+                action_type="delete_version"
+            )
+
+            # Delete the version
+            version.delete()
+            commit()
+
+            # Delete file from MinIO after successful commit
+            try:
+                minio_service.delete_file(minio_object_id)
+            except Exception as e:
+                # Log error but don't fail the request
+                print(f"Error deleting file from MinIO: {str(e)}")
+
+        except Exception as e:
+            rollback()
+            raise HTTPException(status_code=500, detail=str(e))
+
+    # Third transaction: Get updated document data
+    with db_session:
+        try:
+            updated_doc = Document.get(id=document_id)
+            if not updated_doc:
+                raise HTTPException(status_code=404, detail="Document not found after version deletion")
+
+            # Prepare response
+            response_data = {
+                "id": updated_doc.id,
+                "folder_id": updated_doc.folder.id,
+                "part_number_id": updated_doc.part_number_id.id,
+                "doc_type_id": updated_doc.doc_type.id,
+                "document_name": updated_doc.document_name,
+                "description": updated_doc.description,
+                "created_at": updated_doc.created_at,
+                "created_by": updated_doc.created_by.id,
+                "is_active": updated_doc.is_active,
+                "versions": []
+            }
+
+            # Add versions data
+            for v in updated_doc.versions:
+                version_data = {
+                    "id": v.id,
+                    "version_number": v.version_number,
+                    "file_size": v.file_size,
+                    "checksum": v.checksum,
+                    "metadata": v.metadata,
+                    "created_at": v.created_at,
+                    "created_by": v.created_by.id,
+                    "status": v.status
+                }
+                response_data["versions"].append(version_data)
+
+            # Add latest version data if exists
+            if updated_doc.latest_version:
+                latest = updated_doc.latest_version
+                response_data["latest_version"] = {
+                    "id": latest.id,
+                    "version_number": latest.version_number,
+                    "file_size": latest.file_size,
+                    "checksum": latest.checksum,
+                    "metadata": latest.metadata,
+                    "created_at": latest.created_at,
+                    "created_by": latest.created_by.id,
+                    "status": latest.status
+                }
+            else:
+                response_data["latest_version"] = None
+
+            return DocumentResponse(**response_data)
+
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))

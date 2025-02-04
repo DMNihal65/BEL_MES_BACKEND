@@ -1,7 +1,7 @@
 # schemas.py
 from datetime import datetime
 from pydantic import BaseModel
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from enum import Enum
 
 class InventoryItemStatus(str, Enum):
@@ -70,6 +70,43 @@ class InventoryItemBase(BaseModel):
 class InventoryItemCreate(InventoryItemBase):
     subcategory_id: int
     created_by: int
+
+class BulkInventoryItemCreate(BaseModel):
+    subcategory_id: int
+    created_by: int
+    items: List[Dict[str, Any]]  # List of items with their dynamic data and other fields
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "subcategory_id": 1,
+                "created_by": 1,
+                "items": [
+                    {
+                        "item_code": "EM-001",
+                        "dynamic_data": {
+                            "diameter": 10.0,
+                            "flutes": 4,
+                            "length": 75.0
+                        },
+                        "quantity": 10,
+                        "available_quantity": 10,
+                        "status": "Active"
+                    },
+                    {
+                        "item_code": "EM-002",
+                        "dynamic_data": {
+                            "diameter": 12.0,
+                            "flutes": 4,
+                            "length": 80.0
+                        },
+                        "quantity": 5,
+                        "available_quantity": 5,
+                        "status": "Active"
+                    }
+                ]
+            }
+        }
 
 class InventoryItemResponse(InventoryItemBase):
     id: int

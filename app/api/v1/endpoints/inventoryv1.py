@@ -15,7 +15,7 @@ from app.schemas.inventoryv1 import (InventoryCategoryResponse,
                                      InventoryRequestCreate,InventoryTransactionResponse,InventoryTransactionCreate,
                                      InventoryCategoryUpdate,InventorySubCategoryUpdate,InventoryItemUpdate,CalibrationScheduleUpdate,
                                      CalibrationHistoryResponse,CalibrationHistoryCreate,InventoryRequestUpdate,StatusCount,CalibrationDue,TransactionSummary,
-
+                                     BulkInventoryItemCreate,
                                      )
 
 from app.models.inventoryv1 import (
@@ -195,6 +195,121 @@ def create_item(item: InventoryItemCreate):
         "created_by": user.id
     }
     return response_data
+
+@router.post("/items/bulk/", response_model=List[InventoryItemResponse])
+@db_session
+def create_bulk_items(bulk_items: BulkInventoryItemCreate):
+    """
+    Create multiple inventory items for a subcategory in bulk.
+    
+    This endpoint allows adding multiple items at once to a specific subcategory.
+    All items must conform to the subcategory's dynamic field requirements.
+    
+    Sample request:
+    ```json
+    {
+        "subcategory_id": 1,
+        "created_by": 1,
+        "items": [
+            {
+                "item_code": "EM-001",
+                "dynamic_data": {
+                    "diameter": 10.0,
+                    "flutes": 4,
+                    "length": 75.0
+                },
+                "quantity": 10,
+                "available_quantity": 10,
+                "status": "Active"
+            },
+            {
+                "item_code": "EM-002",
+                "dynamic_data": {
+                    "diameter": 12.0,
+                    "flutes": 4,
+                    "length": 80.0
+                },
+                "quantity": 5,
+                "available_quantity": 5,
+                "status": "Active"
+            }
+        ]
+    }
+    ```
+    """
+    # Validate subcategory exists
+    subcategory = InventorySubCategory.get(id=bulk_items.subcategory_id)
+    if not subcategory:
+        raise HTTPException(status_code=404, detail="Subcategory not found")
+    
+    # Validate user exists
+    user = User.get(id=bulk_items.created_by)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Validate dynamic fields for all items
+    required_fields = {
+        field_name: field_def 
+        for field_name, field_def in subcategory.dynamic_fields.items() 
+        if field_def.get('required', False)
+    }
+    
+    # Check for duplicate item codes
+    item_codes = [item['item_code'] for item in bulk_items.items]
+    if len(item_codes) != len(set(item_codes)):
+        raise HTTPException(status_code=400, detail="Duplicate item codes found")
+    
+    # Validate each item's dynamic data
+    for item in bulk_items.items:
+        dynamic_data = item['dynamic_data']
+        for field_name, field_def in required_fields.items():
+            if field_name not in dynamic_data:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Required field '{field_name}' missing in item with code '{item['item_code']}'"
+                )
+    
+    created_items = []
+    try:
+        for item_data in bulk_items.items:
+            # Validate quantities
+            if item_data['available_quantity'] > item_data['quantity']:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Available quantity cannot be greater than total quantity for item {item_data['item_code']}"
+                )
+            
+            # Create new item
+            new_item = InventoryItem(
+                subcategory=subcategory,
+                item_code=item_data['item_code'],
+                dynamic_data=item_data['dynamic_data'],
+                quantity=item_data['quantity'],
+                available_quantity=item_data['available_quantity'],
+                status=item_data['status'],
+                created_by=user,
+                created_at=datetime.utcnow(),
+                updated_at=datetime.utcnow()
+            )
+            
+            created_items.append({
+                "id": new_item.id,
+                "item_code": new_item.item_code,
+                "dynamic_data": new_item.dynamic_data,
+                "quantity": new_item.quantity,
+                "available_quantity": new_item.available_quantity,
+                "status": new_item.status,
+                "subcategory_id": subcategory.id,
+                "created_at": new_item.created_at,
+                "updated_at": new_item.updated_at,
+                "created_by": user.id
+            })
+        
+        commit()
+        return created_items
+    
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 # Calibration Schedule Endpoints
 @router.post("/calibrations/", response_model=CalibrationScheduleResponse)
@@ -562,7 +677,19 @@ def update_item(item_id: int, item: InventoryItemUpdate):
     
     db_item.updated_at = datetime.utcnow()
     commit()
-    return db_item.to_dict()
+    
+    return {
+        "id": db_item.id,
+        "item_code": db_item.item_code,
+        "dynamic_data": db_item.dynamic_data,
+        "quantity": db_item.quantity,
+        "available_quantity": db_item.available_quantity,
+        "status": db_item.status,
+        "subcategory_id": db_item.subcategory.id,  # Ensure subcategory_id is included
+        "created_at": db_item.created_at,
+        "updated_at": db_item.updated_at,
+        "created_by": db_item.created_by.id
+    }
 
 @router.delete("/items/{item_id}", status_code=204)
 @db_session
@@ -633,7 +760,19 @@ def update_calibration(calibration_id: int, calibration: CalibrationScheduleUpda
     
     db_calibration.updated_at = datetime.utcnow()
     commit()
-    return db_calibration.to_dict()
+
+    return {
+        "id": db_calibration.id,
+        "calibration_type": db_calibration.calibration_type,
+        "frequency_days": db_calibration.frequency_days,
+        "last_calibration": db_calibration.last_calibration,
+        "next_calibration": db_calibration.next_calibration,
+        "remarks": db_calibration.remarks,
+        "inventory_item_id": db_calibration.inventory_item.id,
+        "created_at": db_calibration.created_at,
+        "updated_at": db_calibration.updated_at,
+        "created_by": db_calibration.created_by.id
+    }
 
 @router.delete("/calibrations/{calibration_id}", status_code=204)
 @db_session
@@ -903,3 +1042,34 @@ def get_transaction_summary():
         t_type = t.transaction_type
         summary[t_type] = summary.get(t_type, 0) + t.quantity
     return [{"transaction_type": k, "total_quantity": v} for k, v in summary.items()]
+
+# Add this new endpoint after the existing subcategories endpoints
+@router.get("/categories/{category_id}/subcategories", response_model=List[InventorySubCategoryResponse])
+@db_session
+def get_subcategories_by_category(category_id: int):
+    """
+    Get all subcategories for a specific category.
+    
+    Parameters:
+    - category_id: ID of the category to get subcategories for
+    
+    Returns a list of subcategories belonging to the specified category.
+    If the category doesn't exist, returns a 404 error.
+    """
+    category = InventoryCategory.get(id=category_id)
+    if not category:
+        raise HTTPException(status_code=404, detail="Category not found")
+    
+    subcategories = select(s for s in InventorySubCategory if s.category.id == category_id)[:]
+    return [
+        {
+            "id": s.id,
+            "name": s.name,
+            "description": s.description,
+            "dynamic_fields": s.dynamic_fields,
+            "category_id": s.category.id,
+            "created_at": s.created_at,
+            "created_by": s.created_by.id
+        }
+        for s in subcategories
+    ]
