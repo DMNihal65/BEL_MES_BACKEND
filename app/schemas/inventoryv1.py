@@ -170,13 +170,29 @@ class InventoryRequestBase(BaseModel):
     actual_return_date: Optional[datetime] = None
     remarks: Optional[str] = None
 
-class InventoryRequestCreate(InventoryRequestBase):
+class InventoryRequestCreate(BaseModel):
     inventory_item_id: int
-    requested_by: int
     order_id: int
     operation_id: Optional[int] = None
-    approved_by: Optional[int] = None
-    approved_at: Optional[datetime] = None
+    quantity: int
+    purpose: str
+    status: InventoryRequestStatus
+    expected_return_date: datetime
+    remarks: Optional[str] = None
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "inventory_item_id": 1,
+                "order_id": 1,
+                "operation_id": 1,
+                "quantity": 2,
+                "purpose": "Required for milling operation",
+                "status": "Pending",
+                "expected_return_date": "2024-01-10T00:00:00Z",
+                "remarks": "Urgent requirement"
+            }
+        }
 
 class InventoryRequestResponse(InventoryRequestBase):
     id: int

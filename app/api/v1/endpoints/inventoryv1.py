@@ -1,8 +1,8 @@
 # endpoints.py
 from fastapi import APIRouter, HTTPException, Depends
 from typing import List
-from datetime import datetime, timedelta
-from pony.orm import db_session, commit, select
+from datetime import datetime, timedelta, timezone
+from pony.orm import db_session, commit, select, flush, rollback
 from datetime import datetime
 from app.schemas.inventoryv1 import (InventoryCategoryResponse,
                                      InventoryCategoryCreate,
@@ -29,6 +29,8 @@ from app.models.inventoryv1 import (
     
 )
 from app.models.user import User
+from app.core.security import get_current_user  # Import the auth dependency
+from app.models.master_order import Order,Operation
 
 router = APIRouter(prefix="/api/inventory", tags=["inventory"])
 
@@ -134,143 +136,109 @@ def create_subcategory(subcategory: InventorySubCategoryCreate):
 def create_item(item: InventoryItemCreate):
     """
     Create a new inventory item.
-    
-    Sample request:
-    ```json
-    {
-        "item_code": "EM-001",
-        "dynamic_data": {
-            "diameter": 10.0,
-            "flutes": 4,
-            "length": 75.0,
-            "coating": "TiAlN"
-        },
-        "quantity": 10,
-        "available_quantity": 10,
-        "status": "Active",
-        "subcategory_id": 1,
-        "created_by": 1
-    }
-    ```
     """
-    subcategory = InventorySubCategory.get(id=item.subcategory_id)
-    if not subcategory:
-        raise HTTPException(status_code=404, detail="Subcategory not found")
-    
-    user = User.get(id=item.created_by)
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    # Validate that available_quantity is not greater than quantity
-    if item.available_quantity > item.quantity:
-        raise HTTPException(
-            status_code=400, 
-            detail="Available quantity cannot be greater than total quantity"
+    try:
+        # Check if item code already exists
+        existing_item = InventoryItem.get(item_code=item.item_code)
+        if existing_item:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Item with code '{item.item_code}' already exists"
+            )
+
+        # Validate subcategory
+        subcategory = InventorySubCategory.get(id=item.subcategory_id)
+        if not subcategory:
+            raise HTTPException(status_code=404, detail="Subcategory not found")
+
+        # Validate user
+        user = User.get(id=item.created_by)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        # Validate quantities
+        if item.available_quantity > item.quantity:
+            raise HTTPException(
+                status_code=400,
+                detail="Available quantity cannot be greater than total quantity"
+            )
+
+        # Create new item
+        new_item = InventoryItem(
+            subcategory=subcategory,
+            item_code=item.item_code,
+            dynamic_data=item.dynamic_data,
+            quantity=item.quantity,
+            available_quantity=item.available_quantity,
+            status=item.status.value,
+            created_by=user,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow()
         )
-    
-    new_item = InventoryItem(
-        subcategory=subcategory,
-        item_code=item.item_code,
-        dynamic_data=item.dynamic_data,
-        quantity=item.quantity,
-        available_quantity=item.available_quantity,
-        status=item.status.value,
-        created_by=user,
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow()
-    )
-    commit()
-    
-    # Create a response dictionary with the correct structure
-    response_data = {
-        "id": new_item.id,
-        "item_code": new_item.item_code,
-        "dynamic_data": new_item.dynamic_data,
-        "quantity": new_item.quantity,
-        "available_quantity": new_item.available_quantity,
-        "status": new_item.status,
-        "subcategory_id": subcategory.id,
-        "created_at": new_item.created_at,
-        "updated_at": new_item.updated_at,
-        "created_by": user.id
-    }
-    return response_data
+        
+        flush()  # Flush to get the ID before commit
+
+        response_data = {
+            "id": new_item.id,
+            "item_code": new_item.item_code,
+            "dynamic_data": new_item.dynamic_data,
+            "quantity": new_item.quantity,
+            "available_quantity": new_item.available_quantity,
+            "status": new_item.status,
+            "subcategory_id": subcategory.id,
+            "created_at": new_item.created_at,
+            "updated_at": new_item.updated_at,
+            "created_by": user.id
+        }
+        
+        commit()
+        return response_data
+
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        if "duplicate key value violates unique constraint" in str(e):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Item with code '{item.item_code}' already exists"
+            )
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/items/bulk/", response_model=List[InventoryItemResponse])
 @db_session
 def create_bulk_items(bulk_items: BulkInventoryItemCreate):
     """
-    Create multiple inventory items for a subcategory in bulk.
-    
-    This endpoint allows adding multiple items at once to a specific subcategory.
-    All items must conform to the subcategory's dynamic field requirements.
-    
-    Sample request:
-    ```json
-    {
-        "subcategory_id": 1,
-        "created_by": 1,
-        "items": [
-            {
-                "item_code": "EM-001",
-                "dynamic_data": {
-                    "diameter": 10.0,
-                    "flutes": 4,
-                    "length": 75.0
-                },
-                "quantity": 10,
-                "available_quantity": 10,
-                "status": "Active"
-            },
-            {
-                "item_code": "EM-002",
-                "dynamic_data": {
-                    "diameter": 12.0,
-                    "flutes": 4,
-                    "length": 80.0
-                },
-                "quantity": 5,
-                "available_quantity": 5,
-                "status": "Active"
-            }
-        ]
-    }
-    ```
+    Create multiple inventory items in bulk.
     """
-    # Validate subcategory exists
-    subcategory = InventorySubCategory.get(id=bulk_items.subcategory_id)
-    if not subcategory:
-        raise HTTPException(status_code=404, detail="Subcategory not found")
-    
-    # Validate user exists
-    user = User.get(id=bulk_items.created_by)
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    # Validate dynamic fields for all items
-    required_fields = {
-        field_name: field_def 
-        for field_name, field_def in subcategory.dynamic_fields.items() 
-        if field_def.get('required', False)
-    }
-    
-    # Check for duplicate item codes
-    item_codes = [item['item_code'] for item in bulk_items.items]
-    if len(item_codes) != len(set(item_codes)):
-        raise HTTPException(status_code=400, detail="Duplicate item codes found")
-    
-    # Validate each item's dynamic data
-    for item in bulk_items.items:
-        dynamic_data = item['dynamic_data']
-        for field_name, field_def in required_fields.items():
-            if field_name not in dynamic_data:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Required field '{field_name}' missing in item with code '{item['item_code']}'"
-                )
-    
-    created_items = []
     try:
+        # Validate subcategory
+        subcategory = InventorySubCategory.get(id=bulk_items.subcategory_id)
+        if not subcategory:
+            raise HTTPException(status_code=404, detail="Subcategory not found")
+
+        # Validate user
+        user = User.get(id=bulk_items.created_by)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        # Check for duplicate item codes within the bulk request
+        item_codes = [item['item_code'] for item in bulk_items.items]
+        if len(item_codes) != len(set(item_codes)):
+            raise HTTPException(
+                status_code=400,
+                detail="Duplicate item codes found in the request"
+            )
+
+        # Check for existing item codes in database
+        existing_codes = select(i.item_code for i in InventoryItem 
+                              if i.item_code in item_codes)[:]
+        if existing_codes:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Items with codes {existing_codes} already exist"
+            )
+
+        created_items = []
         for item_data in bulk_items.items:
             # Validate quantities
             if item_data['available_quantity'] > item_data['quantity']:
@@ -278,7 +246,7 @@ def create_bulk_items(bulk_items: BulkInventoryItemCreate):
                     status_code=400,
                     detail=f"Available quantity cannot be greater than total quantity for item {item_data['item_code']}"
                 )
-            
+
             # Create new item
             new_item = InventoryItem(
                 subcategory=subcategory,
@@ -304,12 +272,24 @@ def create_bulk_items(bulk_items: BulkInventoryItemCreate):
                 "updated_at": new_item.updated_at,
                 "created_by": user.id
             })
-        
+
         commit()
         return created_items
-    
+
+    except HTTPException as he:
+        rollback()
+        raise he
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        rollback()
+        if "duplicate key value violates unique constraint" in str(e):
+            raise HTTPException(
+                status_code=400,
+                detail="One or more item codes already exist in the database"
+            )
+        raise HTTPException(
+            status_code=500,
+            detail=f"An error occurred while creating items: {str(e)}"
+        )
 
 # Calibration Schedule Endpoints
 @router.post("/calibrations/", response_model=CalibrationScheduleResponse)
@@ -376,72 +356,90 @@ def create_calibration_schedule(calibration: CalibrationScheduleCreate):
 # Inventory Request Endpoints
 @router.post("/requests/", response_model=InventoryRequestResponse)
 @db_session
-def create_inventory_request(request: InventoryRequestCreate):
+def create_inventory_request(
+    request: InventoryRequestCreate,
+    current_user: User = Depends(get_current_user)
+):
     """
     Create a new inventory request.
-    
-    Sample request:
-    ```json
-    {
-        "inventory_item_id": 1,
-        "requested_by": 1,
-        "order_id": 1,
-        "operation_id": 1,
-        "quantity": 2,
-        "purpose": "Required for milling operation",
-        "status": "Pending",
-        "expected_return_date": "2024-01-10T00:00:00Z",
-        "remarks": "Urgent requirement"
-    }
-    ```
     """
-    item = InventoryItem.get(id=request.inventory_item_id)
-    if not item:
-        raise HTTPException(status_code=404, detail="Inventory item not found")
-    
-    # Validate available quantity
-    if request.quantity > item.available_quantity:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Requested quantity ({request.quantity}) exceeds available quantity ({item.available_quantity})"
+    try:
+        # Get current time in UTC
+        current_time = datetime.now(timezone.utc)
+        
+        # Get the item
+        item = InventoryItem.get(id=request.inventory_item_id)
+        if not item:
+            raise HTTPException(status_code=404, detail="Inventory item not found")
+        
+        # Validate available quantity
+        if request.quantity > item.available_quantity:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Requested quantity ({request.quantity}) exceeds available quantity ({item.available_quantity})"
+            )
+        
+        # Get order
+        order = Order.get(id=request.order_id)
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+        
+        # Get operation if provided
+        operation = None
+        if request.operation_id:
+            operation = Operation.get(id=request.operation_id)
+            if not operation:
+                raise HTTPException(status_code=404, detail="Operation not found")
+        
+        # Ensure expected_return_date is in UTC
+        expected_return_date = request.expected_return_date.replace(tzinfo=timezone.utc)
+        
+        # Create new request
+        new_request = InventoryRequest(
+            inventory_item=item,
+            requested_by=User.get(id=current_user.id),
+            order=order,
+            operation=operation,
+            quantity=request.quantity,
+            purpose=request.purpose,
+            status=request.status.value,
+            expected_return_date=expected_return_date,
+            remarks=request.remarks,
+            created_at=current_time,
+            updated_at=current_time,
+            approved_by=None,
+            approved_at=None
         )
-    
-    new_request = InventoryRequest(
-        inventory_item=item,
-        requested_by=User[request.requested_by],
-        order=request.order_id,
-        operation=request.operation_id,
-        quantity=request.quantity,
-        purpose=request.purpose,
-        status=request.status.value,
-        approved_by=request.approved_by,
-        approved_at=request.approved_at,
-        expected_return_date=request.expected_return_date,
-        actual_return_date=request.actual_return_date,
-        remarks=request.remarks,
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow()
-    )
-    commit()
-    
-    response_data = {
-        "id": new_request.id,
-        "inventory_item_id": item.id,
-        "requested_by": new_request.requested_by.id,
-        "order_id": new_request.order.id,
-        "operation_id": new_request.operation.id if new_request.operation else None,
-        "quantity": new_request.quantity,
-        "purpose": new_request.purpose,
-        "status": new_request.status,
-        "approved_by": new_request.approved_by.id if new_request.approved_by else None,
-        "approved_at": new_request.approved_at,
-        "expected_return_date": new_request.expected_return_date,
-        "actual_return_date": new_request.actual_return_date,
-        "remarks": new_request.remarks,
-        "created_at": new_request.created_at,
-        "updated_at": new_request.updated_at
-    }
-    return response_data
+        
+        flush()
+        
+        response_data = {
+            "id": new_request.id,
+            "inventory_item_id": item.id,
+            "requested_by": current_user.id,
+            "order_id": order.id,
+            "operation_id": operation.id if operation else None,
+            "quantity": new_request.quantity,
+            "purpose": new_request.purpose,
+            "status": new_request.status,
+            "expected_return_date": new_request.expected_return_date,
+            "actual_return_date": None,
+            "remarks": new_request.remarks,
+            "created_at": new_request.created_at,
+            "updated_at": new_request.updated_at,
+            "approved_by": None,
+            "approved_at": None
+        }
+        
+        commit()
+        return response_data
+
+    except HTTPException as he:
+        rollback()
+        raise he
+    except Exception as e:
+        rollback()
+        raise HTTPException(status_code=500, detail=str(e))
 
 # Inventory Transaction Endpoints
 @router.post("/transactions/", response_model=InventoryTransactionResponse)

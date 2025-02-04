@@ -78,6 +78,7 @@ class DocumentVersionResponse(BaseModel):
 
 class DocumentResponse(DocumentBase):
     id: int
+    part_number: str
     created_at: datetime
     created_by: int
     is_active: bool
@@ -127,6 +128,39 @@ class FolderOperationResponse(BaseModel):
     success: bool
     message: str
     new_folder_id: Optional[int] = None
+    
+    class Config:
+        from_attributes = True
+
+class TopAccessedDocument(BaseModel):
+    document_id: int
+    document_name: str
+    access_count: int
+    doc_type: str
+
+class FolderUtilization(BaseModel):
+    folder_id: int
+    folder_name: str
+    document_count: int
+    storage_mb: float
+
+class DocumentActivitySummary(BaseModel):
+    action_type: str
+    count: int
+    last_24h_count: int
+    
+    class Config:
+        from_attributes = True
+
+class DocumentMetrics(BaseModel):
+    total_documents: int
+    total_views: int
+    total_downloads: int
+    active_folders: int
+    total_versions: int
+    documents_by_type: Dict[str, int]
+    storage_usage_mb: float
+    recent_activity_count: int
     
     class Config:
         from_attributes = True

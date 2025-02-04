@@ -1,18 +1,20 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from typing import List, Optional, Dict
-from pony.orm import db_session, select, flush, commit, rollback, desc
+from pony.orm import db_session, select, flush, commit, rollback, desc, count as pony_count
 import hashlib
 import json
 import io
 import shutil
+from datetime import datetime, timedelta
 
 from app.schemas.document_schemas import (
     DocTypeCreate, DocTypeResponse, FolderCreate, FolderResponse,
     DocumentCreate, DocumentResponse, DocumentUpdate, DocumentVersionCreate,
     DocumentVersionResponse, DocumentSearchResponse, UploadDocumentRequest,
     DocumentVersionUpdateRequest, DocumentVersionFileUpdate, FolderOperation,
-    FolderOperationResponse
+    FolderOperationResponse, DocumentMetrics, DocumentActivitySummary,
+    TopAccessedDocument, FolderUtilization
 )
 from app.models.document_management import DocFolder, DocType, Document, DocumentVersion, DocumentAccessLog
 from app.services.minio_service import MinioService
@@ -280,6 +282,7 @@ async def upload_document(
                     id=db_document.id,
                     folder_id=folder.id,
                     part_number_id=order.id,
+                    part_number=order.production_order,
                     doc_type_id=doc_type.id,
                     document_name=document_name,
                     description=description,
@@ -490,6 +493,7 @@ async def list_folder_documents(
                     "id": d.id,
                     "folder_id": d.folder.id,
                     "part_number_id": d.part_number_id.id,
+                    "part_number": d.part_number_id.production_order,
                     "doc_type_id": d.doc_type.id,
                     "document_name": d.document_name,
                     "description": d.description,
@@ -564,6 +568,7 @@ async def search_documents(
                 "id": d.id,
                 "folder_id": d.folder.id,
                 "part_number_id": d.part_number_id.id,
+                "part_number": d.part_number_id.production_order,
                 "doc_type_id": d.doc_type.id,
                 "document_name": d.document_name,
                 "description": d.description,
@@ -630,6 +635,7 @@ async def get_documents_by_part_number(
                 "id": d.id,
                 "folder_id": d.folder.id,
                 "part_number_id": d.part_number_id.id,
+                "part_number": d.part_number_id.production_order,
                 "doc_type_id": d.doc_type.id,
                 "document_name": d.document_name,
                 "description": d.description,
@@ -1426,6 +1432,7 @@ async def delete_document_version(
                 "id": updated_doc.id,
                 "folder_id": updated_doc.folder.id,
                 "part_number_id": updated_doc.part_number_id.id,
+                "part_number": updated_doc.part_number_id.production_order,
                 "doc_type_id": updated_doc.doc_type.id,
                 "document_name": updated_doc.document_name,
                 "description": updated_doc.description,
@@ -1466,6 +1473,189 @@ async def delete_document_version(
                 response_data["latest_version"] = None
 
             return DocumentResponse(**response_data)
+
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/{document_id}", response_model=DocumentResponse)
+async def get_document(
+    document_id: int,
+    current_user: User = Depends(get_current_user)
+):
+    with db_session:
+        document = Document.get(id=document_id)
+        if not document:
+            raise HTTPException(status_code=404, detail="Document not found")
+            
+        return {
+            "id": document.id,
+            "folder_id": document.folder.id,
+            "part_number_id": document.part_number_id.id,
+            "part_number": document.part_number_id.production_order,
+            "doc_type_id": document.doc_type.id,
+            "document_name": document.document_name,
+            "description": document.description,
+            "created_at": document.created_at,
+            "created_by": document.created_by.id,
+            "is_active": document.is_active,
+            "latest_version": {
+                "id": document.latest_version.id,
+                "version_number": document.latest_version.version_number,
+                "file_size": document.latest_version.file_size,
+                "checksum": document.latest_version.checksum,
+                "metadata": document.latest_version.metadata,
+                "created_at": document.latest_version.created_at,
+                "created_by": document.latest_version.created_by.id,
+                "status": document.latest_version.status
+            } if document.latest_version else None,
+            "versions": [
+                {
+                    "id": v.id,
+                    "version_number": v.version_number,
+                    "file_size": v.file_size,
+                    "checksum": v.checksum,
+                    "metadata": v.metadata,
+                    "created_at": v.created_at,
+                    "created_by": v.created_by.id,
+                    "status": v.status
+                } for v in document.versions
+            ]
+        }
+
+@router.get("/search/by-partnumber/", response_model=DocumentSearchResponse)
+async def search_documents_by_partnumber(
+    part_number_query: str,
+    skip: int = 0,
+    limit: int = 100,
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Search documents by partial part number match.
+    
+    Args:
+        part_number_query (str): Partial part number to search for (minimum 3 characters)
+        skip (int): Number of records to skip for pagination
+        limit (int): Maximum number of records to return
+        
+    Returns:
+        DocumentSearchResponse: Matching documents with pagination info
+        
+    Raises:
+        HTTPException: If part number query is less than 3 characters
+    """
+    if len(part_number_query) < 3:
+        raise HTTPException(
+            status_code=400,
+            detail="Part number search query must be at least 3 characters long"
+        )
+    
+    with db_session:
+        try:
+            # First find matching orders using like operator
+            matching_orders = select(o for o in Order 
+                                  if part_number_query.lower() in o.production_order.lower())
+            
+            # Then find documents for these orders
+            query = select(d for d in Document 
+                         if d.is_active and d.part_number_id in matching_orders)
+            
+            total = query.count()
+            documents = query.order_by(desc(Document.created_at))[skip:skip+limit]
+
+            doc_list = []
+            for d in documents:
+                latest_ver = d.latest_version
+                versions = list(d.versions)
+                
+                doc_dict = {
+                    "id": d.id,
+                    "folder_id": d.folder.id,
+                    "part_number_id": d.part_number_id.id,
+                    "part_number": d.part_number_id.production_order,
+                    "doc_type_id": d.doc_type.id,
+                    "document_name": d.document_name,
+                    "description": d.description,
+                    "created_at": d.created_at,
+                    "created_by": d.created_by.id,
+                    "is_active": d.is_active,
+                    "latest_version": {
+                        "id": latest_ver.id,
+                        "version_number": latest_ver.version_number,
+                        "file_size": latest_ver.file_size,
+                        "checksum": latest_ver.checksum,
+                        "metadata": latest_ver.metadata,
+                        "created_at": latest_ver.created_at,
+                        "created_by": latest_ver.created_by.id,
+                        "status": latest_ver.status
+                    } if latest_ver else None,
+                    "versions": [{
+                        "id": v.id,
+                        "version_number": v.version_number,
+                        "file_size": v.file_size,
+                        "checksum": v.checksum,
+                        "metadata": v.metadata,
+                        "created_at": v.created_at,
+                        "created_by": v.created_by.id,
+                        "status": v.status
+                    } for v in versions]
+                }
+                doc_list.append(doc_dict)
+            
+            return DocumentSearchResponse(
+                total=total,
+                documents=doc_list,
+                skip=skip,
+                limit=limit
+            )
+            
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/analytics/metrics", response_model=DocumentMetrics)
+async def get_document_metrics(
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Get basic document management metrics
+    """
+    with db_session:
+        try:
+            # Current timestamp and 24h ago timestamp
+            now = datetime.utcnow()
+            last_24h = now - timedelta(days=1)
+
+            # Basic counts
+            total_documents = select(d for d in Document if d.is_active).count()
+            total_views = select(l for l in DocumentAccessLog if l.action_type == "view").count()
+            total_downloads = select(l for l in DocumentAccessLog if l.action_type == "download").count()
+            active_folders = select(f for f in DocFolder if f.is_active).count()
+            total_versions = select(v for v in DocumentVersion).count()
+
+            # Documents by type
+            doc_type_counts = {}
+            doc_types = select(dt for dt in DocType)[:]
+            for dt in doc_types:
+                count = select(d for d in Document if d.doc_type == dt and d.is_active).count()
+                doc_type_counts[dt.type_name] = count
+
+            # Calculate storage usage
+            total_size_bytes = select(sum(v.file_size) for v in DocumentVersion).first() or 0
+            storage_usage_mb = round(total_size_bytes / (1024 * 1024), 2)
+
+            # Recent activity count (last 24h)
+            recent_activity = select(l for l in DocumentAccessLog 
+                                  if l.action_timestamp >= last_24h).count()
+
+            return DocumentMetrics(
+                total_documents=total_documents,
+                total_views=total_views,
+                total_downloads=total_downloads,
+                active_folders=active_folders,
+                total_versions=total_versions,
+                documents_by_type=doc_type_counts,
+                storage_usage_mb=storage_usage_mb,
+                recent_activity_count=recent_activity
+            )
 
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
