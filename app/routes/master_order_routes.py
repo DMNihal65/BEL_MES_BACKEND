@@ -28,7 +28,7 @@ def create_work_center(work_center: WorkCenterCreate):
             code=work_center.code,
             plant_id=work_center.plant_id,
             description=work_center.description,
-            operation=work_center.operation
+            work_center_name=work_center.work_center_name
         )
         commit()
         return db_work_center

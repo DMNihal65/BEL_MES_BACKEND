@@ -10,7 +10,7 @@ from app.database.connection import db
 from app.models import (
     WorkCenter, Machine, Project, Order, Operation,
     ProcessPlan, Document, ToolList, JigsAndFixturesList,
-    Unit, RawMaterial, InventoryStatus
+    Unit, RawMaterial, InventoryStatus, PartScheduleStatus
 )
 from app.schemas.planning import CreateOperationRequest, CreateOrderRequest, OrderUpdateRequest, OperationUpdateRequest
 
@@ -276,9 +276,11 @@ def save_to_database(data):
         # Get or create project
         project = Project.get(name=data["Project Name"])
         if not project:
+            # Get current max priority
+            max_priority = select(max(p.priority) for p in Project).first() or 0
             project = Project(
                 name=data["Project Name"],
-                priority=1,
+                priority=max_priority + 1,  # Auto-increment
                 start_date=datetime.now(),
                 end_date=datetime.now(),
                 delivery_date=datetime.now()
@@ -543,6 +545,7 @@ async def update_order(order_number: str, update_data: OrderUpdateRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.put("/operations/{part_number}/{operation_number}")
 async def update_operation(
         part_number: str,
@@ -584,6 +587,22 @@ async def update_operation(
                     )
                 operation.work_center = work_center
 
+            # Add machine ID update
+            if 'machine_id' in update_dict:
+                machine = Machine.get(id=update_dict['machine_id'])
+                if not machine:
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"Machine with ID {update_dict['machine_id']} not found"
+                    )
+                # Ensure the machine belongs to the same work center
+                if machine.work_center != operation.work_center:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Machine {update_dict['machine_id']} does not belong to work center {operation.work_center.code}"
+                    )
+                operation.machine = machine
+
             commit()
             return operation.to_dict()
 
@@ -591,7 +610,6 @@ async def update_operation(
         raise he
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 @router.post("/create_order")
 async def create_order(order_data: CreateOrderRequest):
     """Create a new order"""
@@ -617,11 +635,13 @@ async def create_order(order_data: CreateOrderRequest):
             # Get or create project
             project = Project.get(name=order_data.project_name)
             if not project:
+                max_priority = select(max(p.priority) for p in Project).first() or 0
                 project = Project(
                     name=order_data.project_name,
-                    priority=1,  # Default priority
+                    priority=max_priority + 1,  # Auto-increment
                     start_date=datetime.now(),
-                    end_date=delivery_date
+                    end_date=delivery_date,
+                    delivery_date=delivery_date
                 )
 
             # Create new order
@@ -690,11 +710,23 @@ async def create_operation(operation_data: CreateOperationRequest):
                     detail=f"Operation number {operation_data.operation_number} already exists"
                 )
 
+            # Get existing machine or create a default one
+            machine = select(m for m in Machine if m.work_center == work_center).first()
+            if not machine:
+                # Create a default machine for the work center
+                machine = Machine(
+                    work_center=work_center,
+                    type="Default",
+                    make="Default",
+                    model="Default"
+                )
+
             # Create new operation
             operation = Operation(
                 order=order,
                 operation_number=operation_data.operation_number,
                 work_center=work_center,
+                machine=machine,  # Add the machine assignment
                 operation_description=operation_data.operation_description,
                 setup_time=operation_data.setup_time,
                 ideal_cycle_time=operation_data.ideal_cycle_time
@@ -713,7 +745,6 @@ async def create_operation(operation_data: CreateOperationRequest):
             status_code=500,
             detail=f"Error creating operation: {str(e)}"
         )
-
 
 @router.get("/work_centers")
 async def get_work_centers():
