@@ -11,11 +11,13 @@ from app.schemas.inventoryv1 import (InventoryCategoryResponse,
                                      InventoryRequestResponse,
                                      InventoryItemResponse,
                                      InventoryItemCreate,
-                                     CalibrationScheduleResponse,CalibrationScheduleCreate,
-                                     InventoryRequestCreate,InventoryTransactionResponse,InventoryTransactionCreate,
-                                     InventoryCategoryUpdate,InventorySubCategoryUpdate,InventoryItemUpdate,CalibrationScheduleUpdate,
-                                     CalibrationHistoryResponse,CalibrationHistoryCreate,InventoryRequestUpdate,StatusCount,CalibrationDue,TransactionSummary,
-                                     BulkInventoryItemCreate,
+                                     CalibrationScheduleResponse, CalibrationScheduleCreate,
+                                     InventoryRequestCreate, InventoryTransactionResponse, InventoryTransactionCreate,
+                                     InventoryCategoryUpdate, InventorySubCategoryUpdate, InventoryItemUpdate,
+                                     CalibrationScheduleUpdate,
+                                     CalibrationHistoryResponse, CalibrationHistoryCreate, InventoryRequestUpdate,
+                                     StatusCount, CalibrationDue, TransactionSummary,
+                                     BulkInventoryItemCreate, TransactionType,
                                      )
 
 from app.models.inventoryv1 import (
