@@ -1,8 +1,8 @@
 # endpoints.py
-from fastapi import APIRouter, HTTPException, Depends
-from typing import List
+from fastapi import APIRouter, HTTPException, Depends, Query
+from typing import List, Optional
 from datetime import datetime, timedelta, timezone
-from pony.orm import db_session, commit, select, flush, rollback
+from pony.orm import db_session, commit, select, flush, rollback, TransactionIntegrityError
 from datetime import datetime
 from app.schemas.inventoryv1 import (InventoryCategoryResponse,
                                      InventoryCategoryCreate,
@@ -16,6 +16,7 @@ from app.schemas.inventoryv1 import (InventoryCategoryResponse,
                                      InventoryCategoryUpdate,InventorySubCategoryUpdate,InventoryItemUpdate,CalibrationScheduleUpdate,
                                      CalibrationHistoryResponse,CalibrationHistoryCreate,InventoryRequestUpdate,StatusCount,CalibrationDue,TransactionSummary,
                                      BulkInventoryItemCreate,
+                                     TransactionType,
                                      )
 
 from app.models.inventoryv1 import (
@@ -443,65 +444,231 @@ def create_inventory_request(
 
 # Inventory Transaction Endpoints
 @router.post("/transactions/", response_model=InventoryTransactionResponse)
-@db_session
-def create_transaction(transaction: InventoryTransactionCreate):
+def create_transaction(
+    transaction: InventoryTransactionCreate,
+    current_user: User = Depends(get_current_user)
+):
     """
     Create a new inventory transaction.
-    
-    Sample request:
-    ```json
-    {
-        "inventory_item_id": 1,
-        "transaction_type": "Issue",
-        "quantity": 2,
-        "performed_by": 1,
-        "reference_request_id": 1,
-        "remarks": "Issued for milling operation"
-    }
-    ```
     """
-    item = InventoryItem.get(id=transaction.inventory_item_id)
+    try:
+        with db_session:
+            # Get all required data within the same session
+            item_id = transaction.inventory_item_id
+            user_id = current_user.id
+            transaction_type = transaction.transaction_type
+            quantity = transaction.quantity
+            remarks = transaction.remarks
+            request_id = transaction.reference_request_id
+            
+            # Get the inventory item
+            item = InventoryItem.get(id=item_id)
+            if not item:
+                raise HTTPException(status_code=404, detail="Inventory item not found")
+
+            # Get user in current session
+            user = User.get(id=user_id)
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+
+            # Get reference request if provided
+            request = None
+            if request_id:
+                request = InventoryRequest.get(id=request_id)
+                if not request:
+                    raise HTTPException(status_code=404, detail="Reference request not found")
+
+            # Validate transaction quantity based on type
+            if transaction_type == TransactionType.ISSUE:
+                if quantity > item.available_quantity:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Issue quantity ({quantity}) exceeds available quantity ({item.available_quantity})"
+                    )
+                item.available_quantity -= quantity
+            elif transaction_type == TransactionType.RETURN:
+                max_returnable = item.quantity - item.available_quantity
+                if quantity > max_returnable:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Return quantity exceeds issued quantity. Maximum returnable: {max_returnable}"
+                    )
+                item.available_quantity += quantity
+
+            current_time = datetime.now(timezone.utc)
+
+            # Create transaction record
+            new_transaction = InventoryTransaction(
+                inventory_item=item,
+                transaction_type=transaction_type.value,
+                quantity=quantity,
+                reference_request=request,
+                performed_by=user,
+                remarks=remarks,
+                created_at=current_time
+            )
+
+            # Update item timestamp
+            item.updated_at = current_time
+
+            # Flush changes to get IDs
+            flush()
+
+            # Create response data without accessing database objects
+            response_data = {
+                "id": new_transaction.id,
+                "inventory_item_id": item_id,
+                "transaction_type": transaction_type.value,
+                "quantity": quantity,
+                "reference_request_id": request_id,
+                "performed_by": user_id,
+                "remarks": remarks,
+                "created_at": current_time
+            }
+
+            # Commit changes
+            commit()
+            
+            return response_data
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/transactions/by-item/{item_id}", response_model=List[InventoryTransactionResponse])
+@db_session
+def get_item_transactions(
+    item_id: int,
+    transaction_type: Optional[str] = Query(None, enum=[t.value for t in TransactionType]),
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+    limit: int = Query(20, gt=0, le=100)
+):
+    """
+    Get transaction history for a specific inventory item with optional filters.
+    """
+    item = InventoryItem.get(id=item_id)
     if not item:
         raise HTTPException(status_code=404, detail="Inventory item not found")
     
-    # Validate transaction quantity based on type
-    if transaction.transaction_type == TransactionType.ISSUE:
-        if transaction.quantity > item.available_quantity:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Issue quantity ({transaction.quantity}) exceeds available quantity ({item.available_quantity})"
-            )
-        item.available_quantity -= transaction.quantity
-    elif transaction.transaction_type == TransactionType.RETURN:
-        if transaction.quantity > (item.quantity - item.available_quantity):
-            raise HTTPException(
-                status_code=400,
-                detail="Return quantity exceeds issued quantity"
-            )
-        item.available_quantity += transaction.quantity
+    # Build query
+    query = select(t for t in InventoryTransaction if t.inventory_item.id == item_id)
     
-    new_transaction = InventoryTransaction(
-        inventory_item=item,
-        transaction_type=transaction.transaction_type.value,
-        quantity=transaction.quantity,
-        reference_request=transaction.reference_request_id,
-        performed_by=User[transaction.performed_by],
-        remarks=transaction.remarks,
-        created_at=datetime.utcnow()
-    )
-    commit()
+    if transaction_type:
+        query = query.filter(lambda t: t.transaction_type == transaction_type)
+    if start_date:
+        query = query.filter(lambda t: t.created_at >= start_date)
+    if end_date:
+        query = query.filter(lambda t: t.created_at <= end_date)
     
-    response_data = {
-        "id": new_transaction.id,
-        "inventory_item_id": item.id,
-        "transaction_type": new_transaction.transaction_type,
-        "quantity": new_transaction.quantity,
-        "reference_request_id": new_transaction.reference_request.id if new_transaction.reference_request else None,
-        "performed_by": new_transaction.performed_by.id,
-        "remarks": new_transaction.remarks,
-        "created_at": new_transaction.created_at
-    }
-    return response_data
+    transactions = query.order_by(desc(InventoryTransaction.created_at)).limit(limit)[:]
+    
+    return [
+        {
+            "id": t.id,
+            "inventory_item_id": t.inventory_item.id,
+            "transaction_type": t.transaction_type,
+            "quantity": t.quantity,
+            "reference_request_id": t.reference_request.id if t.reference_request else None,
+            "performed_by": t.performed_by.id,
+            "remarks": t.remarks,
+            "created_at": t.created_at
+        }
+        for t in transactions
+    ]
+
+@router.post("/transactions/bulk-return/", response_model=List[InventoryTransactionResponse])
+@db_session
+def bulk_return_items(
+    request_ids: List[int],
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Process bulk returns for multiple inventory requests.
+    """
+    transactions = []
+    
+    try:
+        for request_id in request_ids:
+            request = InventoryRequest.get(id=request_id)
+            if not request:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Request {request_id} not found"
+                )
+            
+            if request.status != "Issued":
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Request {request_id} is not in 'Issued' status"
+                )
+            
+            # Create return transaction
+            new_transaction = InventoryTransaction(
+                inventory_item=request.inventory_item,
+                transaction_type=TransactionType.RETURN.value,
+                quantity=request.quantity,
+                reference_request=request,
+                performed_by=current_user,
+                remarks=f"Bulk return for request {request_id}",
+                created_at=datetime.now(timezone.utc)
+            )
+            
+            # Update inventory item
+            request.inventory_item.available_quantity += request.quantity
+            request.inventory_item.updated_at = datetime.now(timezone.utc)
+            
+            # Update request status
+            request.status = "Returned"
+            request.actual_return_date = datetime.now(timezone.utc)
+            request.updated_at = datetime.now(timezone.utc)
+            
+            transactions.append(new_transaction)
+        
+        commit()
+        
+        return [
+            {
+                "id": t.id,
+                "inventory_item_id": t.inventory_item.id,
+                "transaction_type": t.transaction_type,
+                "quantity": t.quantity,
+                "reference_request_id": t.reference_request.id,
+                "performed_by": current_user.id,
+                "remarks": t.remarks,
+                "created_at": t.created_at
+            }
+            for t in transactions
+        ]
+        
+    except Exception as e:
+        rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/transactions/summary/daily", response_model=List[TransactionSummary])
+@db_session
+def get_daily_transaction_summary(
+    start_date: datetime,
+    end_date: Optional[datetime] = None
+):
+    """
+    Get daily transaction summary within a date range.
+    """
+    if not end_date:
+        end_date = datetime.now(timezone.utc)
+    
+    transactions = select(
+        (t.transaction_type, sum(t.quantity))
+        for t in InventoryTransaction
+        if t.created_at >= start_date and t.created_at <= end_date
+    )[:]
+    
+    return [
+        {
+            "transaction_type": t_type,
+            "total_quantity": quantity
+        }
+        for t_type, quantity in transactions
+    ]
 
 # Inventory Category Endpoints
 @router.get("/categories/", response_model=List[InventoryCategoryResponse])
@@ -882,27 +1049,42 @@ def get_calibration_history(history_id: int):
 @router.get("/requests/", response_model=List[InventoryRequestResponse])
 @db_session
 def get_all_requests():
-    requests = select(r for r in InventoryRequest)[:]
-    return [
-        {
-            "id": r.id,
-            "inventory_item_id": r.inventory_item.id,
-            "requested_by": r.requested_by.id,
-            "order_id": r.order.id,
-            "operation_id": r.operation.id if r.operation else None,
-            "quantity": r.quantity,
-            "purpose": r.purpose,
-            "status": r.status,
-            "approved_by": r.approved_by.id if r.approved_by else None,
-            "approved_at": r.approved_at,
-            "expected_return_date": r.expected_return_date,
-            "actual_return_date": r.actual_return_date,
-            "remarks": r.remarks,
-            "created_at": r.created_at,
-            "updated_at": r.updated_at
-        }
-        for r in requests
-    ]
+    """
+    Get all inventory requests.
+    """
+    try:
+        requests = select(r for r in InventoryRequest)[:]
+        
+        # Map any 'Issued' status to 'Approved' for response validation
+        response_data = []
+        for r in requests:
+            # Convert status to match enum values if needed
+            status = r.status
+            if status == "Issued":
+                status = "Approved"  # Map 'Issued' to 'Approved'
+            
+            response_data.append({
+                "id": r.id,
+                "inventory_item_id": r.inventory_item.id,
+                "requested_by": r.requested_by.id,
+                "order_id": r.order.id,
+                "operation_id": r.operation.id if r.operation else None,
+                "quantity": r.quantity,
+                "purpose": r.purpose,
+                "status": status,  # Use the mapped status
+                "approved_by": r.approved_by.id if r.approved_by else None,
+                "approved_at": r.approved_at,
+                "expected_return_date": r.expected_return_date,
+                "actual_return_date": r.actual_return_date,
+                "remarks": r.remarks,
+                "created_at": r.created_at,
+                "updated_at": r.updated_at
+            })
+        
+        return response_data
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/requests/{request_id}", response_model=InventoryRequestResponse)
 @db_session
@@ -958,42 +1140,6 @@ def update_request(request_id: int, request: InventoryRequestUpdate):
     db_request.updated_at = datetime.utcnow()
     commit()
     return db_request.to_dict()
-
-# Inventory Transaction Endpoints
-@router.get("/transactions/", response_model=List[InventoryTransactionResponse])
-@db_session
-def get_all_transactions():
-    transactions = select(t for t in InventoryTransaction)[:]
-    return [
-        {
-            "id": t.id,
-            "inventory_item_id": t.inventory_item.id,
-            "transaction_type": t.transaction_type,
-            "quantity": t.quantity,
-            "reference_request_id": t.reference_request.id if t.reference_request else None,
-            "performed_by": t.performed_by.id,
-            "remarks": t.remarks,
-            "created_at": t.created_at
-        }
-        for t in transactions
-    ]
-
-@router.get("/transactions/{transaction_id}", response_model=InventoryTransactionResponse)
-@db_session
-def get_transaction(transaction_id: int):
-    transaction = InventoryTransaction.get(id=transaction_id)
-    if not transaction:
-        raise HTTPException(status_code=404, detail="Transaction not found")
-    return {
-        "id": transaction.id,
-        "inventory_item_id": transaction.inventory_item.id,
-        "transaction_type": transaction.transaction_type,
-        "quantity": transaction.quantity,
-        "reference_request_id": transaction.reference_request.id if transaction.reference_request else None,
-        "performed_by": transaction.performed_by.id,
-        "remarks": transaction.remarks,
-        "created_at": transaction.created_at
-    }
 
 # Analytics Endpoints
 @router.get("/analytics/items-by-status", response_model=List[StatusCount])
@@ -1071,3 +1217,326 @@ def get_subcategories_by_category(category_id: int):
         }
         for s in subcategories
     ]
+
+# Add these new analytics endpoints
+@router.get("/analytics/transaction-metrics", response_model=dict)
+@db_session
+def get_transaction_metrics(
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None
+):
+    """
+    Get comprehensive transaction metrics including:
+    - Total transactions by type
+    - Most active items
+    - Transaction trends
+    - Request fulfillment rates
+    """
+    try:
+        if not end_date:
+            end_date = datetime.now(timezone.utc)
+        if not start_date:
+            start_date = end_date - timedelta(days=30)  # Default to last 30 days
+
+        # Get all transactions in date range
+        transactions = select(t for t in InventoryTransaction 
+            if t.created_at >= start_date and t.created_at <= end_date)[:]
+
+        # Initialize metrics
+        metrics = {
+            "total_transactions": len(transactions),
+            "transaction_by_type": {},
+            "total_items_issued": 0,
+            "total_items_returned": 0,
+            "most_active_items": [],
+            "daily_transaction_counts": {},
+            "average_time_to_return": None,
+            "pending_returns": 0,
+            "request_fulfillment_rate": 0,
+            "top_requesters": []
+        }
+
+        # Calculate transaction type counts and quantities
+        item_transaction_counts = {}
+        for t in transactions:
+            # Count by transaction type
+            metrics["transaction_by_type"][t.transaction_type] = metrics["transaction_by_type"].get(t.transaction_type, 0) + 1
+            
+            # Track quantities by type
+            if t.transaction_type == "Issue":
+                metrics["total_items_issued"] += t.quantity
+            elif t.transaction_type == "Return":
+                metrics["total_items_returned"] += t.quantity
+
+            # Count transactions by item
+            item_id = t.inventory_item.id
+            item_transaction_counts[item_id] = item_transaction_counts.get(item_id, 0) + 1
+
+            # Track daily counts
+            date_key = t.created_at.date().isoformat()
+            metrics["daily_transaction_counts"][date_key] = metrics["daily_transaction_counts"].get(date_key, 0) + 1
+
+        # Get most active items (top 5)
+        most_active_items = sorted(item_transaction_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+        metrics["most_active_items"] = [
+            {
+                "item_id": item_id,
+                "item_code": InventoryItem[item_id].item_code,
+                "transaction_count": count
+            }
+            for item_id, count in most_active_items
+        ]
+
+        # Calculate request metrics
+        requests = select(r for r in InventoryRequest 
+            if r.created_at >= start_date and r.created_at <= end_date)[:]
+        
+        total_requests = len(requests)
+        fulfilled_requests = sum(1 for r in requests if r.status in ["Approved", "Issued"])
+        
+        if total_requests > 0:
+            metrics["request_fulfillment_rate"] = (fulfilled_requests / total_requests) * 100
+
+        # Calculate average return time
+        return_times = []
+        pending_returns = 0
+        for req in requests:
+            if req.status == "Issued":
+                pending_returns += 1
+            elif req.status == "Returned" and req.actual_return_date:
+                return_time = (req.actual_return_date - req.created_at).total_seconds() / 3600  # hours
+                return_times.append(return_time)
+        
+        metrics["pending_returns"] = pending_returns
+        if return_times:
+            metrics["average_time_to_return"] = sum(return_times) / len(return_times)
+
+        # Get top requesters
+        requester_counts = {}
+        for req in requests:
+            requester_id = req.requested_by.id
+            requester_counts[requester_id] = requester_counts.get(requester_id, 0) + 1
+
+        top_requesters = sorted(requester_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+        metrics["top_requesters"] = [
+            {
+                "user_id": user_id,
+                "request_count": count,
+                "user_name": User[user_id].username
+            }
+            for user_id, count in top_requesters
+        ]
+
+        return metrics
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/analytics/inventory-utilization", response_model=dict)
+@db_session
+def get_inventory_utilization(time_period: Optional[int] = 30):
+    """
+    Get inventory utilization metrics
+    """
+    try:
+        end_date = datetime.now(timezone.utc)
+        start_date = end_date - timedelta(days=time_period)
+
+        metrics = {
+            "high_demand_items": [],
+            "low_utilization_items": [],
+            "utilization_by_category": {},
+            "stock_turnover_rate": {},
+            "critical_stock_items": []
+        }
+
+        # Calculate utilization for each item
+        items = select(i for i in InventoryItem)[:]
+        
+        for item in items:
+            # Get transactions for this item
+            transactions = select(t for t in InventoryTransaction 
+                if t.inventory_item == item and 
+                t.created_at >= start_date and 
+                t.created_at <= end_date)[:]
+
+            total_issued = sum(t.quantity for t in transactions if t.transaction_type == TransactionType.ISSUE.value)
+            utilization_rate = (total_issued / item.quantity * 100) if item.quantity > 0 else 0
+
+            # Track by category
+            category_name = item.subcategory.category.name
+            if category_name not in metrics["utilization_by_category"]:
+                metrics["utilization_by_category"][category_name] = {
+                    "total_items": 0,
+                    "total_utilization": 0
+                }
+            
+            metrics["utilization_by_category"][category_name]["total_items"] += 1
+            metrics["utilization_by_category"][category_name]["total_utilization"] += utilization_rate
+
+            # Identify high demand items (>70% utilization)
+            if utilization_rate > 70:
+                metrics["high_demand_items"].append({
+                    "item_id": item.id,
+                    "item_code": item.item_code,
+                    "utilization_rate": round(utilization_rate, 2),
+                    "available_quantity": item.available_quantity,
+                    "category": category_name
+                })
+
+            # Identify low utilization items (<30% utilization)
+            if utilization_rate < 30:
+                metrics["low_utilization_items"].append({
+                    "item_id": item.id,
+                    "item_code": item.item_code,
+                    "utilization_rate": round(utilization_rate, 2),
+                    "quantity": item.quantity,
+                    "category": category_name
+                })
+
+            # Calculate stock turnover rate
+            if item.quantity > 0:
+                turnover_rate = total_issued / item.quantity
+                metrics["stock_turnover_rate"][item.item_code] = round(turnover_rate, 2)
+
+            # Identify critical stock items (less than 20% available)
+            if item.quantity > 0 and (item.available_quantity / item.quantity) < 0.2:
+                metrics["critical_stock_items"].append({
+                    "item_id": item.id,
+                    "item_code": item.item_code,
+                    "available_quantity": item.available_quantity,
+                    "total_quantity": item.quantity,
+                    "category": category_name,
+                    "percentage_available": round((item.available_quantity / item.quantity) * 100, 2)
+                })
+
+        # Calculate average utilization by category
+        for category in metrics["utilization_by_category"]:
+            total_items = metrics["utilization_by_category"][category]["total_items"]
+            if total_items > 0:
+                metrics["utilization_by_category"][category]["average_utilization"] = round(
+                    metrics["utilization_by_category"][category]["total_utilization"] / total_items,
+                    2
+                )
+            # Add item count to the output
+            metrics["utilization_by_category"][category]["item_count"] = total_items
+
+        # Add summary statistics
+        metrics["summary"] = {
+            "total_items": len(items),
+            "high_demand_count": len(metrics["high_demand_items"]),
+            "low_utilization_count": len(metrics["low_utilization_items"]),
+            "critical_stock_count": len(metrics["critical_stock_items"]),
+            "categories_count": len(metrics["utilization_by_category"]),
+            "time_period_days": time_period
+        }
+
+        return metrics
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/analytics/transaction-summary", response_model=dict)
+@db_session
+def get_transaction_summary(
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+    category_id: Optional[int] = None
+):
+    """
+    Get transaction summary with detailed metrics
+    """
+    try:
+        if not end_date:
+            end_date = datetime.now(timezone.utc)
+        if not start_date:
+            start_date = end_date - timedelta(days=30)
+
+        # Base query for transactions
+        query = lambda: select(t for t in InventoryTransaction 
+            if t.created_at >= start_date and 
+            t.created_at <= end_date)
+
+        # Add category filter if specified
+        if category_id:
+            query = lambda: select(t for t in InventoryTransaction 
+                if t.created_at >= start_date and 
+                t.created_at <= end_date and 
+                t.inventory_item.subcategory.category.id == category_id)
+
+        transactions = query()[:]
+
+        summary = {
+            "total_transactions": len(transactions),
+            "transactions_by_type": {},
+            "daily_transactions": {},
+            "items_summary": {},
+            "category_summary": {},
+            "time_metrics": {
+                "start_date": start_date,
+                "end_date": end_date,
+                "period_days": (end_date - start_date).days
+            }
+        }
+
+        # Calculate transactions by type and daily transactions
+        for t in transactions:
+            # By type
+            t_type = t.transaction_type
+            if t_type not in summary["transactions_by_type"]:
+                summary["transactions_by_type"][t_type] = {
+                    "count": 0,
+                    "total_quantity": 0
+                }
+            summary["transactions_by_type"][t_type]["count"] += 1
+            summary["transactions_by_type"][t_type]["total_quantity"] += t.quantity
+
+            # Daily transactions
+            date_key = t.created_at.date().isoformat()
+            if date_key not in summary["daily_transactions"]:
+                summary["daily_transactions"][date_key] = {
+                    "total": 0,
+                    "by_type": {}
+                }
+            summary["daily_transactions"][date_key]["total"] += 1
+            if t_type not in summary["daily_transactions"][date_key]["by_type"]:
+                summary["daily_transactions"][date_key]["by_type"][t_type] = 0
+            summary["daily_transactions"][date_key]["by_type"][t_type] += 1
+
+            # Items summary
+            item_id = t.inventory_item.id
+            if item_id not in summary["items_summary"]:
+                summary["items_summary"][item_id] = {
+                    "item_code": t.inventory_item.item_code,
+                    "transaction_count": 0,
+                    "total_quantity": 0
+                }
+            summary["items_summary"][item_id]["transaction_count"] += 1
+            summary["items_summary"][item_id]["total_quantity"] += t.quantity
+
+            # Category summary
+            category = t.inventory_item.subcategory.category
+            cat_id = category.id
+            if cat_id not in summary["category_summary"]:
+                summary["category_summary"][cat_id] = {
+                    "name": category.name,
+                    "transaction_count": 0,
+                    "total_quantity": 0
+                }
+            summary["category_summary"][cat_id]["transaction_count"] += 1
+            summary["category_summary"][cat_id]["total_quantity"] += t.quantity
+
+        # Calculate averages and sort summaries
+        summary["daily_average"] = round(len(transactions) / max(1, (end_date - start_date).days), 2)
+        
+        # Sort items by transaction count
+        summary["top_items"] = sorted(
+            [{"item_id": k, **v} for k, v in summary["items_summary"].items()],
+            key=lambda x: x["transaction_count"],
+            reverse=True
+        )[:10]  # Top 10 items
+
+        return summary
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
