@@ -20,6 +20,7 @@ class OperationUpdateRequest(BaseModel):
     work_center_code: str
     machine_id: int
 
+
 # Response Models
 class WorkCenterResponse(BaseModel):
     id: int

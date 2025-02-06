@@ -276,9 +276,11 @@ def save_to_database(data):
         # Get or create project
         project = Project.get(name=data["Project Name"])
         if not project:
+            # Get current max priority
+            max_priority = select(max(p.priority) for p in Project).first() or 0
             project = Project(
                 name=data["Project Name"],
-                priority=1,
+                priority=max_priority + 1,  # Auto-increment
                 start_date=datetime.now(),
                 end_date=datetime.now(),
                 delivery_date=datetime.now()
@@ -543,7 +545,6 @@ async def update_order(order_number: str, update_data: OrderUpdateRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.put("/operations/{part_number}/{operation_number}")
 async def update_operation(
         part_number: str,
@@ -609,7 +610,6 @@ async def update_operation(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.post("/create_order")
 async def create_order(order_data: CreateOrderRequest):
     """Create a new order"""
@@ -635,11 +635,13 @@ async def create_order(order_data: CreateOrderRequest):
             # Get or create project
             project = Project.get(name=order_data.project_name)
             if not project:
+                max_priority = select(max(p.priority) for p in Project).first() or 0
                 project = Project(
                     name=order_data.project_name,
-                    priority=1,  # Default priority
+                    priority=max_priority + 1,  # Auto-increment
                     start_date=datetime.now(),
-                    end_date=delivery_date
+                    end_date=delivery_date,
+                    delivery_date=delivery_date
                 )
 
             # Create new order
@@ -743,6 +745,7 @@ async def create_operation(operation_data: CreateOperationRequest):
             status_code=500,
             detail=f"Error creating operation: {str(e)}"
         )
+
 
 @router.get("/work_centers")
 async def get_work_centers():

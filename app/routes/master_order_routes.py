@@ -23,7 +23,7 @@ def create_work_center(work_center: WorkCenterCreate):
                 status_code=400,
                 detail=f"Work center with code {work_center.code} already exists"
             )
-
+        
         db_work_center = WorkCenter(
             code=work_center.code,
             plant_id=work_center.plant_id,
@@ -121,7 +121,7 @@ def create_machine(machine: MachineCreate):
                 status_code=404,
                 detail="Work center not found"
             )
-
+        
         db_machine = Machine(
             work_center=work_center,
             type=machine.type,
@@ -159,6 +159,7 @@ def create_machine(machine: MachineCreate):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.get("/machines/", response_model=List[MachineResponse])
 @db_session

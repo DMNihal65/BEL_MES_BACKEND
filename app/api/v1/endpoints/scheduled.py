@@ -79,95 +79,87 @@ async def get_active_parts():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-
-
-def extract_quantity(quantity_str: str) -> int:
+def extract_quantity(quantity_str: str) -> tuple[int, int, int]:
     """
-    Extract quantity from different format strings like:
-    - "Process(10/10pcs)"
-    - "Setup(18.0min)"
+    Extract quantities from process strings like:
+    "Process(85/291pcs)" or "Process(85/291pcs, Today: 85pcs)"
+
+    Returns:
+        tuple: (total_quantity, current_quantity, today_quantity)
     """
     try:
-        # If it's a process quantity (e.g., "Process(10/10pcs)")
         if "Process" in quantity_str:
+            # Try to match the format with "Today" first
+            match = re.search(r'Process\((\d+)/(\d+)pcs, Today: (\d+)pcs\)', quantity_str)
+            if match:
+                current_qty = int(match.group(1))
+                total_qty = int(match.group(2))
+                today_qty = int(match.group(3))
+                return total_qty, current_qty, today_qty
+
+            # Match the simple format "Process(85/291pcs)"
             match = re.search(r'Process\((\d+)/(\d+)pcs\)', quantity_str)
             if match:
-                return int(match.group(2))  # Return the total quantity
+                current_qty = int(match.group(1))
+                total_qty = int(match.group(2))
+                return total_qty, current_qty, current_qty
 
-        # If it's a setup time (e.g., "Setup(18.0min)")
         elif "Setup" in quantity_str:
-            match = re.search(r'Setup\(([\d.]+)/([\d.]+)min\)', quantity_str)
-            if match:
-                return 1  # For setup operations, quantity is 1
+            return 1, 1, 1
 
-        # Default case - try to extract first number
         numbers = re.findall(r'\d+', quantity_str)
         if numbers:
-            return int(numbers[0])
+            first_num = int(numbers[0])
+            return first_num, first_num, first_num
 
-        return 1  # Default quantity if no pattern matches
+        return 1, 1, 1
 
     except Exception as e:
         print(f"Error parsing quantity string: {quantity_str}, Error: {str(e)}")
-        return 1  # Default to 1 if parsing fails
+        return 1, 1, 1
 
 
 @db_session
 def store_schedule(schedule_df, component_status):
-    """Store the generated schedule in the database, preventing duplicates"""
+    """Store the generated schedule in the database"""
     try:
         stored_items = []
 
-        # Debug: Print column names and sample data
-        print("Schedule DataFrame columns:", schedule_df.columns.tolist())
-        print("Sample row data:", schedule_df.iloc[0].to_dict())
-
         for _, row in schedule_df.iterrows():
-            print(f"\nProcessing row: {row.to_dict()}")
-
-            # Get related entities from master tables
             order = Order.get(part_number=row['partno'])
             if not order:
-                print(f"Order not found for part number: {row['partno']}")
                 continue
 
-            # Get all matching operations
             matching_operations = Operation.select(
                 lambda op: op.order == order and
                            op.operation_description == row['operation']
             )[:]
 
             if not matching_operations:
-                print(f"No operations found for: {row['operation']} in order {row['partno']}")
                 continue
 
-            operation = matching_operations[0]  # Use the first matching operation
+            operation = matching_operations[0]
             machine = Machine[row['machine_id']]
             if not machine:
-                print(f"Machine not found with ID: {row['machine_id']}")
                 continue
 
-            # Extract quantity based on the format
-            quantity = extract_quantity(row['quantity'])
-            print(f"Extracted quantity: {quantity} from string: {row['quantity']}")
+            # Extract quantities and only use total and current for storage
+            total_qty, current_qty, _ = extract_quantity(row['quantity'])
 
-            # Convert pandas Timestamp to Python datetime
             start_time = row['start_time'].to_pydatetime()
             end_time = row['end_time'].to_pydatetime()
 
-            # Check for existing schedule item with same criteria
+            # Check for existing schedule
             existing_schedule = PlannedScheduleItem.select(
                 lambda s: s.order == order and
                           s.operation == operation and
                           s.machine == machine and
                           s.initial_start_time == start_time and
                           s.initial_end_time == end_time and
-                          s.total_quantity == quantity
+                          s.total_quantity == total_qty
             ).first()
 
             if existing_schedule:
-                print(
-                    f"Schedule already exists for: Order={order.part_number}, Operation={operation.operation_description}")
                 active_version = existing_schedule.schedule_versions.select(
                     lambda v: v.is_active == True
                 ).first()
@@ -175,20 +167,21 @@ def store_schedule(schedule_df, component_status):
                     stored_items.append({
                         'schedule_item_id': existing_schedule.id,
                         'version_id': active_version.id,
-                        'quantity': quantity,
+                        'total_quantity': total_qty,
+                        'current_quantity': current_qty,
                         'status': 'existing'
                     })
                 continue
 
-            # Create new PlannedScheduleItem if no duplicate exists
+            # Create new schedule item
             schedule_item = PlannedScheduleItem(
                 order=order,
                 operation=operation,
                 machine=machine,
                 initial_start_time=start_time,
                 initial_end_time=end_time,
-                total_quantity=quantity,
-                remaining_quantity=quantity,
+                total_quantity=total_qty,
+                remaining_quantity=total_qty - current_qty,
                 status='scheduled',
                 current_version=1
             )
@@ -199,16 +192,17 @@ def store_schedule(schedule_df, component_status):
                 version_number=1,
                 planned_start_time=start_time,
                 planned_end_time=end_time,
-                planned_quantity=quantity,
-                completed_quantity=0,  # Added this field as it's required
-                remaining_quantity=quantity,
+                planned_quantity=total_qty,
+                completed_quantity=current_qty,
+                remaining_quantity=total_qty - current_qty,
                 is_active=True
             )
 
             stored_items.append({
                 'schedule_item_id': schedule_item.id,
                 'version_id': schedule_version.id,
-                'quantity': quantity,
+                'total_quantity': total_qty,
+                'current_quantity': current_qty,
                 'status': 'new'
             })
 
@@ -219,62 +213,62 @@ def store_schedule(schedule_df, component_status):
         raise e
 
 
-# Modified schedule endpoint
 @router.get("/schedule-batch/", response_model=ScheduleResponse)
 async def schedule():
     """Generate schedule for active parts and store in database"""
     try:
         with db_session:
-            # Get database counts for debugging
             ops_count = Operation.select().count()
             orders_count = Order.select().count()
             print(f"Database counts - Operations: {ops_count}, Orders: {orders_count}")
 
-        # Get scheduling data
         df = fetch_operations()
         component_quantities = fetch_component_quantities()
         lead_times = fetch_lead_times()
 
-        # Get schedule based on active parts
         schedule_df, overall_end_time, overall_time, daily_production, \
             component_status, partially_completed = schedule_operations(
             df, component_quantities, lead_times
         )
 
-        # Store the generated schedule
         stored_schedule = None
         if not schedule_df.empty:
             with db_session:
                 stored_schedule = store_schedule(schedule_df, component_status)
-                print(f"Successfully stored {len(stored_schedule)} schedule items")
 
-        # Convert schedule to response format with stored IDs
         scheduled_operations = []
         if not schedule_df.empty:
             with db_session:
-                # Get machine details
                 machine_details = {
                     machine.id: f"{machine.work_center.code}-{machine.make}"
                     for machine in Machine.select()
                 }
 
-                # Get orders mapping
                 orders_map = {
                     order.part_number: order.production_order
                     for order in Order.select()
                 }
 
-            scheduled_operations = [
-                ScheduledOperation(
-                    component=row['partno'],
-                    description=row['operation'],
-                    machine=machine_details.get(row['machine_id'], f"Machine-{row['machine_id']}"),
-                    start_time=row['start_time'],
-                    end_time=row['end_time'],
-                    quantity=row['quantity'],
-                    production_order=orders_map.get(row['partno'], '')
-                ) for _, row in schedule_df.iterrows()
-            ]
+            for _, row in schedule_df.iterrows():
+                total_qty, current_qty, today_qty = extract_quantity(row['quantity'])
+
+                # Format the quantity string to include today's quantity
+                quantity_str = f"Process({current_qty}/{total_qty}pcs, Today: {today_qty}pcs)"
+
+                scheduled_operations.append(
+                    ScheduledOperation(
+                        component=row['partno'],
+                        description=row['operation'],
+                        machine=machine_details.get(row['machine_id'], f"Machine-{row['machine_id']}"),
+                        start_time=row['start_time'],
+                        end_time=row['end_time'],
+                        quantity=quantity_str,
+                        total_quantity=total_qty,
+                        current_quantity=current_qty,
+                        today_quantity=today_qty,
+                        production_order=orders_map.get(row['partno'], '')
+                    )
+                )
 
         return ScheduleResponse(
             scheduled_operations=scheduled_operations,

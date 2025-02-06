@@ -49,42 +49,39 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
         if part_status_map.get(partno, 'inactive') != 'active'
     ]
 
-    # Print skipped parts
-    print("\n--- Skipped Parts ---")
-    for skipped in skipped_parts:
-        print(skipped)
-
     if not active_parts:
         return pd.DataFrame(), datetime.now(), 0.0, {}, {}, ["No parts are marked as active for scheduling"]
 
-    # Get delivery dates and create a sorting order
-    part_delivery_dates = {}
+    # Get project priorities and lead times
+    part_priorities = {}
+    part_lead_times = {}
     order_info = {}
 
-    # First gather all order and delivery date information
+    # Gather all order, priority, and lead time information
     for partno in active_parts.keys():
         order = Order.select(lambda o: o.part_number == partno).first()
         if order:
-            if order.project and order.project.delivery_date:
-                delivery_date = order.project.delivery_date
-            else:
-                delivery_date = datetime(2025, 12, 31)  # Far future date for no delivery date
+            project_priority = order.project.priority if order.project else float('inf')
+            lead_time = order.project.delivery_date if order.project else None
 
-            part_delivery_dates[partno] = delivery_date
+            part_priorities[partno] = project_priority
+            part_lead_times[partno] = lead_time
             order_info[partno] = {
-                'delivery_date': delivery_date,
+                'priority': project_priority,
+                'lead_time': lead_time,  # Store lead time for reference
                 'order_id': order.id
             }
 
-    # Sort parts by delivery date
+    # Sort parts by priority only (lower number = higher priority)
     sorted_parts = sorted(
         active_parts.keys(),
-        key=lambda x: (part_delivery_dates.get(x, datetime(9999, 12, 31)))
+        key=lambda x: (part_priorities.get(x, float('inf')))
     )
 
     # Reorder the dataframe based on sorted parts
     df['sort_order'] = df['partno'].map({part: idx for idx, part in enumerate(sorted_parts)})
-    df_sorted = df[df['partno'].isin(active_parts)].sort_values(by=['sort_order', 'sequence']).drop('sort_order', axis=1)
+    df_sorted = df[df['partno'].isin(active_parts)].sort_values(by=['sort_order', 'sequence']).drop('sort_order',
+                                                                                                    axis=1)
 
     # Fetch raw materials with their InventoryStatus
     raw_materials_query = select((o.part_number, o.raw_material, ist)
@@ -358,7 +355,8 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
 
         operations = part_operations[partno]
         quantity = component_quantities[partno]
-        lead_time = part_delivery_dates.get(partno)
+        priority = part_priorities.get(partno, float('inf'))
+        lead_time = part_lead_times.get(partno)  # Get lead time for reference
 
         batch_schedule, completed_ops, unit_completion_times = schedule_batch_operations(
             partno, operations, quantity, start_date
@@ -371,14 +369,17 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
             part_status[partno] = {
                 'partno': partno,
                 'scheduled_end_time': latest_completion_time,
-                'lead_time': lead_time,
-                'on_time': (latest_completion_time.date() <= lead_time.date() if isinstance(lead_time, datetime) else
-                           latest_completion_time.date() <= lead_time if isinstance(lead_time, date) else None)
-                           if lead_time and latest_completion_time else None,
+                'priority': priority,
+                'lead_time': lead_time,  # Include lead time in status for reference
                 'completed_quantity': len(unit_completion_times),
                 'total_quantity': quantity,
-                'lead_time_provided': lead_time is not None
+                'lead_time_provided': lead_time is not None  # Track if lead time was provided
             }
+
+            # Calculate lead time difference for monitoring (but don't use for scheduling)
+            if lead_time and latest_completion_time:
+                time_difference = (lead_time - latest_completion_time).days
+                part_status[partno]['lead_time_difference'] = time_difference  # Positive means ahead of lead time
 
             # Update daily production tracking
             for unit_num, completion_time in unit_completion_times.items():

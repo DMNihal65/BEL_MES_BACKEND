@@ -6,10 +6,7 @@ import string
 
 from app.models import Program, Operation
 
-# Add this to your existing imports in scheduled.py
-
-# New router for program management (you can add this to scheduled.py)
-program_router = APIRouter(prefix="/programs", tags=["programs"])
+router = APIRouter(prefix="/programs", tags=["programs"])
 
 
 def generate_program_details(operation):
@@ -42,7 +39,7 @@ def generate_program_details(operation):
     }
 
 
-@program_router.post("/generate-programs")
+@router.post("/generate-programs")
 @db_session
 async def generate_programs_for_operations():
     """
@@ -80,6 +77,3 @@ async def generate_programs_for_operations():
         "total_programs_generated": len(generated_programs),
         "programs": generated_programs
     }
-
-# If you're in scheduled.py, add this to include the new router
-# router.include_router(program_router)
