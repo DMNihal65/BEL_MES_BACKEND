@@ -384,7 +384,6 @@ def save_to_database(data):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-
 @router.get("/all_orders")
 @db_session
 def get_all_orders():
@@ -485,6 +484,7 @@ async def search_order(
         raise he
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
+
 
 
 @router.put("/update_order/{order_number}")

@@ -137,6 +137,17 @@ class Program(db.Entity):
     version = Required(str)
     update_date = Required(datetime)
 
+# class Document(db.Entity):
+#     _table_ = ("master_order", "documents")
+#     id = PrimaryKey(int, auto=True)
+#     order = Required(Order)
+#     document_name = Required(str)
+#     type = Required(str)
+#     upload_date = Required(datetime)
+#     revision_date = Optional(datetime)
+#     version = Required(str)
+#     mpps = Set('MPP', reverse='document')
+
 class ToolList(db.Entity):
     _table_ = ("master_order", "tool_list") 
     id = PrimaryKey(int, auto=True)
@@ -151,16 +162,6 @@ class JigsAndFixturesList(db.Entity):
     operation = Required(Operation)
     jigs_id = Required(str)
 
-# class Document(db.Entity):
-#     _table_ = ("master_order", "documents")
-#     id = PrimaryKey(int, auto=True)
-#     order = Required(Order)
-#     document_name = Required(str)
-#     type = Required(str)
-#     upload_date = Required(datetime)
-#     revision_date = Optional(datetime)
-#     version = Required(str)
-#     mpps = Set('MPP', reverse='document')
 
 class UserLogs(db.Entity):
     _table_ = ("master_order", "user_logs")

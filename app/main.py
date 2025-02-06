@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware  # Add this import
 from .database.connection import connect_to_db
 from .routes import hr_routes, finance_routes, master_order_routes
+from .api.v1.endpoints import auth, planning, mpp, operations, document_management,inventoryv1
 from .api.v1.endpoints import auth, planning, mpp, operations, component_status
 from .api.v1.endpoints import auth, planning, mpp, operations, document_management, inventoryv1, scheduled, programs
 
@@ -25,9 +26,7 @@ async def startup_event():
         print(f"Error connecting to database: {str(e)}")
         raise e
 
-# Include routers
-# app.include_router(hr_routes.router)
-# app.include_router(finance_routes.router)
+# Include routers with proper prefixes
 app.include_router(auth.router)
 app.include_router(master_order_routes.router)
 app.include_router(planning.router)
@@ -47,3 +46,5 @@ def read_root():
 # uvicorn app.main:app --reload
 
 # uvicorn app.main:app --host 172.18.7.85 --port 4411 --reload
+# uvicorn app.main:app --host 172.18.7.88 --port 2222 --reload
+# uvicorn app.main:app --host 172.18.7.89 --port 2222 --reload
