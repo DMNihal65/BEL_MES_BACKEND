@@ -14,12 +14,14 @@ from app.schemas.inventoryv1 import (InventoryCategoryResponse,
                                      InventoryRequestResponse,
                                      InventoryItemResponse,
                                      InventoryItemCreate,
-                                     CalibrationScheduleResponse,CalibrationScheduleCreate,
-                                     InventoryRequestCreate,InventoryTransactionResponse,InventoryTransactionCreate,
-                                     InventoryCategoryUpdate,InventorySubCategoryUpdate,InventoryItemUpdate,CalibrationScheduleUpdate,
-                                     CalibrationHistoryResponse,CalibrationHistoryCreate,InventoryRequestUpdate,StatusCount,CalibrationDue,TransactionSummary,
+                                     CalibrationScheduleResponse, CalibrationScheduleCreate,
+                                     InventoryRequestCreate, InventoryTransactionResponse, InventoryTransactionCreate,
+                                     InventoryCategoryUpdate, InventorySubCategoryUpdate, InventoryItemUpdate,
+                                     CalibrationScheduleUpdate,
+                                     CalibrationHistoryResponse, CalibrationHistoryCreate, InventoryRequestUpdate,
+                                     StatusCount, CalibrationDue, TransactionSummary,
                                      BulkInventoryItemCreate,
-                                     TransactionType,
+                                     TransactionType, InventoryRequestStatus,
                                      )
 
 from app.models.inventoryv1 import (
@@ -235,24 +237,25 @@ def create_bulk_items(bulk_items: BulkInventoryItemCreate):
             )
 
         # Check for existing item codes in database
-        existing_codes = select(i.item_code for i in InventoryItem 
-                              if i.item_code in item_codes)[:]
+        existing_codes = select(i.item_code for i in InventoryItem
+                             if i.item_code in item_codes)[:]
         if existing_codes:
             raise HTTPException(
                 status_code=400,
                 detail=f"Items with codes {existing_codes} already exist"
             )
 
-        created_items = []
+        # Validate quantities in each item
         for item_data in bulk_items.items:
-            # Validate quantities
             if item_data['available_quantity'] > item_data['quantity']:
                 raise HTTPException(
                     status_code=400,
                     detail=f"Available quantity cannot be greater than total quantity for item {item_data['item_code']}"
                 )
 
-            # Create new item
+        # Create new items
+        new_items = []
+        for item_data in bulk_items.items:
             new_item = InventoryItem(
                 subcategory=subcategory,
                 item_code=item_data['item_code'],
@@ -264,36 +267,49 @@ def create_bulk_items(bulk_items: BulkInventoryItemCreate):
                 created_at=datetime.utcnow(),
                 updated_at=datetime.utcnow()
             )
-            
-            created_items.append({
-                "id": new_item.id,
-                "item_code": new_item.item_code,
-                "dynamic_data": new_item.dynamic_data,
-                "quantity": new_item.quantity,
-                "available_quantity": new_item.available_quantity,
-                "status": new_item.status,
-                "subcategory_id": subcategory.id,
-                "created_at": new_item.created_at,
-                "updated_at": new_item.updated_at,
-                "created_by": user.id
-            })
+            new_items.append(new_item)
 
+        # Commit the transaction
         commit()
-        return created_items
+
+        # Fetch the created items to ensure all data is correctly retrieved
+        created_items = select(i for i in InventoryItem if i in new_items)[:]
+
+        # Convert to the response model
+        response = [InventoryItemResponse(
+            id=item.id,
+            item_code=item.item_code,
+            dynamic_data=item.dynamic_data,
+            quantity=item.quantity,
+            available_quantity=item.available_quantity,
+            status=item.status,
+            subcategory_id=item.subcategory.id,
+            created_at=item.created_at,
+            updated_at=item.updated_at,
+            created_by=item.created_by.id
+        ) for item in created_items]
+
+        return response
 
     except HTTPException as he:
         rollback()
         raise he
-    except Exception as e:
+    except DatabaseError as db_error:
         rollback()
-        if "duplicate key value violates unique constraint" in str(e):
+        if "duplicate key value violates unique constraint" in str(db_error):
             raise HTTPException(
                 status_code=400,
                 detail="One or more item codes already exist in the database"
             )
         raise HTTPException(
+            status_code=400,
+            detail=f"Database error occurred: {str(db_error)}"
+        )
+    except Exception as e:
+        rollback()
+        raise HTTPException(
             status_code=500,
-            detail=f"An error occurred while creating items: {str(e)}"
+            detail=f"An unexpected error occurred: {str(e)}"
         )
 
 # Calibration Schedule Endpoints
@@ -430,6 +446,7 @@ def create_inventory_request(
             "expected_return_date": new_request.expected_return_date,
             "actual_return_date": None,
             "remarks": new_request.remarks,
+            "inventory_item_code": new_request.inventory_item.item_code,
             "created_at": new_request.created_at,
             "updated_at": new_request.updated_at,
             "approved_by": None,
@@ -446,14 +463,13 @@ def create_inventory_request(
         rollback()
         raise HTTPException(status_code=500, detail=str(e))
 
-# Inventory Transaction Endpoints
 @router.post("/transactions/", response_model=InventoryTransactionResponse)
 def create_transaction(
     transaction: InventoryTransactionCreate,
     current_user: User = Depends(get_current_user)
 ):
     """
-    Create a new inventory transaction.
+    Create a new inventory transaction and update the reference request status if provided.
     """
     try:
         with db_session:
@@ -518,6 +534,16 @@ def create_transaction(
             # Flush changes to get IDs
             flush()
 
+            # Update reference request if provided
+            if request:
+                request.status = InventoryRequestStatus.APPROVED.value  # Use .value for string
+                request.approved_at = current_time
+                request.approved_by = user
+                request.updated_at = current_time  # Update the updated_at field
+
+            # Commit changes
+            commit()
+
             # Create response data without accessing database objects
             response_data = {
                 "id": new_transaction.id,
@@ -529,9 +555,6 @@ def create_transaction(
                 "remarks": remarks,
                 "created_at": current_time
             }
-
-            # Commit changes
-            commit()
 
             return response_data
 
@@ -1070,6 +1093,7 @@ def get_all_requests():
             response_data.append({
                 "id": r.id,
                 "inventory_item_id": r.inventory_item.id,
+                "inventory_item_code":r.inventory_item.item_code,
                 "requested_by": r.requested_by.id,
                 "order_id": r.order.id,
                 "operation_id": r.operation.id if r.operation else None,
@@ -1100,6 +1124,7 @@ def get_request(request_id: int):
         "id": request.id,
         "inventory_item_id": request.inventory_item.id,
         "requested_by": request.requested_by.id,
+        "inventory_item_code":request.inventory_item.item_code,
         "order_id": request.order.id,
         "operation_id": request.operation.id if request.operation else None,
         "quantity": request.quantity,

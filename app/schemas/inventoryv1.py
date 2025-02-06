@@ -169,6 +169,7 @@ class InventoryRequestBase(BaseModel):
     expected_return_date: datetime
     actual_return_date: Optional[datetime] = None
     remarks: Optional[str] = None
+    inventory_item_code:str
 
 class InventoryRequestCreate(BaseModel):
     inventory_item_id: int
@@ -197,6 +198,7 @@ class InventoryRequestCreate(BaseModel):
 class InventoryRequestResponse(InventoryRequestBase):
     id: int
     inventory_item_id: int
+    inventory_item_code:str
     requested_by: int
     order_id: int
     operation_id: Optional[int]
