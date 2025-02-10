@@ -9,6 +9,7 @@ class DailyProductionItem(BaseModel):
     planned_quantity: int
     completed_quantity: int
     remaining_quantity: int
+    operation_description: Optional[str] = None
 
 class DailyProductionResponse(BaseModel):
     daily_production: List[DailyProductionItem]

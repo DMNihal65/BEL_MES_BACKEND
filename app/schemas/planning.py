@@ -72,7 +72,7 @@ class CreateOrderRequest(BaseModel):
     launched_quantity: int
     plant_id: int
     project_name: str
-    delivery_date: int
+
 
 # Request model for creating new operation
 class CreateOperationRequest(BaseModel):
