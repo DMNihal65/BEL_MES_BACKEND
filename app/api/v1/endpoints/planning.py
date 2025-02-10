@@ -694,7 +694,6 @@ async def update_operation(
         raise he
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 @router.post("/create_order")
 async def create_order(order_data: CreateOrderRequest):
     """Create a new order"""
@@ -708,14 +707,8 @@ async def create_order(order_data: CreateOrderRequest):
                     detail="Production order already exists"
                 )
 
-            # Convert epoch to datetime for delivery_date
-            try:
-                delivery_date = datetime.fromtimestamp(order_data.delivery_date)
-            except ValueError as e:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Invalid delivery date timestamp: {str(e)}"
-                )
+            # Current date for project dates
+            current_date = datetime.now()
 
             # Get or create project
             project = Project.get(name=order_data.project_name)
@@ -724,10 +717,28 @@ async def create_order(order_data: CreateOrderRequest):
                 project = Project(
                     name=order_data.project_name,
                     priority=max_priority + 1,  # Auto-increment
-                    start_date=datetime.now(),
-                    end_date=delivery_date,
-                    delivery_date=delivery_date
+                    start_date=current_date,
+                    end_date=current_date,
+                    delivery_date=current_date
                 )
+
+            # Get or create default inventory status
+            default_status = InventoryStatus.get(name="Available")
+            if not default_status:
+                default_status = InventoryStatus(
+                    name="Available",
+                    description="Material is available for use"
+                )
+
+            # Create raw material with hardcoded available_from date
+            raw_material = RawMaterial(
+                child_part_number=f"RM-{order_data.part_number}",  # Generate a default part number
+                description=f"Raw Material for {order_data.part_number}",
+                quantity=float(order_data.required_quantity),  # Use required quantity as default
+                unit=Unit.get(name="KG") or Unit(name="KG"),  # Get or create PCS unit
+                status=default_status,
+                available_from=datetime(2024, 1, 2, 9, 0)  # Hardcoded available_from date
+            )
 
             # Create new order
             order = Order(
@@ -739,10 +750,9 @@ async def create_order(order_data: CreateOrderRequest):
                 total_operations=order_data.total_operations,
                 required_quantity=order_data.required_quantity,
                 launched_quantity=order_data.launched_quantity,
-                raw_material="",  # Default empty string
-                plant_id=order_data.plant_id,
-                delivery_date=delivery_date,
-                project=project
+                plant_id=str(order_data.plant_id),  # Convert to string as required by model
+                project=project,
+                raw_material=raw_material  # Link the raw material to the order
             )
 
             # Create initial 'inactive' status for scheduling
@@ -754,7 +764,41 @@ async def create_order(order_data: CreateOrderRequest):
                 )
 
             commit()
-            return order.to_dict()
+            return {
+                "id": order.id,
+                "production_order": order.production_order,
+                "sale_order": order.sale_order,
+                "wbs_element": order.wbs_element,
+                "part_number": order.part_number,
+                "part_description": order.part_description,
+                "total_operations": order.total_operations,
+                "required_quantity": order.required_quantity,
+                "launched_quantity": order.launched_quantity,
+                "plant_id": order.plant_id,
+                "project": {
+                    "id": order.project.id,
+                    "name": order.project.name,
+                    "priority": order.project.priority,
+                    "start_date": order.project.start_date,
+                    "end_date": order.project.end_date,
+                    "delivery_date": order.project.delivery_date
+                },
+                "raw_material": {
+                    "id": order.raw_material.id,
+                    "child_part_number": order.raw_material.child_part_number,
+                    "description": order.raw_material.description,
+                    "quantity": order.raw_material.quantity,
+                    "available_from": order.raw_material.available_from,
+                    "unit": {
+                        "id": order.raw_material.unit.id,
+                        "name": order.raw_material.unit.name
+                    },
+                    "status": {
+                        "id": order.raw_material.status.id,
+                        "name": order.raw_material.status.name
+                    }
+                }
+            }
 
     except HTTPException as he:
         raise he

@@ -13,7 +13,7 @@ class MPPResponse(BaseModel):
     id: int
     order_id: int
     operation_id: int
-    document_id: Optional[int]
+    # document_id: Optional[int]
     fixture_number: str
     ipid_number: str
     datum_x: str

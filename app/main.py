@@ -5,6 +5,8 @@ from .routes import hr_routes, finance_routes, master_order_routes
 from .api.v1.endpoints import auth, planning, mpp, operations, document_management,inventoryv1
 from .api.v1.endpoints import auth, planning, mpp, operations, component_status
 from .api.v1.endpoints import auth, planning, mpp, operations, document_management, inventoryv1, scheduled, programs
+from .api.v1.endpoints import auth, planning, mpp, operations, component_status, programs, daily_production
+from .api.v1.endpoints import auth, planning, mpp, operations, scheduled
 
 app = FastAPI(title="BEL MES API")
 
@@ -26,7 +28,9 @@ async def startup_event():
         print(f"Error connecting to database: {str(e)}")
         raise e
 
-# Include routers with proper prefixes
+# Include routers
+# app.include_router(hr_routes.router)
+# app.include_router(finance_routes.router)
 app.include_router(auth.router)
 app.include_router(master_order_routes.router)
 app.include_router(planning.router)
@@ -35,6 +39,8 @@ app.include_router(operations.router)
 app.include_router(component_status.router, tags=["production"])
 app.include_router(scheduled.router)
 app.include_router(programs.router)
+app.include_router(daily_production.router)
+
 app.include_router(document_management.router, prefix="/api/v1")
 app.include_router(inventoryv1.router, prefix="/api/v1")
 # router = APIRouter(prefix="/api/inventory", tags=["inventory"])

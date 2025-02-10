@@ -30,5 +30,26 @@ class ScheduleResponse(BaseModel):
     partially_completed: List[str]
     production_orders: Dict[str, List[dict]]
 
+
+# class ScheduledOperation(BaseModel):
+#     component: str
+#     description: str
+#     machine: str
+#     start_time: datetime
+#     end_time: datetime
+#     quantity: str
+#     total_quantity: int
+#     current_quantity: int
+#     today_quantity: int
+#     production_order: Optional[str]
+#
+# class ScheduleResponse(BaseModel):
+#     scheduled_operations: List[ScheduledOperation]
+#     overall_end_time: datetime
+#     overall_time: str
+#     daily_production: Dict
+#     component_status: Dict
+#     partially_completed: List[str]
+
 class MachineSchedulesOut(BaseModel):
     machine_schedules: Dict[str, List[dict]]

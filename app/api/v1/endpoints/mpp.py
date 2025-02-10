@@ -2,9 +2,9 @@ from fastapi import APIRouter, HTTPException
 from typing import List
 from pony.orm import db_session, select, commit
 from datetime import datetime
-
 from app.models.master_order import MPP, Operation,  Order
 from app.schemas.mpp import MPPResponse, NewMPPCreate, UpdateMPPSections
+
 
 router = APIRouter()
 
@@ -95,9 +95,9 @@ async def create_new_mpp(mpp_data: NewMPPCreate):
                 )
 
             # Find MPP document if exists
-            document = select(d for d in Document
-                              if d.order == order and
-                              d.type == "MPP").first()
+            # document = select(d for d in Document
+            #                   if d.order == order and
+            #                   d.type == "MPP").first()
 
             # Check if MPP already exists
             existing_mpp = select(m for m in MPP
@@ -132,7 +132,7 @@ async def create_new_mpp(mpp_data: NewMPPCreate):
                     "id": existing_mpp.id,
                     "order_id": order.id,
                     "operation_id": operation.id,
-                    "document_id": document.id if document else None,
+                    # "document_id": document.id if document else None,
                     "fixture_number": existing_mpp.fixture_number,
                     "ipid_number": existing_mpp.ipid_number,
                     "datum_x": existing_mpp.datum_x,
@@ -161,7 +161,7 @@ async def create_new_mpp(mpp_data: NewMPPCreate):
                 new_mpp = MPP(
                     order=order,
                     operation=operation,
-                    document=document,
+                    # document=document,
                     fixture_number=mpp_data.fixture_number,
                     ipid_number=mpp_data.ipid_number,
                     datum_x=mpp_data.datum_x,
@@ -176,7 +176,7 @@ async def create_new_mpp(mpp_data: NewMPPCreate):
                     "id": new_mpp.id,
                     "order_id": order.id,
                     "operation_id": operation.id,
-                    "document_id": document.id if document else None,
+                    # "document_id": document.id if document else None,
                     "fixture_number": new_mpp.fixture_number,
                     "ipid_number": new_mpp.ipid_number,
                     "datum_x": new_mpp.datum_x,
