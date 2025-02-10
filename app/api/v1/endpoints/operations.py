@@ -58,31 +58,33 @@ async def schedule():
 
         scheduled_operations = []
         if not schedule_df.empty:
-            # Get machine names mapping with work center info
             with db_session:
-                # Fetch machines with their work centers
                 machine_details = {}
                 for machine in Machine.select():
                     machine_name = f"{machine.work_center.code}-{machine.make}"
                     machine_details[machine.id] = {
                         'name': machine_name,
-                        'id': machine.id  # Include machine ID in details
+                        'id': machine.id
                     }
 
                 orders_map = {order.part_number: order.production_order for order in Order.select()}
 
-            scheduled_operations = [
-                ScheduledOperation(
-                    component=row['partno'],
-                    description=row['operation'],
-                    machine=f"{machine_details.get(row['machine_id'], {'name': f'Machine-{row['machine_id']}'})['name']} ",
-                    # Include machine ID in the name
-                    start_time=row['start_time'],
-                    end_time=row['end_time'],
-                    quantity=row['quantity'],
-                    production_order=orders_map.get(row['partno'], '')
-                ) for _, row in schedule_df.iterrows()
-            ]
+            scheduled_operations = []
+            for _, row in schedule_df.iterrows():
+                machine_id = row['machine_id']
+                machine_name = machine_details.get(machine_id, {'name': f'Machine-{machine_id}'})['name']
+
+                scheduled_operations.append(
+                    ScheduledOperation(
+                        component=row['partno'],
+                        description=row['operation'],
+                        machine=machine_name,
+                        start_time=row['start_time'],
+                        end_time=row['end_time'],
+                        quantity=row['quantity'],
+                        production_order=orders_map.get(row['partno'], '')
+                    )
+                )
 
         return ScheduleResponse(
             scheduled_operations=scheduled_operations,

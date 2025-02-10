@@ -53,11 +53,8 @@ def read_root():
 
 # uvicorn app.main:app --reload
 
-<<<<<<< HEAD
+
 # uvicorn app.main:app --host 172.18.7.85 --port 4413 --reload
 # uvicorn app.main:app --host 172.18.7.88 --port 2222 --reload
 # uvicorn app.main:app --host 172.18.7.89 --port 2222 --reload
 # uvicorn app.main:app --host 172.18.7.88 --port 4473 --reload
-=======
-# uvicorn app.main:app --host 172.18.7.88 --port 4476 --reload
->>>>>>> 7c3985c39d5e8c8f365e0d1e9406f3c832d6dd85
