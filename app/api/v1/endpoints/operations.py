@@ -27,17 +27,27 @@ async def schedule():
 
             # Fetch production orders with their operations
             production_orders = {}
+            machine_info = {}  # New dictionary to store machine information
+
+            # First, collect all machine information
+            for machine in Machine.select():
+                machine_info[machine.id] = {
+                    'name': f"{machine.make}",
+                    'work_center': machine.work_center.code
+                }
+
             for order in Order.select():
                 operations = []
                 for op in order.operations:
+                    machine_data = machine_info.get(op.machine.id, {})
                     operations.append({
                         'operation_number': op.operation_number,
                         'work_center': op.work_center.code,
-                        'machine': f"{op.machine.make}-{op.machine.model}",
+                        'machine': machine_data.get('name'),
                         'setup_time': float(op.setup_time),
                         'cycle_time': float(op.ideal_cycle_time)
                     })
-                production_orders[str(order.production_order)] = operations  # Convert operations to list
+                production_orders[str(order.production_order)] = operations
 
         df = fetch_operations()
         component_quantities = fetch_component_quantities()
@@ -54,7 +64,10 @@ async def schedule():
                 machine_details = {}
                 for machine in Machine.select():
                     machine_name = f"{machine.work_center.code}-{machine.make}"
-                    machine_details[machine.id] = machine_name
+                    machine_details[machine.id] = {
+                        'name': machine_name,
+                        'id': machine.id  # Include machine ID in details
+                    }
 
                 orders_map = {order.part_number: order.production_order for order in Order.select()}
 
@@ -62,7 +75,8 @@ async def schedule():
                 ScheduledOperation(
                     component=row['partno'],
                     description=row['operation'],
-                    machine=machine_details.get(row['machine_id'], f"Machine-{row['machine_id']}"),
+                    machine=f"{machine_details.get(row['machine_id'], {'name': f'Machine-{row['machine_id']}'})['name']} ",
+                    # Include machine ID in the name
                     start_time=row['start_time'],
                     end_time=row['end_time'],
                     quantity=row['quantity'],
@@ -83,7 +97,6 @@ async def schedule():
     except Exception as e:
         print(f"Error in schedule endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @router.get("/machine_schedules/", response_model=MachineSchedulesOut)
 async def get_machine_schedules(

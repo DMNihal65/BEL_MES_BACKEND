@@ -1,6 +1,6 @@
 from fastapi import FastAPI, File, UploadFile, APIRouter, HTTPException, Query
 from pony.orm import db_session, select, commit, count
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Optional
 import PyPDF2
 import io
@@ -10,7 +10,7 @@ from app.database.connection import db
 from app.models import (
     WorkCenter, Machine, Project, Order, Operation,
     ProcessPlan, Document, ToolList, JigsAndFixturesList,
-    Unit, RawMaterial, InventoryStatus, PartScheduleStatus
+    Unit, RawMaterial, InventoryStatus, PartScheduleStatus, MachineStatus
 )
 from app.schemas.planning import CreateOperationRequest, CreateOrderRequest, OrderUpdateRequest, OperationUpdateRequest
 
@@ -384,6 +384,7 @@ def save_to_database(data):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+
 @router.get("/all_orders")
 @db_session
 def get_all_orders():
@@ -694,6 +695,7 @@ async def update_operation(
         raise he
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 @router.post("/create_order")
 async def create_order(order_data: CreateOrderRequest):
     """Create a new order"""

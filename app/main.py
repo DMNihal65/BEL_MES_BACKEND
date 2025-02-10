@@ -1,5 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware  # Add this import
+
+
 from .database.connection import connect_to_db
 from .routes import hr_routes, finance_routes, master_order_routes
 from .api.v1.endpoints import auth, planning, mpp, operations, document_management,inventoryv1
@@ -54,3 +56,4 @@ def read_root():
 # uvicorn app.main:app --host 172.18.7.85 --port 4413 --reload
 # uvicorn app.main:app --host 172.18.7.88 --port 2222 --reload
 # uvicorn app.main:app --host 172.18.7.89 --port 2222 --reload
+# uvicorn app.main:app --host 172.18.7.88 --port 4473 --reload
