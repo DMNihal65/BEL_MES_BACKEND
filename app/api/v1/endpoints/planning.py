@@ -485,6 +485,7 @@ async def search_order(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
 
+
 @router.get("/search_order2")
 async def search_order(
         part_number: Optional[str] = Query(None, min_length=1),
@@ -564,6 +565,7 @@ async def search_order(
         raise he
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
+
 
 
 
