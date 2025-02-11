@@ -1,4 +1,3 @@
-
 from pydantic import BaseModel
 from typing import Optional, List, Dict
 
@@ -21,13 +20,14 @@ class MPPResponse(BaseModel):
     datum_z: str
     work_instructions: dict
     part_number: str
+    production_order: str
     operation_number: int
 
     class Config:
         from_attributes = True
 
 class NewMPPCreate(BaseModel):
-    part_number: str
+    part_number: Optional[str] = None
     operation_number: int
     fixture_number: str
     ipid_number: str
@@ -35,6 +35,7 @@ class NewMPPCreate(BaseModel):
     datum_y: str
     datum_z: str
     work_instructions: List[MPPSection]
+    production_order: Optional[str] = None
 
 class UpdateMPPSections(BaseModel):
     work_instructions: List[MPPSection]

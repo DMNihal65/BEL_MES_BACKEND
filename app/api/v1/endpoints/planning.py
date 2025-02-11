@@ -10,7 +10,7 @@ from app.database.connection import db
 from app.models import (
     WorkCenter, Machine, Project, Order, Operation,
     ProcessPlan, Document, ToolList, JigsAndFixturesList,
-    Unit, RawMaterial, InventoryStatus, PartScheduleStatus, MachineStatus
+    Unit, RawMaterial, InventoryStatus, PartScheduleStatus, MachineStatus, MachineShift, Status
 )
 from app.schemas.planning import CreateOperationRequest, CreateOrderRequest, OrderUpdateRequest, OperationUpdateRequest
 
@@ -304,7 +304,8 @@ def save_to_database(data):
             description=data["Raw Materials"][0]["Description"],
             quantity=float(data["Raw Materials"][0]["Total Qty"]),
             unit=unit,
-            status=default_status
+            status=default_status,
+            available_from=datetime(2024, 1, 2, 9, 0)  # Added hardcoded available_from date to match create_order
         )
 
         # Create master order
@@ -340,6 +341,14 @@ def save_to_database(data):
                 upload_date=datetime.now()
             )
 
+        # Get or create default machine status
+        default_status_on = Status.get(name="ON")
+        if not default_status_on:
+            default_status_on = Status(
+                name="ON",
+                description="Machine is operational"
+            )
+
         # Create operations and work centers
         for op in data["Operations"]:
             # Check if work center exists
@@ -357,15 +366,47 @@ def save_to_database(data):
 
             # If no machines exist for this work center, create a default one
             if not existing_machines:
+                # Create default machine
                 machine = Machine(
                     work_center=work_center,
                     type="Default",
                     make="Default",
-                    model="Default"
+                    model="Default",
+                    year_of_installation=2024,  # Default year
+                    cnc_controller="Default Controller",
+                    cnc_controller_series="Default Series",
+                    calibration_date=datetime(2024, 1, 1),  # Default calibration date
+                    last_maintenance_date=datetime(2024, 1, 1)  # Default maintenance date
+                )
+
+                # Create default machine status
+                MachineStatus(
+                    machine=machine,
+                    status=default_status_on,
+                    description="Machine is operational",
+                    available_from=datetime(2025, 1, 21, 11, 41, 20, 417587)  # Hardcoded as requested
+                )
+
+                # Create default machine shift
+                MachineShift(
+                    machine=machine,
+                    shift_start=datetime(2024, 1, 1, 9, 0),  # 9 AM start
+                    shift_end=datetime(2024, 1, 1, 17, 0),  # 5 PM end
+                    is_active=True
                 )
             else:
                 # Use the first existing machine
                 machine = existing_machines[0]
+
+                # Check if machine status exists, if not create it
+                existing_status = select(ms for ms in MachineStatus if ms.machine == machine).first()
+                if not existing_status:
+                    MachineStatus(
+                        machine=machine,
+                        status=default_status_on,
+                        description="Machine is operational",
+                        available_from=datetime(2025, 1, 21, 11, 41, 20, 417587)  # Hardcoded as requested
+                    )
 
             operation = Operation(
                 order=master_order,
@@ -382,7 +423,6 @@ def save_to_database(data):
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
-
 
 
 @router.get("/all_orders")

@@ -1,9 +1,6 @@
-# Pydantic models for responses
-from datetime import datetime,date
-from typing import Optional
-
 from pydantic import BaseModel
-
+from datetime import datetime, date
+from typing import Optional
 
 class MachineIDResponse(BaseModel):
     machine_id: int
@@ -13,7 +10,6 @@ class DateShiftMachineQuery(BaseModel):
     shift_id: int
     machine_id: Optional[int] = None
 
-# Add new Pydantic model for daily availability response
 class DailyAvailabilityResponse(BaseModel):
     date: datetime
     machine_id: int
@@ -50,17 +46,6 @@ class ShiftAvailabilityResponse(BaseModel):
     performance_loss: float
     quality_loss: float
 
-# Simplified Pydantic model for response
-class MachineRawResponse(BaseModel):
-    id: int
-    machine_id: int
-    time_stamp: datetime
-    status_name: str
-    job_in_progress: str
-    program_number: str
-    part_count: int
-
-# Add these Pydantic models with your other BaseModel definitions
 class WeeklyAvailabilityResponse(BaseModel):
     year: int
     week_number: int
@@ -99,7 +84,16 @@ class MonthlyAvailabilityResponse(BaseModel):
     performance_loss: float
     quality_loss: float
 
-# Add this new Pydantic model with your other BaseModel definitions
+# app/schemas/machine.py
+class MachineRawResponse(BaseModel):
+    id: int
+    machine_id: int
+    time_stamp: datetime
+    status_name: str
+    job_in_progress: str
+    program_number: str
+    part_count: int
+
 class AllMachinesStatusResponse(BaseModel):
     machine_id: int
     time_stamp: datetime
