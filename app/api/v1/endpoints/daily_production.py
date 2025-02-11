@@ -3,8 +3,7 @@ from datetime import datetime, timedelta, date
 from pony.orm import db_session, select
 from typing import Optional
 from app.models import PlannedScheduleItem, Order, ScheduleVersion
-from app.schemas.daily_production import DailyProductionResponse, DailyProductionItem, MonthlyProductionResponse, \
-    MonthlyProductionItem, WeeklyProductionResponse, WeeklyProductionItem
+from app.schemas.daily_production import DailyProductionResponse, DailyProductionItem
 
 router = APIRouter(prefix="/production", tags=["production"])
 
@@ -64,7 +63,6 @@ async def get_all_production_data(part_number: Optional[str] = None):
 
         return daily_production, total_planned, total_completed
 
-
 @router.get("/daily/", response_model=DailyProductionResponse)
 async def get_daily_production(part_number: Optional[str] = Query(None)):
     """
@@ -83,7 +81,8 @@ async def get_daily_production(part_number: Optional[str] = Query(None)):
         print(f"Error in daily production endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/weekly/", response_model=WeeklyProductionResponse)
+
+@router.get("/weekly/", response_model=DailyProductionResponse)
 async def get_weekly_production(part_number: Optional[str] = Query(None)):
     """Get all production data organized by week"""
     try:
@@ -101,7 +100,7 @@ async def get_weekly_production(part_number: Optional[str] = Query(None)):
                     'planned': {},
                     'completed': {},
                     'remaining': {},
-                    'operation_description': {},
+                    'operation_description': {},  # Store operation descriptions per part number
                     'production_order': {}
                 }
 
@@ -109,37 +108,39 @@ async def get_weekly_production(part_number: Optional[str] = Query(None)):
                 weekly_items[week_key]['planned'][item.part_number] = 0
                 weekly_items[week_key]['completed'][item.part_number] = 0
                 weekly_items[week_key]['remaining'][item.part_number] = 0
-                weekly_items[week_key]['operation_description'][item.part_number] = None
+                weekly_items[week_key]['operation_description'][item.part_number] = None  # Default to None
                 weekly_items[week_key]['production_order'][item.part_number] = None
 
             weekly_items[week_key]['planned'][item.part_number] += item.planned_quantity
             weekly_items[week_key]['completed'][item.part_number] += item.completed_quantity
             weekly_items[week_key]['remaining'][item.part_number] += item.remaining_quantity
 
+            # Ensure we store an operation description if available
             if item.operation_description:
                 weekly_items[week_key]['operation_description'][item.part_number] = item.operation_description
 
+                # Store the first non-null production order
             if item.production_order:
                 weekly_items[week_key]['production_order'][item.part_number] = item.production_order
 
-        # Convert weekly totals to WeeklyProductionItems
+        # Convert weekly totals to DailyProductionItems
         weekly_production = []
         for week_date, totals in sorted(weekly_items.items()):
             for part_num in totals['planned'].keys():
                 weekly_production.append(
-                    WeeklyProductionItem(
+                    DailyProductionItem(
                         part_number=part_num,
-                        production_order=totals['production_order'].get(part_num, None),
-                        week_start_date=week_date,  # Using week_start_date instead of date
+                        production_order=totals['production_order'].get(part_num, None), # Weekly total doesn't have a single order
+                        date=week_date,
                         planned_quantity=totals['planned'][part_num],
                         completed_quantity=totals['completed'][part_num],
                         remaining_quantity=totals['remaining'][part_num],
-                        operation_description=totals['operation_description'].get(part_num, None)
+                        operation_description=totals['operation_description'].get(part_num, None)  # Ensure it's included
                     )
                 )
 
-        return WeeklyProductionResponse(
-            weekly_production=weekly_production,  # Changed from daily_production to weekly_production
+        return DailyProductionResponse(
+            daily_production=weekly_production,
             total_planned=total_planned,
             total_completed=total_completed
         )
@@ -148,7 +149,8 @@ async def get_weekly_production(part_number: Optional[str] = Query(None)):
         print(f"Error in weekly production: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/monthly/", response_model=MonthlyProductionResponse)
+
+@router.get("/monthly/", response_model=DailyProductionResponse)
 async def get_monthly_production(part_number: Optional[str] = Query(None)):
     """Get all production data organized by month"""
     try:
@@ -166,44 +168,46 @@ async def get_monthly_production(part_number: Optional[str] = Query(None)):
                     'completed': {},
                     'remaining': {},
                     'operation_description': {},
-                    'production_order': {}
+                    'production_order': {}  # Track production orders separately
                 }
 
             if item.part_number not in monthly_items[month_key]['planned']:
                 monthly_items[month_key]['planned'][item.part_number] = 0
                 monthly_items[month_key]['completed'][item.part_number] = 0
                 monthly_items[month_key]['remaining'][item.part_number] = 0
-                monthly_items[month_key]['operation_description'][item.part_number] = None
-                monthly_items[month_key]['production_order'][item.part_number] = None
+                monthly_items[month_key]['operation_description'][item.part_number] = None  # Default to None
+                monthly_items[month_key]['production_order'][item.part_number] = None  # Default to None
 
             monthly_items[month_key]['planned'][item.part_number] += item.planned_quantity
             monthly_items[month_key]['completed'][item.part_number] += item.completed_quantity
             monthly_items[month_key]['remaining'][item.part_number] += item.remaining_quantity
 
+            # Store the first non-null operation description
             if item.operation_description:
                 monthly_items[month_key]['operation_description'][item.part_number] = item.operation_description
 
+            # Store the first non-null production order
             if item.production_order:
                 monthly_items[month_key]['production_order'][item.part_number] = item.production_order
 
-        # Convert monthly totals to MonthlyProductionItems
+        # Convert monthly totals to DailyProductionItems
         monthly_production = []
         for month_date, totals in sorted(monthly_items.items()):
             for part_num in totals['planned'].keys():
                 monthly_production.append(
-                    MonthlyProductionItem(
+                    DailyProductionItem(
                         part_number=part_num,
-                        production_order=totals['production_order'].get(part_num, None),
-                        month_start_date=month_date,  # Using month_start_date instead of date
+                        production_order=totals['production_order'].get(part_num, None),  # Ensure it's included
+                        date=month_date,
                         planned_quantity=totals['planned'][part_num],
                         completed_quantity=totals['completed'][part_num],
                         remaining_quantity=totals['remaining'][part_num],
-                        operation_description=totals['operation_description'].get(part_num, None)
+                        operation_description=totals['operation_description'].get(part_num, None)  # Ensure it's included
                     )
                 )
 
-        return MonthlyProductionResponse(
-            monthly_production=monthly_production,  # Changed from daily_production to monthly_production
+        return DailyProductionResponse(
+            daily_production=monthly_production,
             total_planned=total_planned,
             total_completed=total_completed
         )

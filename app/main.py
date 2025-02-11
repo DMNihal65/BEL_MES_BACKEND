@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware  # Add this import
 
 from .database.connection import connect_to_db
 from .routes import hr_routes, finance_routes, master_order_routes
-from .api.v1.endpoints import auth, planning, mpp, operations, component_status, programs, daily_production, oee
+from .api.v1.endpoints import auth, planning, mpp, operations, component_status, programs, daily_production
 from .api.v1.endpoints import auth, planning, mpp, operations, scheduled
 
 app = FastAPI(title="BEL MES API")
@@ -39,7 +39,7 @@ app.include_router(component_status.router, tags=["production"])
 app.include_router(scheduled.router)
 app.include_router(programs.router)
 app.include_router(daily_production.router)
-app.include_router(oee.router)
+
 
 
 @app.get("/")
@@ -48,4 +48,4 @@ def read_root():
 
 # uvicorn app.main:app --reload
 
-# uvicorn app.main:app --host 172.18.7.88 --port 4479 --reload
+# uvicorn app.main:app --host 172.18.7.88 --port 4470 --reload
