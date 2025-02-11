@@ -37,5 +37,13 @@ class NewMPPCreate(BaseModel):
     work_instructions: List[MPPSection]
     production_order: Optional[str] = None
 
-class UpdateMPPSections(BaseModel):
+class UpdateMPP(BaseModel):
+    part_number: Optional[str] = None
+    operation_number: int
+    fixture_number: str
+    ipid_number: str
+    datum_x: str
+    datum_y: str
+    datum_z: str
     work_instructions: List[MPPSection]
+    production_order: Optional[str] = None

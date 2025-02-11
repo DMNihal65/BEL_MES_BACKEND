@@ -3,7 +3,7 @@ from typing import List, Dict, Optional
 from pony.orm import db_session, select, commit
 from datetime import datetime
 from app.models.master_order import MPP, Operation, Order
-from app.schemas.mpp import MPPResponse, NewMPPCreate, UpdateMPPSections
+from app.schemas.mpp import MPPResponse, NewMPPCreate, UpdateMPP
 
 router = APIRouter()
 
@@ -214,14 +214,28 @@ async def create_new_mpp(mpp_data: NewMPPCreate):
 
 
 @router.put("/mpp/{part_number}/{operation_number}", response_model=MPPResponse)
-async def update_mpp_sections(
+async def update_mpp(
         part_number: str,
         operation_number: int,
-        update_data: UpdateMPPSections
+        update_data: UpdateMPP,
 ):
-    """Update work instruction sections for an MPP entry based on part number and operation number"""
+    """Update all fields of an MPP entry based on part number and operation number"""
     try:
         with db_session:
+            # Verify part number in path matches body
+            if part_number != update_data.part_number:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Part number in path must match part number in request body"
+                )
+
+            # Verify operation number in path matches body
+            if operation_number != update_data.operation_number:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Operation number in path must match operation number in request body"
+                )
+
             order = Order.get(part_number=part_number)
             if not order:
                 raise HTTPException(
@@ -247,6 +261,13 @@ async def update_mpp_sections(
                     detail=f"No MPP found for part number {part_number} and operation {operation_number}"
                 )
 
+            # Update all MPP fields
+            mpp.fixture_number = update_data.fixture_number
+            mpp.ipid_number = update_data.ipid_number
+            mpp.datum_x = update_data.datum_x
+            mpp.datum_y = update_data.datum_y
+            mpp.datum_z = update_data.datum_z
+
             # Update work instructions with new sections
             mpp.work_instructions = {
                 "sections": [
@@ -258,6 +279,10 @@ async def update_mpp_sections(
                     for idx, section in enumerate(update_data.work_instructions)
                 ]
             }
+
+            # Update order's production order if it has changed
+            if order.production_order != update_data.production_order:
+                order.production_order = update_data.production_order
 
             commit()
 
