@@ -144,37 +144,37 @@ def extract_oarc_details(pdf_content):
         data["Operations"].append(current_operation)
 
     # Extract document verification details from long text when operation is verification
-    for operation in data["Operations"]:
-        if "verification" in operation["Operation"].lower():
-            doc_details = {}
-            long_text = operation["Long Text"]
-
-            # Extract document details using regex patterns
-            doc_patterns = {
-                "OARC Rev": r"OARC Rev\.\s*:\s*([^\n]+)",
-                "Part Rev": r"Part Rev\.\s*:\s*([^\n]+)",
-                "Drawing No": r"Drawing No\.\s*:\s*([^R]+)Rev\.\s*:\s*([^\n]+)",
-                "Cad No": r"Cad No\.\s*:\s*([^R]+)Rev\.\s*:\s*([^\n]+)",
-                "Stage Verification Doc": r"Stage Verification Document No\.\s*:\s*([^R]+)Rev\.\s*:\s*([^\n]+)",
-                "Final Verification Doc": r"Final Verification Document No\.\s*:\s*([^R]+)Rev\.\s*:\s*([^\n]+)",
-                "Raw Material Index Doc": r"Raw Material Index\s+Doc No\.\s*:\s*([\w\-]+)\s+Rev\.\s*:\s*(\d+)",
-                "Plating Inspection Doc": r"Plating inspection Doc No\.\s*:([\w\-]+)\s+Rev\.\s*:\s*(\d+)",
-                "MPP Doc": r"MPP Doc No\.\s*:\s*([^R]+)Rev\.\s*:\s*([^\n]+)"
-            }
-
-            for key, pattern in doc_patterns.items():
-                match = re.search(pattern, long_text)
-                if match:
-                    if len(match.groups()) == 2:
-                        doc_details[key] = {
-                            "Number": match.group(1).strip(),
-                            "Revision": match.group(2).strip()
-                        }
-                    else:
-                        doc_details[key] = match.group(1).strip()
-
-            data["Document Verification"] = doc_details
-            break
+    # for operation in data["Operations"]:
+    #     if "verification" in operation["Operation"].lower():
+    #         doc_details = {}
+    #         long_text = operation["Long Text"]
+    #
+    #         # Extract document details using regex patterns
+    #         doc_patterns = {
+    #             "OARC Rev": r"OARC Rev\.\s*:\s*([^\n]+)",
+    #             "Part Rev": r"Part Rev\.\s*:\s*([^\n]+)",
+    #             "Drawing No": r"Drawing No\.\s*:\s*([^R]+)Rev\.\s*:\s*([^\n]+)",
+    #             "Cad No": r"Cad No\.\s*:\s*([^R]+)Rev\.\s*:\s*([^\n]+)",
+    #             "Stage Verification Doc": r"Stage Verification Document No\.\s*:\s*([^R]+)Rev\.\s*:\s*([^\n]+)",
+    #             "Final Verification Doc": r"Final Verification Document No\.\s*:\s*([^R]+)Rev\.\s*:\s*([^\n]+)",
+    #             "Raw Material Index Doc": r"Raw Material Index\s+Doc No\.\s*:\s*([\w\-]+)\s+Rev\.\s*:\s*(\d+)",
+    #             "Plating Inspection Doc": r"Plating inspection Doc No\.\s*:([\w\-]+)\s+Rev\.\s*:\s*(\d+)",
+    #             "MPP Doc": r"MPP Doc No\.\s*:\s*([^R]+)Rev\.\s*:\s*([^\n]+)"
+    #         }
+    #
+    #         for key, pattern in doc_patterns.items():
+    #             match = re.search(pattern, long_text)
+    #             if match:
+    #                 if len(match.groups()) == 2:
+    #                     doc_details[key] = {
+    #                         "Number": match.group(1).strip(),
+    #                         "Revision": match.group(2).strip()
+    #                     }
+    #                 else:
+    #                     doc_details[key] = match.group(1).strip()
+    #
+    #         data["Document Verification"] = doc_details
+    #         break
 
     # Extract raw materials
     raw_materials_started = False
