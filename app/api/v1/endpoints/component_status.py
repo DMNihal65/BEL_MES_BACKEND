@@ -9,8 +9,8 @@ from app.crud.leadtime import fetch_lead_times
 from app.crud.operation import fetch_operations
 from app.schemas.component_status import ComponentStatus, ComponentStatusResponse
 
+router = APIRouter(prefix="/api/v1", tags=["production"])
 
-router = APIRouter()
 
 
 def format_time_difference(td: timedelta) -> str:

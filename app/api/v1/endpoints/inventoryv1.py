@@ -2,7 +2,7 @@
 from fastapi import APIRouter, HTTPException, Depends, Query
 from typing import List, Optional
 from datetime import datetime, timedelta, timezone
-from pony.orm import db_session, commit, select, flush, rollback, TransactionIntegrityError, desc
+from pony.orm import db_session, commit, select, flush, rollback, TransactionIntegrityError, desc, DatabaseError
 from datetime import datetime
 
 from pony.utils import count

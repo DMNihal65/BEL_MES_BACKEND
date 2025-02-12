@@ -5,7 +5,7 @@ from app.models import Document
 from app.models.master_order import MPP, Operation, Order
 from app.schemas.mpp import MPPResponse, NewMPPCreate, UpdateMPPSections, MPPUpdateResponse, MPPUpdateRequest
 
-router = APIRouter()
+router = APIRouter(prefix="/api/v1", tags=["mpp"])
 
 
 @router.get("/mpp/by-part/{part_number}/{operation_number}", response_model=List[MPPResponse])

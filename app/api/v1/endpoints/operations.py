@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from pony.orm import db_session, select
 from app.schemas.operations import (
     OperationOut, ScheduledOperation, ScheduleResponse,
-    MachineSchedulesOut
+    MachineSchedulesOut, WorkCenterMachine
 )
 from app.crud.operation import fetch_operations
 from app.crud.component_quantities import fetch_component_quantities
@@ -14,40 +14,46 @@ from app.models import Operation, Order, Machine, WorkCenter
 
 
 
-router = APIRouter(prefix="/operations", tags=["operations"])
 
+router = APIRouter(prefix="/api/v1/operations", tags=["operations"])
 
 @router.get("/schedule-batch/", response_model=ScheduleResponse)
 async def schedule():
     try:
+        # Initialize work_centers_data at the start
+        work_centers_data = []
+
         with db_session:
             ops_count = Operation.select().count()
             orders_count = Order.select().count()
             print(f"Database counts - Operations: {ops_count}, Orders: {orders_count}")
 
-            # Fetch production orders with their operations
-            production_orders = {}
-            machine_info = {}  # New dictionary to store machine information
+            # Fetch work centers and their machines
+            for work_center in WorkCenter.select():
+                machines_in_wc = []
+                for machine in work_center.machines:
+                    machines_in_wc.append({
+                        "id": str(machine.id),
+                        "name": machine.make,
+                        "model": machine.model,
+                        "type": machine.type
+                    })
 
-            # First, collect all machine information
+                work_centers_data.append(
+                    WorkCenterMachine(
+                        work_center_code=work_center.code,
+                        work_center_name=work_center.work_center_name or "",
+                        machines=machines_in_wc
+                    )
+                )
+
+            # Fetch machine information for scheduling
+            machine_info = {}
             for machine in Machine.select():
                 machine_info[machine.id] = {
                     'name': f"{machine.make}",
                     'work_center': machine.work_center.code
                 }
-
-            for order in Order.select():
-                operations = []
-                for op in order.operations:
-                    machine_data = machine_info.get(op.machine.id, {})
-                    operations.append({
-                        'operation_number': op.operation_number,
-                        'work_center': op.work_center.code,
-                        'machine': machine_data.get('name'),
-                        'setup_time': float(op.setup_time),
-                        'cycle_time': float(op.ideal_cycle_time)
-                    })
-                production_orders[str(order.production_order)] = operations
 
         df = fetch_operations()
         component_quantities = fetch_component_quantities()
@@ -69,7 +75,6 @@ async def schedule():
 
                 orders_map = {order.part_number: order.production_order for order in Order.select()}
 
-            scheduled_operations = []
             for _, row in schedule_df.iterrows():
                 machine_id = row['machine_id']
                 machine_name = machine_details.get(machine_id, {'name': f'Machine-{machine_id}'})['name']
@@ -86,6 +91,7 @@ async def schedule():
                     )
                 )
 
+        # Always return work_centers_data, even if it's empty
         return ScheduleResponse(
             scheduled_operations=scheduled_operations,
             overall_end_time=overall_end_time,
@@ -93,11 +99,12 @@ async def schedule():
             daily_production=daily_production,
             component_status=component_status,
             partially_completed=partially_completed,
-            production_orders=production_orders
+            work_centers=work_centers_data  # This will now always be included
         )
 
     except Exception as e:
         print(f"Error in schedule endpoint: {str(e)}")
+        # In case of error, return with empty work_centers list
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/machine_schedules/", response_model=MachineSchedulesOut)

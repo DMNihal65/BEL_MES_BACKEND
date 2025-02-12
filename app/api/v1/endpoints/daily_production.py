@@ -6,7 +6,7 @@ from app.models import PlannedScheduleItem, Order, ScheduleVersion
 from app.schemas.daily_production import DailyProductionResponse, DailyProductionItem, MonthlyProductionResponse, \
     MonthlyProductionItem, WeeklyProductionResponse, WeeklyProductionItem
 
-router = APIRouter(prefix="/production", tags=["production"])
+router = APIRouter(prefix="/api/v1/production", tags=["production"])
 
 def epoch_to_date(epoch: int) -> date:
     """Convert epoch timestamp to date"""

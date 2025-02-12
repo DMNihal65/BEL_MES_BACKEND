@@ -9,7 +9,7 @@ from ..schemas.master_order_schemas import (
     MachineCreate, MachineUpdate, MachineResponse
 )
 
-router = APIRouter(prefix="/master-order", tags=["Master Order"])
+router = APIRouter(prefix="/api/v1/master-order", tags=["Master Order"])
 
 # WorkCenter Routes
 @router.post("/workcenters/", response_model=WorkCenterResponse)

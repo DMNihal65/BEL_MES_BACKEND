@@ -34,3 +34,23 @@ class ScheduleResponse(BaseModel):
     daily_production: Dict
     component_status: Dict
     partially_completed: List[str]
+
+
+class ProductionLogResponse(BaseModel):
+    id: int
+    operator_id: int
+    start_time: Optional[datetime]  # Made optional
+    end_time: Optional[datetime]    # Made optional
+    quantity_completed: int
+    quantity_rejected: int
+    part_number: Optional[str]      # Made optional
+    operation_description: Optional[str]  # Made optional
+    machine_name: Optional[str]     # Made optional
+    notes: Optional[str]
+    version_number: Optional[int]   # Made optional
+
+class ProductionLogsResponse(BaseModel):
+    production_logs: List[ProductionLogResponse]
+    total_completed: int
+    total_rejected: int
+    total_logs: int

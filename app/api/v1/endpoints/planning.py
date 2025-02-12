@@ -5,16 +5,17 @@ from typing import List, Optional
 import PyPDF2
 import io
 import re
-
+import json
 from app.database.connection import db
 from app.models import (
     WorkCenter, Machine, Project, Order, Operation,
     ProcessPlan, Document, ToolList, JigsAndFixturesList,
     Unit, RawMaterial, InventoryStatus, PartScheduleStatus, MachineStatus, MachineShift, Status
 )
-from app.schemas.planning import CreateOperationRequest, CreateOrderRequest, OrderUpdateRequest, OperationUpdateRequest
+from app.schemas.planning import CreateOperationRequest, CreateOrderRequest, OrderUpdateRequest, OperationUpdateRequest, \
+    SaveDataRequest
 
-router = APIRouter(prefix="/planning", tags=["planning"])
+router = APIRouter(prefix="/api/v1/planning", tags=["planning"])
 
 
 def extract_oarc_details(pdf_content):
@@ -144,37 +145,37 @@ def extract_oarc_details(pdf_content):
         data["Operations"].append(current_operation)
 
     # Extract document verification details from long text when operation is verification
-    for operation in data["Operations"]:
-        if "verification" in operation["Operation"].lower():
-            doc_details = {}
-            long_text = operation["Long Text"]
-
-            # Extract document details using regex patterns
-            doc_patterns = {
-                "OARC Rev": r"OARC Rev\.\s*:\s*([^\n]+)",
-                "Part Rev": r"Part Rev\.\s*:\s*([^\n]+)",
-                "Drawing No": r"Drawing No\.\s*:\s*([^R]+)Rev\.\s*:\s*([^\n]+)",
-                "Cad No": r"Cad No\.\s*:\s*([^R]+)Rev\.\s*:\s*([^\n]+)",
-                "Stage Verification Doc": r"Stage Verification Document No\.\s*:\s*([^R]+)Rev\.\s*:\s*([^\n]+)",
-                "Final Verification Doc": r"Final Verification Document No\.\s*:\s*([^R]+)Rev\.\s*:\s*([^\n]+)",
-                "Raw Material Index Doc": r"Raw Material Index\s+Doc No\.\s*:\s*([\w\-]+)\s+Rev\.\s*:\s*(\d+)",
-                "Plating Inspection Doc": r"Plating inspection Doc No\.\s*:([\w\-]+)\s+Rev\.\s*:\s*(\d+)",
-                "MPP Doc": r"MPP Doc No\.\s*:\s*([^R]+)Rev\.\s*:\s*([^\n]+)"
-            }
-
-            for key, pattern in doc_patterns.items():
-                match = re.search(pattern, long_text)
-                if match:
-                    if len(match.groups()) == 2:
-                        doc_details[key] = {
-                            "Number": match.group(1).strip(),
-                            "Revision": match.group(2).strip()
-                        }
-                    else:
-                        doc_details[key] = match.group(1).strip()
-
-            data["Document Verification"] = doc_details
-            break
+    # for operation in data["Operations"]:
+    #     if "verification" in operation["Operation"].lower():
+    #         doc_details = {}
+    #         long_text = operation["Long Text"]
+    #
+    #         # Extract document details using regex patterns
+    #         doc_patterns = {
+    #             "OARC Rev": r"OARC Rev\.\s*:\s*([^\n]+)",
+    #             "Part Rev": r"Part Rev\.\s*:\s*([^\n]+)",
+    #             "Drawing No": r"Drawing No\.\s*:\s*([^R]+)Rev\.\s*:\s*([^\n]+)",
+    #             "Cad No": r"Cad No\.\s*:\s*([^R]+)Rev\.\s*:\s*([^\n]+)",
+    #             "Stage Verification Doc": r"Stage Verification Document No\.\s*:\s*([^R]+)Rev\.\s*:\s*([^\n]+)",
+    #             "Final Verification Doc": r"Final Verification Document No\.\s*:\s*([^R]+)Rev\.\s*:\s*([^\n]+)",
+    #             "Raw Material Index Doc": r"Raw Material Index\s+Doc No\.\s*:\s*([\w\-]+)\s+Rev\.\s*:\s*(\d+)",
+    #             "Plating Inspection Doc": r"Plating inspection Doc No\.\s*:([\w\-]+)\s+Rev\.\s*:\s*(\d+)",
+    #             "MPP Doc": r"MPP Doc No\.\s*:\s*([^R]+)Rev\.\s*:\s*([^\n]+)"
+    #         }
+    #
+    #         for key, pattern in doc_patterns.items():
+    #             match = re.search(pattern, long_text)
+    #             if match:
+    #                 if len(match.groups()) == 2:
+    #                     doc_details[key] = {
+    #                         "Number": match.group(1).strip(),
+    #                         "Revision": match.group(2).strip()
+    #                     }
+    #                 else:
+    #                     doc_details[key] = match.group(1).strip()
+    #
+    #         data["Document Verification"] = doc_details
+    #         break
 
     # Extract raw materials
     raw_materials_started = False
@@ -209,60 +210,60 @@ def extract_oarc_details(pdf_content):
     return data
 
 
-@router.post("/upload-pdf")
-async def upload_pdf(file: UploadFile = File(...)):
-    try:
-        pdf_content = await file.read()
-        data = extract_oarc_details(io.BytesIO(pdf_content))
-
-        with db_session:
-            master_order = save_to_database(data)
-
-            # Prepare detailed response
-            response_data = {
-                "message": "PDF uploaded and data saved successfully",
-                "order_details": {
-                    "id": master_order.id,
-                    "production_order": master_order.production_order,
-                    "sale_order": master_order.sale_order,
-                    "wbs_element": master_order.wbs_element,
-                    "part_number": master_order.part_number,
-                    "part_description": master_order.part_description,
-                    "total_operations": master_order.total_operations,
-                    "required_quantity": master_order.required_quantity,
-                    "launched_quantity": master_order.launched_quantity,
-                    "plant_id": master_order.plant_id,
-
-                    "project": {
-                        "id": master_order.project.id,
-                        "name": master_order.project.name,
-                        "priority": master_order.project.priority,
-                        "delivery_date": master_order.project.delivery_date,
-                        "start_date": master_order.project.start_date,
-                        "end_date": master_order.project.end_date
-                    } if master_order.project else None,
-
-                    "raw_material": {
-                        "id": master_order.raw_material.id,
-                        "child_part_number": master_order.raw_material.child_part_number,
-                        "description": master_order.raw_material.description,
-                        "quantity": master_order.raw_material.quantity,
-                        "unit": {
-                            "id": master_order.raw_material.unit.id,
-                            "name": master_order.raw_material.unit.name
-                        } if master_order.raw_material.unit else None,
-                        "status": {
-                            "id": master_order.raw_material.status.id,
-                            "name": master_order.raw_material.status.name
-                        } if master_order.raw_material.status else None
-                    } if master_order.raw_material else None
-                }
-            }
-
-            return response_data
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+# @router.post("/upload-pdf")
+# async def upload_pdf(file: UploadFile = File(...)):
+#     try:
+#         pdf_content = await file.read()
+#         data = extract_oarc_details(io.BytesIO(pdf_content))
+#
+#         with db_session:
+#             master_order = save_to_database(data)
+#
+#             # Prepare detailed response
+#             response_data = {
+#                 "message": "PDF uploaded and data saved successfully",
+#                 "order_details": {
+#                     "id": master_order.id,
+#                     "production_order": master_order.production_order,
+#                     "sale_order": master_order.sale_order,
+#                     "wbs_element": master_order.wbs_element,
+#                     "part_number": master_order.part_number,
+#                     "part_description": master_order.part_description,
+#                     "total_operations": master_order.total_operations,
+#                     "required_quantity": master_order.required_quantity,
+#                     "launched_quantity": master_order.launched_quantity,
+#                     "plant_id": master_order.plant_id,
+#
+#                     "project": {
+#                         "id": master_order.project.id,
+#                         "name": master_order.project.name,
+#                         "priority": master_order.project.priority,
+#                         "delivery_date": master_order.project.delivery_date,
+#                         "start_date": master_order.project.start_date,
+#                         "end_date": master_order.project.end_date
+#                     } if master_order.project else None,
+#
+#                     "raw_material": {
+#                         "id": master_order.raw_material.id,
+#                         "child_part_number": master_order.raw_material.child_part_number,
+#                         "description": master_order.raw_material.description,
+#                         "quantity": master_order.raw_material.quantity,
+#                         "unit": {
+#                             "id": master_order.raw_material.unit.id,
+#                             "name": master_order.raw_material.unit.name
+#                         } if master_order.raw_material.unit else None,
+#                         "status": {
+#                             "id": master_order.raw_material.status.id,
+#                             "name": master_order.raw_material.status.name
+#                         } if master_order.raw_material.status else None
+#                     } if master_order.raw_material else None
+#                 }
+#             }
+#
+#             return response_data
+#
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=str(e))
 
 
 @db_session
@@ -1007,3 +1008,67 @@ async def search_order(
         raise he
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
+
+
+
+
+
+@router.post("/upload-pdf")
+async def upload_pdf(file: UploadFile = File(...)):
+    try:
+        pdf_content = await file.read()
+        data = extract_oarc_details(io.BytesIO(pdf_content))
+
+        # Convert any non-serializable objects to strings
+        json_compatible_data = json.loads(json.dumps(data, default=str))
+        return json_compatible_data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/save-to-db")
+def save_to_database_endpoint(request: SaveDataRequest):
+    try:
+        with db_session:
+            master_order = save_to_database(request.data)
+
+            response_data = {
+                "message": "Data saved successfully",
+                "order_details": {
+                    "id": master_order.id,
+                    "production_order": master_order.production_order,
+                    "sale_order": master_order.sale_order,
+                    "wbs_element": master_order.wbs_element,
+                    "part_number": master_order.part_number,
+                    "part_description": master_order.part_description,
+                    "total_operations": master_order.total_operations,
+                    "required_quantity": master_order.required_quantity,
+                    "launched_quantity": master_order.launched_quantity,
+                    "plant_id": master_order.plant_id,
+                    "project": {
+                        "id": master_order.project.id,
+                        "name": master_order.project.name,
+                        "priority": master_order.project.priority,
+                        "delivery_date": master_order.project.delivery_date,
+                        "start_date": master_order.project.start_date,
+                        "end_date": master_order.project.end_date
+                    } if master_order.project else None,
+                    "raw_material": {
+                        "id": master_order.raw_material.id,
+                        "child_part_number": master_order.raw_material.child_part_number,
+                        "description": master_order.raw_material.description,
+                        "quantity": master_order.raw_material.quantity,
+                        "unit": {
+                            "id": master_order.raw_material.unit.id,
+                            "name": master_order.raw_material.unit.name
+                        } if master_order.raw_material.unit else None,
+                        "status": {
+                            "id": master_order.raw_material.status.id,
+                            "name": master_order.raw_material.status.name
+                        } if master_order.raw_material.status else None
+                    } if master_order.raw_material else None
+                }
+            }
+            return response_data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

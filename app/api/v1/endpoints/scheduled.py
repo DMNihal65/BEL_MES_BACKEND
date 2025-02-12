@@ -1,15 +1,15 @@
 from fastapi import APIRouter, HTTPException
 from pony.orm import db_session, select
-from app.schemas.scheduled import ScheduledOperation, ScheduleResponse
-from app.models import Order, Operation, Machine, PartScheduleStatus, PlannedScheduleItem, ScheduleVersion
+from app.schemas.scheduled import ScheduledOperation, ScheduleResponse, ProductionLogResponse, ProductionLogsResponse
+from app.models import Order, Operation, Machine, PartScheduleStatus, PlannedScheduleItem, ScheduleVersion, \
+    ProductionLog
 from app.crud.operation import fetch_operations
 from app.crud.component_quantities import fetch_component_quantities
 from app.crud.leadtime import fetch_lead_times
 from app.algorithm.scheduling import schedule_operations
 import re
 
-router = APIRouter(prefix="/scheduling", tags=["scheduling"])
-
+router = APIRouter(prefix="/api/v1/scheduling", tags=["scheduling"])
 
 @router.post("/set-part-status/{part_number}")
 async def set_part_status(part_number: str, status: str):
@@ -281,4 +281,64 @@ async def schedule():
 
     except Exception as e:
         print(f"Error in schedule endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/actual-production/", response_model=ProductionLogsResponse)
+async def get_production_logs():
+    """Retrieve all production logs with related information"""
+    try:
+        with db_session:
+            # Query all production logs with related data
+            logs_query = select((
+                                    log,
+                                    log.operator,
+                                    log.schedule_version,
+                                    log.schedule_version.schedule_item,
+                                    log.schedule_version.schedule_item.machine,
+                                    log.schedule_version.schedule_item.operation,
+                                    log.schedule_version.schedule_item.order
+                                ) for log in ProductionLog)
+
+            logs_data = []
+            total_completed = 0
+            total_rejected = 0
+
+            for (log, operator, version, schedule_item, machine, operation, order) in logs_query:
+                # Safe access to nested properties with null checks
+                machine_name = None
+                if machine and hasattr(machine, 'work_center') and machine.work_center:
+                    machine_name = f"{machine.work_center.code}-{machine.make}" if machine.work_center.code and machine.make else None
+
+                part_number = order.part_number if order else None
+                operation_desc = operation.operation_description if operation else None
+                version_num = version.version_number if version else None
+
+                log_entry = ProductionLogResponse(
+                    id=log.id,
+                    operator_id=operator.id,
+                    start_time=log.start_time if hasattr(log, 'start_time') else None,
+                    end_time=log.end_time if hasattr(log, 'end_time') else None,
+                    quantity_completed=log.quantity_completed,
+                    quantity_rejected=log.quantity_rejected,
+                    part_number=part_number,
+                    operation_description=operation_desc,
+                    machine_name=machine_name,
+                    notes=log.notes if hasattr(log, 'notes') else None,
+                    version_number=version_num
+                )
+
+                logs_data.append(log_entry)
+                total_completed += log.quantity_completed
+                total_rejected += log.quantity_rejected
+
+            return ProductionLogsResponse(
+                production_logs=logs_data,
+                total_completed=total_completed,
+                total_rejected=total_rejected,
+                total_logs=len(logs_data)
+            )
+
+    except Exception as e:
+        print(f"Error in production logs endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
