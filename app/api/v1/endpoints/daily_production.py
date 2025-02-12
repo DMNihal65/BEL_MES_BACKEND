@@ -54,6 +54,7 @@ async def get_all_production_data(part_number: Optional[str], start_epoch: int, 
             total_planned[part_num] += schedule_item.total_quantity
             total_completed[part_num] += schedule_version.completed_quantity
 
+            # Get operation description from the related operation
             operation_desc = schedule_item.operation.operation_description if schedule_item.operation else None
 
             daily_production.append(
@@ -68,8 +69,11 @@ async def get_all_production_data(part_number: Optional[str], start_epoch: int, 
                 )
             )
 
+        # Sort by date and part number
         daily_production.sort(key=lambda x: (x.date, x.part_number))
+
         return daily_production, total_planned, total_completed
+
 
 @router.get("/daily/", response_model=DailyProductionResponse)
 async def get_daily_production(
@@ -111,8 +115,10 @@ async def get_weekly_production(
             end_epoch=end_epoch
         )
 
+        # Group items by week
         weekly_items = {}
         for item in daily_production:
+            # Get the week start date (Monday)
             week_start = item.date - timedelta(days=item.date.weekday())
             week_key = week_start
 
@@ -142,6 +148,7 @@ async def get_weekly_production(
             if item.production_order:
                 weekly_items[week_key]['production_order'][item.part_number] = item.production_order
 
+        # Convert weekly totals to WeeklyProductionItems
         weekly_production = []
         for week_date, totals in sorted(weekly_items.items()):
             for part_num in totals['planned'].keys():
@@ -181,8 +188,10 @@ async def get_monthly_production(
             end_epoch=end_epoch
         )
 
+        # Group items by month
         monthly_items = {}
         for item in daily_production:
+            # Get the first day of the month
             month_key = date(item.date.year, item.date.month, 1)
 
             if month_key not in monthly_items:
@@ -211,6 +220,7 @@ async def get_monthly_production(
             if item.production_order:
                 monthly_items[month_key]['production_order'][item.part_number] = item.production_order
 
+        # Convert monthly totals to MonthlyProductionItems
         monthly_production = []
         for month_date, totals in sorted(monthly_items.items()):
             for part_num in totals['planned'].keys():
