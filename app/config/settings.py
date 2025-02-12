@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     # JWT settings
     SECRET_KEY: str = "BEL_MES_25"  # Default value
     ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30  # Default value
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440  # Default value
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 
     # Add MinIO settings

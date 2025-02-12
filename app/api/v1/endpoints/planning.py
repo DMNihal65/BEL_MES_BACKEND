@@ -10,7 +10,7 @@ from app.database.connection import db
 from app.models import (
     WorkCenter, Machine, Project, Order, Operation,
     ProcessPlan, Document, ToolList, JigsAndFixturesList,
-    Unit, RawMaterial, InventoryStatus, PartScheduleStatus, MachineStatus
+    Unit, RawMaterial, InventoryStatus, PartScheduleStatus, MachineStatus, MachineShift, Status
 )
 from app.schemas.planning import CreateOperationRequest, CreateOrderRequest, OrderUpdateRequest, OperationUpdateRequest
 
@@ -144,37 +144,37 @@ def extract_oarc_details(pdf_content):
         data["Operations"].append(current_operation)
 
     # Extract document verification details from long text when operation is verification
-    # for operation in data["Operations"]:
-    #     if "verification" in operation["Operation"].lower():
-    #         doc_details = {}
-    #         long_text = operation["Long Text"]
-    #
-    #         # Extract document details using regex patterns
-    #         doc_patterns = {
-    #             "OARC Rev": r"OARC Rev\.\s*:\s*([^\n]+)",
-    #             "Part Rev": r"Part Rev\.\s*:\s*([^\n]+)",
-    #             "Drawing No": r"Drawing No\.\s*:\s*([^R]+)Rev\.\s*:\s*([^\n]+)",
-    #             "Cad No": r"Cad No\.\s*:\s*([^R]+)Rev\.\s*:\s*([^\n]+)",
-    #             "Stage Verification Doc": r"Stage Verification Document No\.\s*:\s*([^R]+)Rev\.\s*:\s*([^\n]+)",
-    #             "Final Verification Doc": r"Final Verification Document No\.\s*:\s*([^R]+)Rev\.\s*:\s*([^\n]+)",
-    #             "Raw Material Index Doc": r"Raw Material Index\s+Doc No\.\s*:\s*([\w\-]+)\s+Rev\.\s*:\s*(\d+)",
-    #             "Plating Inspection Doc": r"Plating inspection Doc No\.\s*:([\w\-]+)\s+Rev\.\s*:\s*(\d+)",
-    #             "MPP Doc": r"MPP Doc No\.\s*:\s*([^R]+)Rev\.\s*:\s*([^\n]+)"
-    #         }
-    #
-    #         for key, pattern in doc_patterns.items():
-    #             match = re.search(pattern, long_text)
-    #             if match:
-    #                 if len(match.groups()) == 2:
-    #                     doc_details[key] = {
-    #                         "Number": match.group(1).strip(),
-    #                         "Revision": match.group(2).strip()
-    #                     }
-    #                 else:
-    #                     doc_details[key] = match.group(1).strip()
-    #
-    #         data["Document Verification"] = doc_details
-    #         break
+    for operation in data["Operations"]:
+        if "verification" in operation["Operation"].lower():
+            doc_details = {}
+            long_text = operation["Long Text"]
+
+            # Extract document details using regex patterns
+            doc_patterns = {
+                "OARC Rev": r"OARC Rev\.\s*:\s*([^\n]+)",
+                "Part Rev": r"Part Rev\.\s*:\s*([^\n]+)",
+                "Drawing No": r"Drawing No\.\s*:\s*([^R]+)Rev\.\s*:\s*([^\n]+)",
+                "Cad No": r"Cad No\.\s*:\s*([^R]+)Rev\.\s*:\s*([^\n]+)",
+                "Stage Verification Doc": r"Stage Verification Document No\.\s*:\s*([^R]+)Rev\.\s*:\s*([^\n]+)",
+                "Final Verification Doc": r"Final Verification Document No\.\s*:\s*([^R]+)Rev\.\s*:\s*([^\n]+)",
+                "Raw Material Index Doc": r"Raw Material Index\s+Doc No\.\s*:\s*([\w\-]+)\s+Rev\.\s*:\s*(\d+)",
+                "Plating Inspection Doc": r"Plating inspection Doc No\.\s*:([\w\-]+)\s+Rev\.\s*:\s*(\d+)",
+                "MPP Doc": r"MPP Doc No\.\s*:\s*([^R]+)Rev\.\s*:\s*([^\n]+)"
+            }
+
+            for key, pattern in doc_patterns.items():
+                match = re.search(pattern, long_text)
+                if match:
+                    if len(match.groups()) == 2:
+                        doc_details[key] = {
+                            "Number": match.group(1).strip(),
+                            "Revision": match.group(2).strip()
+                        }
+                    else:
+                        doc_details[key] = match.group(1).strip()
+
+            data["Document Verification"] = doc_details
+            break
 
     # Extract raw materials
     raw_materials_started = False
@@ -304,7 +304,8 @@ def save_to_database(data):
             description=data["Raw Materials"][0]["Description"],
             quantity=float(data["Raw Materials"][0]["Total Qty"]),
             unit=unit,
-            status=default_status
+            status=default_status,
+            available_from=datetime(2024, 1, 2, 9, 0)  # Added hardcoded available_from date to match create_order
         )
 
         # Create master order
@@ -340,6 +341,14 @@ def save_to_database(data):
                 upload_date=datetime.now()
             )
 
+        # Get or create default machine status
+        default_status_on = Status.get(name="ON")
+        if not default_status_on:
+            default_status_on = Status(
+                name="ON",
+                description="Machine is operational"
+            )
+
         # Create operations and work centers
         for op in data["Operations"]:
             # Check if work center exists
@@ -357,15 +366,47 @@ def save_to_database(data):
 
             # If no machines exist for this work center, create a default one
             if not existing_machines:
+                # Create default machine
                 machine = Machine(
                     work_center=work_center,
                     type="Default",
                     make="Default",
-                    model="Default"
+                    model="Default",
+                    year_of_installation=2024,  # Default year
+                    cnc_controller="Default Controller",
+                    cnc_controller_series="Default Series",
+                    calibration_date=datetime(2024, 1, 1),  # Default calibration date
+                    last_maintenance_date=datetime(2024, 1, 1)  # Default maintenance date
+                )
+
+                # Create default machine status
+                MachineStatus(
+                    machine=machine,
+                    status=default_status_on,
+                    description="Machine is operational",
+                    available_from=datetime(2025, 1, 21, 11, 41, 20, 417587)  # Hardcoded as requested
+                )
+
+                # Create default machine shift
+                MachineShift(
+                    machine=machine,
+                    shift_start=datetime(2024, 1, 1, 9, 0),  # 9 AM start
+                    shift_end=datetime(2024, 1, 1, 17, 0),  # 5 PM end
+                    is_active=True
                 )
             else:
                 # Use the first existing machine
                 machine = existing_machines[0]
+
+                # Check if machine status exists, if not create it
+                existing_status = select(ms for ms in MachineStatus if ms.machine == machine).first()
+                if not existing_status:
+                    MachineStatus(
+                        machine=machine,
+                        status=default_status_on,
+                        description="Machine is operational",
+                        available_from=datetime(2025, 1, 21, 11, 41, 20, 417587)  # Hardcoded as requested
+                    )
 
             operation = Operation(
                 order=master_order,
@@ -382,7 +423,6 @@ def save_to_database(data):
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
-
 
 
 @router.get("/all_orders")
@@ -466,11 +506,7 @@ async def search_order(
                                 "operation_description": op.operation_description,
                                 "setup_time": op.setup_time,
                                 "ideal_cycle_time": op.ideal_cycle_time,
-                                "work_center": op.work_center.code if op.work_center else None,
-                                "machine": {
-                                    "id": op.machine.id,
-                                    "name": f"{op.machine.make} {op.machine.model}"
-                                } if op.machine else None
+                                "work_center": op.work_center.code if op.work_center else None
                             }
                             for op in order.operations
                         ]
@@ -485,88 +521,6 @@ async def search_order(
         raise he
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
-
-
-@router.get("/search_order2")
-async def search_order(
-        part_number: Optional[str] = Query(None, min_length=1),
-        part_description: Optional[str] = Query(None, min_length=1)
-):
-    """Get order details by part number or part description"""
-    try:
-        with db_session:
-            if part_number and part_description:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Please provide either a part number or part description, but not both."
-                )
-
-            if part_number:
-                orders = select(o for o in Order if part_number.lower() in o.part_number.lower())[:]
-            elif part_description:
-                orders = select(o for o in Order if part_description.lower() in o.part_description.lower())[:]
-            else:
-                orders = []
-
-            if not orders:
-                return {"orders": []}
-
-            response_data = {
-                "orders": [
-                    {
-                        "id": order.id,
-                        "production_order": order.production_order,
-                        "sale_order": order.sale_order,
-                        "wbs_element": order.wbs_element,
-                        "part_number": order.part_number,
-                        "part_description": order.part_description,
-                        "total_operations": order.total_operations,
-                        "required_quantity": order.required_quantity,
-                        "launched_quantity": order.launched_quantity,
-                        "plant_id": order.plant_id,
-                        "project": {
-                            "id": order.project.id,
-                            "name": order.project.name,
-                            "priority": order.project.priority,
-                            "start_date": order.project.start_date,
-                            "end_date": order.project.end_date
-                        } if order.project else None,
-                        "operations": [
-                            {
-                                "id": op.id,
-                                "operation_number": op.operation_number,
-                                "operation_description": op.operation_description,
-                                "setup_time": op.setup_time,
-                                "ideal_cycle_time": op.ideal_cycle_time,
-                                "work_center": op.work_center.code if op.work_center else None,
-                                "primary_machine": {
-                                    "id": op.machine.id,
-                                    "name": f"{op.machine.make} {op.machine.model}"
-                                } if op.machine else None,
-                                "work_center_machines": [
-                                    {
-                                        "id": machine.id,
-                                        "make": machine.make,
-                                        "model": machine.model,
-                                        "type": machine.type
-                                    }
-                                    for machine in op.work_center.machines
-                                ] if op.work_center else []
-                            }
-                            for op in order.operations
-                        ]
-                    }
-                    for order in orders
-                ]
-            }
-
-            return response_data
-
-    except HTTPException as he:
-        raise he
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
-
 
 
 
@@ -695,6 +649,7 @@ async def update_operation(
         raise he
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.post("/create_order")
 async def create_order(order_data: CreateOrderRequest):
@@ -890,3 +845,83 @@ async def get_work_centers():
             status_code=500,
             detail=f"Error retrieving work centers: {str(e)}"
         )
+
+@router.get("/search_order2")
+async def search_order(
+        part_number: Optional[str] = Query(None, min_length=1),
+        part_description: Optional[str] = Query(None, min_length=1)
+):
+    """Get order details by part number or part description"""
+    try:
+        with db_session:
+            if part_number and part_description:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Please provide either a part number or part description, but not both."
+                )
+
+            if part_number:
+                orders = select(o for o in Order if part_number.lower() in o.part_number.lower())[:]
+            elif part_description:
+                orders = select(o for o in Order if part_description.lower() in o.part_description.lower())[:]
+            else:
+                orders = []
+
+            if not orders:
+                return {"orders": []}
+
+            response_data = {
+                "orders": [
+                    {
+                        "id": order.id,
+                        "production_order": order.production_order,
+                        "sale_order": order.sale_order,
+                        "wbs_element": order.wbs_element,
+                        "part_number": order.part_number,
+                        "part_description": order.part_description,
+                        "total_operations": order.total_operations,
+                        "required_quantity": order.required_quantity,
+                        "launched_quantity": order.launched_quantity,
+                        "plant_id": order.plant_id,
+                        "project": {
+                            "id": order.project.id,
+                            "name": order.project.name,
+                            "priority": order.project.priority,
+                            "start_date": order.project.start_date,
+                            "end_date": order.project.end_date
+                        } if order.project else None,
+                        "operations": [
+                            {
+                                "id": op.id,
+                                "operation_number": op.operation_number,
+                                "operation_description": op.operation_description,
+                                "setup_time": op.setup_time,
+                                "ideal_cycle_time": op.ideal_cycle_time,
+                                "work_center": op.work_center.code if op.work_center else None,
+                                "primary_machine": {
+                                    "id": op.machine.id,
+                                    "name": f"{op.machine.make} {op.machine.model}"
+                                } if op.machine else None,
+                                "work_center_machines": [
+                                    {
+                                        "id": machine.id,
+                                        "make": machine.make,
+                                        "model": machine.model,
+                                        "type": machine.type
+                                    }
+                                    for machine in op.work_center.machines
+                                ] if op.work_center else []
+                            }
+                            for op in order.operations
+                        ]
+                    }
+                    for order in orders
+                ]
+            }
+
+            return response_data
+
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")

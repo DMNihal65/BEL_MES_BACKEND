@@ -165,4 +165,3 @@ class OrderListResponse(BaseModel):
 
     class Config:
         from_attributes = True
-

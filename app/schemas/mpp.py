@@ -13,7 +13,7 @@ class MPPResponse(BaseModel):
     id: int
     order_id: int
     operation_id: int
-    # document_id: Optional[int]
+    document_id: Optional[int]
     fixture_number: str
     ipid_number: str
     datum_x: str
@@ -38,3 +38,28 @@ class NewMPPCreate(BaseModel):
 
 class UpdateMPPSections(BaseModel):
     work_instructions: List[MPPSection]
+
+class MPPUpdateRequest(BaseModel):
+    fixture_number: str
+    ipid_number: str
+    datum_x: str
+    datum_y: str
+    datum_z: str
+    work_instructions: List[MPPSection]
+
+class MPPUpdateResponse(BaseModel):
+    id: int
+    order_id: int
+    operation_id: int
+    document_id: Optional[int]
+    fixture_number: str
+    ipid_number: str
+    datum_x: str
+    datum_y: str
+    datum_z: str
+    work_instructions: dict
+
+    class Config:
+        from_attributes = True
+
+
