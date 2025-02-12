@@ -1,10 +1,9 @@
 from fastapi import APIRouter, HTTPException
 from typing import List
 from pony.orm import db_session, select, commit
-from datetime import datetime
-
-from app.models.master_order import MPP, Operation, Document, Order
-from app.schemas.mpp import MPPResponse, NewMPPCreate, UpdateMPPSections
+from app.models import Document
+from app.models.master_order import MPP, Operation, Order
+from app.schemas.mpp import MPPResponse, NewMPPCreate, UpdateMPPSections, MPPUpdateResponse, MPPUpdateRequest
 
 router = APIRouter()
 
@@ -195,4 +194,87 @@ async def create_new_mpp(mpp_data: NewMPPCreate):
         raise HTTPException(
             status_code=500,
             detail=f"Error creating MPP: {str(e)}"
+        )
+
+@router.put("/mpp/by-part/{part_number}/{operation_number}", response_model=MPPUpdateResponse)
+async def update_mpp(part_number: str, operation_number: int, mpp_data: MPPUpdateRequest):
+    """Update an existing MPP entry for a specific part number and operation number combination"""
+    try:
+        with db_session:
+            # Find order by part number
+            order = Order.get(part_number=part_number)
+            if not order:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"No order found with part number: {part_number}"
+                )
+
+            # Find operation
+            operation = select(op for op in Operation
+                               if op.order == order and
+                               op.operation_number == operation_number).first()
+            if not operation:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"No operation found with number {operation_number}"
+                )
+
+            # Find existing MPP
+            mpp = select(m for m in MPP
+                          if m.order == order and
+                          m.operation == operation).first()
+            if not mpp:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"No MPP found for part number: {part_number} and operation number: {operation_number}"
+                )
+
+            # Find MPP document if exists
+            document = select(d for d in Document
+                              if d.order == order and
+                              d.type == "MPP").first()
+
+            # Update work instructions
+            work_instructions = {
+                "sections": [
+                    {
+                        "title": section.title,
+                        "instructions": section.instructions,
+                        "sequence": idx
+                    }
+                    for idx, section in enumerate(mpp_data.work_instructions)
+                ]
+            }
+
+            # Update MPP fields
+            mpp.fixture_number = mpp_data.fixture_number
+            mpp.ipid_number = mpp_data.ipid_number
+            mpp.datum_x = mpp_data.datum_x
+            mpp.datum_y = mpp_data.datum_y
+            mpp.datum_z = mpp_data.datum_z
+            mpp.work_instructions = work_instructions
+
+            commit()
+
+            response_data = {
+                "id": mpp.id,
+                "order_id": order.id,
+                "operation_id": operation.id,
+                "document_id": document.id if document else None,
+                "fixture_number": mpp.fixture_number,
+                "ipid_number": mpp.ipid_number,
+                "datum_x": mpp.datum_x,
+                "datum_y": mpp.datum_y,
+                "datum_z": mpp.datum_z,
+                "work_instructions": mpp.work_instructions
+            }
+
+            return MPPUpdateResponse(**response_data)
+
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error updating MPP: {str(e)}"
         )
