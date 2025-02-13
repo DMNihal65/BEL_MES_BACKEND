@@ -523,88 +523,6 @@ async def search_order(
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
 
 
-@router.get("/search_order2")
-async def search_order(
-        part_number: Optional[str] = Query(None, min_length=1),
-        part_description: Optional[str] = Query(None, min_length=1)
-):
-    """Get order details by part number or part description"""
-    try:
-        with db_session:
-            if part_number and part_description:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Please provide either a part number or part description, but not both."
-                )
-
-            if part_number:
-                orders = select(o for o in Order if part_number.lower() in o.part_number.lower())[:]
-            elif part_description:
-                orders = select(o for o in Order if part_description.lower() in o.part_description.lower())[:]
-            else:
-                orders = []
-
-            if not orders:
-                return {"orders": []}
-
-            response_data = {
-                "orders": [
-                    {
-                        "id": order.id,
-                        "production_order": order.production_order,
-                        "sale_order": order.sale_order,
-                        "wbs_element": order.wbs_element,
-                        "part_number": order.part_number,
-                        "part_description": order.part_description,
-                        "total_operations": order.total_operations,
-                        "required_quantity": order.required_quantity,
-                        "launched_quantity": order.launched_quantity,
-                        "plant_id": order.plant_id,
-                        "project": {
-                            "id": order.project.id,
-                            "name": order.project.name,
-                            "priority": order.project.priority,
-                            "start_date": order.project.start_date,
-                            "end_date": order.project.end_date
-                        } if order.project else None,
-                        "operations": [
-                            {
-                                "id": op.id,
-                                "operation_number": op.operation_number,
-                                "operation_description": op.operation_description,
-                                "setup_time": op.setup_time,
-                                "ideal_cycle_time": op.ideal_cycle_time,
-                                "work_center": op.work_center.code if op.work_center else None,
-                                "primary_machine": {
-                                    "id": op.machine.id,
-                                    "name": f"{op.machine.make} {op.machine.model}"
-                                } if op.machine else None,
-                                "work_center_machines": [
-                                    {
-                                        "id": machine.id,
-                                        "make": machine.make,
-                                        "model": machine.model,
-                                        "type": machine.type
-                                    }
-                                    for machine in op.work_center.machines
-                                ] if op.work_center else []
-                            }
-                            for op in order.operations
-                        ]
-                    }
-                    for order in orders
-                ]
-            }
-
-            return response_data
-
-    except HTTPException as he:
-        raise he
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
-
-
-
 
 @router.put("/update_order/{order_number}")
 async def update_order(order_number: str, update_data: OrderUpdateRequest):
@@ -914,7 +832,6 @@ async def create_operation(operation_data: CreateOperationRequest):
             detail=f"Error creating operation: {str(e)}"
         )
 
-
 @router.get("/work_centers")
 async def get_work_centers():
     """Get all work centers"""
@@ -930,24 +847,15 @@ async def get_work_centers():
 
 @router.get("/search_order2")
 async def search_order(
-        part_number: Optional[str] = Query(None, min_length=1),
-        part_description: Optional[str] = Query(None, min_length=1)
+    production_order: Optional[str] = Query(None, min_length=1)
 ):
-    """Get order details by part number or part description"""
+    """Get order details by production order number"""
     try:
         with db_session:
-            if part_number and part_description:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Please provide either a part number or part description, but not both."
-                )
+            if not production_order:
+                return {"orders": []}
 
-            if part_number:
-                orders = select(o for o in Order if part_number.lower() in o.part_number.lower())[:]
-            elif part_description:
-                orders = select(o for o in Order if part_description.lower() in o.part_description.lower())[:]
-            else:
-                orders = []
+            orders = select(o for o in Order if production_order.lower() in o.production_order.lower())[:]
 
             if not orders:
                 return {"orders": []}
@@ -1003,7 +911,5 @@ async def search_order(
 
             return response_data
 
-    except HTTPException as he:
-        raise he
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")

@@ -12,6 +12,21 @@ class OperationOut(BaseModel):
     sequence: int
     work_center_id: int
 
+from pydantic import BaseModel
+from datetime import datetime
+from typing import List, Dict, Optional
+
+class MachineInfo(BaseModel):
+    id: str
+    name: str
+    model: str
+    type: str
+
+class WorkCenterMachine(BaseModel):
+    work_center_code: str
+    work_center_name: str
+    machines: List[MachineInfo]
+
 class ScheduledOperation(BaseModel):
     component: str
     description: str
@@ -28,8 +43,7 @@ class ScheduleResponse(BaseModel):
     daily_production: Dict[str, Dict[datetime, int]]
     component_status: Dict[str, dict]
     partially_completed: List[str]
-    production_orders: Dict[str, List[dict]]
-
+    work_centers: List[WorkCenterMachine]
 
 # class ScheduledOperation(BaseModel):
 #     component: str
@@ -53,3 +67,4 @@ class ScheduleResponse(BaseModel):
 
 class MachineSchedulesOut(BaseModel):
     machine_schedules: Dict[str, List[dict]]
+
