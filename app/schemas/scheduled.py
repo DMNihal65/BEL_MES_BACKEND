@@ -54,3 +54,8 @@ class ProductionLogsResponse(BaseModel):
     total_completed: int
     total_rejected: int
     total_logs: int
+
+
+class CombinedScheduleProductionResponse(BaseModel):
+    production_logs: List[ProductionLogResponse]
+    scheduled_operations: List[ScheduledOperation]

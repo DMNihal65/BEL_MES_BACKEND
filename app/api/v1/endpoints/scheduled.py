@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from pony.orm import db_session, select
-from app.schemas.scheduled import ScheduledOperation, ScheduleResponse, ProductionLogResponse, ProductionLogsResponse
+from app.schemas.scheduled import ScheduledOperation, ScheduleResponse, ProductionLogResponse, ProductionLogsResponse, \
+    CombinedScheduleProductionResponse
 from app.models import Order, Operation, Machine, PartScheduleStatus, PlannedScheduleItem, ScheduleVersion, \
     ProductionLog
 from app.crud.operation import fetch_operations
@@ -286,10 +287,9 @@ async def schedule():
 
 @router.get("/actual-production/", response_model=ProductionLogsResponse)
 async def get_production_logs():
-    """Retrieve all production logs with related information"""
+    """Retrieve aggregated production logs with related information"""
     try:
         with db_session:
-            # Query all production logs with related data
             logs_query = select((
                                     log,
                                     log.operator,
@@ -300,37 +300,73 @@ async def get_production_logs():
                                     log.schedule_version.schedule_item.order
                                 ) for log in ProductionLog)
 
-            logs_data = []
-            total_completed = 0
-            total_rejected = 0
+            # Dictionary to store aggregated logs
+            aggregated_logs = {}
 
             for (log, operator, version, schedule_item, machine, operation, order) in logs_query:
-                # Safe access to nested properties with null checks
-                machine_name = None
-                if machine and hasattr(machine, 'work_center') and machine.work_center:
-                    machine_name = f"{machine.work_center.code}-{machine.make}" if machine.work_center.code and machine.make else None
-
-                part_number = order.part_number if order else None
-                operation_desc = operation.operation_description if operation else None
-                version_num = version.version_number if version else None
-
-                log_entry = ProductionLogResponse(
-                    id=log.id,
-                    operator_id=operator.id,
-                    start_time=log.start_time if hasattr(log, 'start_time') else None,
-                    end_time=log.end_time if hasattr(log, 'end_time') else None,
-                    quantity_completed=log.quantity_completed,
-                    quantity_rejected=log.quantity_rejected,
-                    part_number=part_number,
-                    operation_description=operation_desc,
-                    machine_name=machine_name,
-                    notes=log.notes if hasattr(log, 'notes') else None,
-                    version_number=version_num
+                # Create a unique key for grouping logs
+                group_key = (
+                    order.part_number if order else None,
+                    operation.operation_description if operation else None,
+                    machine.work_center.code + "-" + machine.make if machine and hasattr(machine,
+                                                                                         'work_center') else None,
+                    version.version_number if version else None
                 )
 
-                logs_data.append(log_entry)
-                total_completed += log.quantity_completed
-                total_rejected += log.quantity_rejected
+                # Handle setup entries (quantity = 1) separately
+                is_setup = log.quantity_completed == 1
+
+                if is_setup:
+                    # Create a separate entry for setup
+                    log_entry = ProductionLogResponse(
+                        id=log.id,
+                        operator_id=operator.id,
+                        start_time=log.start_time if hasattr(log, 'start_time') else None,
+                        end_time=log.end_time if hasattr(log, 'end_time') else None,
+                        quantity_completed=log.quantity_completed,
+                        quantity_rejected=log.quantity_rejected,
+                        part_number=order.part_number if order else None,
+                        operation_description=operation.operation_description if operation else None,
+                        machine_name=f"{machine.work_center.code}-{machine.make}" if machine and hasattr(machine,
+                                                                                                         'work_center') else None,
+                        notes="Setup " + (log.notes if hasattr(log, 'notes') else ""),
+                        version_number=version.version_number if version else None
+                    )
+                    aggregated_logs[f"setup_{log.id}"] = log_entry
+                else:
+                    # Aggregate non-setup entries
+                    if group_key in aggregated_logs:
+                        existing = aggregated_logs[group_key]
+                        # Update start_time to earliest
+                        if log.start_time and (not existing.start_time or log.start_time < existing.start_time):
+                            existing.start_time = log.start_time
+                        # Update end_time to latest
+                        if log.end_time and (not existing.end_time or log.end_time > existing.end_time):
+                            existing.end_time = log.end_time
+                        existing.quantity_completed += log.quantity_completed
+                        existing.quantity_rejected += log.quantity_rejected
+                    else:
+                        aggregated_logs[group_key] = ProductionLogResponse(
+                            id=log.id,
+                            operator_id=operator.id,
+                            start_time=log.start_time if hasattr(log, 'start_time') else None,
+                            end_time=log.end_time if hasattr(log, 'end_time') else None,
+                            quantity_completed=log.quantity_completed,
+                            quantity_rejected=log.quantity_rejected,
+                            part_number=order.part_number if order else None,
+                            operation_description=operation.operation_description if operation else None,
+                            machine_name=f"{machine.work_center.code}-{machine.make}" if machine and hasattr(machine,
+                                                                                                             'work_center') else None,
+                            notes=log.notes if hasattr(log, 'notes') else None,
+                            version_number=version.version_number if version else None
+                        )
+
+            # Convert aggregated logs to list
+            logs_data = list(aggregated_logs.values())
+
+            # Calculate totals
+            total_completed = sum(log.quantity_completed for log in logs_data)
+            total_rejected = sum(log.quantity_rejected for log in logs_data)
 
             return ProductionLogsResponse(
                 production_logs=logs_data,
@@ -341,4 +377,292 @@ async def get_production_logs():
 
     except Exception as e:
         print(f"Error in production logs endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/combined-production/", response_model=ProductionLogsResponse)
+async def get_combined_production_logs():
+    """Retrieve combined production logs (setup + operation) with related information"""
+    try:
+        with db_session:
+            logs_query = select((
+                                    log,
+                                    log.operator,
+                                    log.schedule_version,
+                                    log.schedule_version.schedule_item,
+                                    log.schedule_version.schedule_item.machine,
+                                    log.schedule_version.schedule_item.operation,
+                                    log.schedule_version.schedule_item.order
+                                ) for log in ProductionLog)
+
+            # Dictionary to store combined logs
+            combined_logs = {}
+
+            for (log, operator, version, schedule_item, machine, operation, order) in logs_query:
+                # Skip logs with null end_time
+                if log.end_time is None:
+                    continue
+
+                # Create a unique key for grouping logs
+                group_key = (
+                    order.part_number if order else None,
+                    operation.operation_description if operation else None,
+                    machine.work_center.code + "-" + machine.make if machine and hasattr(machine,
+                                                                                         'work_center') else None,
+                    version.version_number if version else None
+                )
+
+                is_setup = log.quantity_completed == 1
+                machine_name = f"{machine.work_center.code}-{machine.make}" if machine and hasattr(machine,
+                                                                                                   'work_center') else None
+
+                if group_key not in combined_logs:
+                    combined_logs[group_key] = {
+                        'setup': None,
+                        'operation': None
+                    }
+
+                if is_setup:
+                    combined_logs[group_key]['setup'] = {
+                        'id': log.id,
+                        'start_time': log.start_time,
+                        'notes': log.notes
+                    }
+                else:
+                    combined_logs[group_key]['operation'] = {
+                        'id': log.id,
+                        'end_time': log.end_time,
+                        'quantity_completed': log.quantity_completed,
+                        'quantity_rejected': log.quantity_rejected,
+                        'operator_id': operator.id,
+                        'part_number': order.part_number if order else None,
+                        'operation_description': operation.operation_description if operation else None,
+                        'machine_name': machine_name,
+                        'version_number': version.version_number if version else None,
+                        'notes': log.notes
+                    }
+
+            # Combine setup and operation data
+            logs_data = []
+            total_completed = 0
+            total_rejected = 0
+
+            for group_data in combined_logs.values():
+                setup = group_data['setup']
+                operation = group_data['operation']
+
+                if setup and operation:
+                    combined_entry = ProductionLogResponse(
+                        id=operation['id'],
+                        operator_id=operation['operator_id'],
+                        start_time=setup['start_time'],
+                        end_time=operation['end_time'],
+                        quantity_completed=operation['quantity_completed'],
+                        quantity_rejected=operation['quantity_rejected'],
+                        part_number=operation['part_number'],
+                        operation_description=operation['operation_description'],
+                        machine_name=operation['machine_name'],
+                        notes=f"Setup: {setup['notes']} | Operation: {operation['notes']}",
+                        version_number=operation['version_number']
+                    )
+                    logs_data.append(combined_entry)
+                    total_completed += operation['quantity_completed']
+                    total_rejected += operation['quantity_rejected']
+
+            return ProductionLogsResponse(
+                production_logs=logs_data,
+                total_completed=total_completed,
+                total_rejected=total_rejected,
+                total_logs=len(logs_data)
+            )
+
+    except Exception as e:
+        print(f"Error in combined production logs endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/actual-planned-schedule/", response_model=CombinedScheduleProductionResponse)
+async def get_combined_schedule_production():
+    """Retrieve combined production logs with schedule batch information"""
+    try:
+        with db_session:
+            # Get production logs
+            logs_query = select((
+                                    log,
+                                    log.operator,
+                                    log.schedule_version,
+                                    log.schedule_version.schedule_item,
+                                    log.schedule_version.schedule_item.machine,
+                                    log.schedule_version.schedule_item.operation,
+                                    log.schedule_version.schedule_item.order
+                                ) for log in ProductionLog)
+
+            # Dictionary to store combined logs
+            combined_logs = {}
+
+            for (log, operator, version, schedule_item, machine, operation, order) in logs_query:
+                # Skip logs with null end_time
+                if log.end_time is None:
+                    continue
+
+                group_key = (
+                    order.part_number if order else None,
+                    operation.operation_description if operation else None,
+                    machine.work_center.code + "-" + machine.make if machine and hasattr(machine,
+                                                                                         'work_center') else None,
+                    version.version_number if version else None
+                )
+
+                is_setup = log.quantity_completed == 1
+                machine_name = f"{machine.work_center.code}-{machine.make}" if machine and hasattr(machine,
+                                                                                                   'work_center') else None
+
+                if group_key not in combined_logs:
+                    combined_logs[group_key] = {
+                        'setup': None,
+                        'operation': None
+                    }
+
+                if is_setup:
+                    combined_logs[group_key]['setup'] = {
+                        'id': log.id,
+                        'start_time': log.start_time,
+                        'notes': log.notes
+                    }
+                else:
+                    combined_logs[group_key]['operation'] = {
+                        'id': log.id,
+                        'end_time': log.end_time,
+                        'quantity_completed': log.quantity_completed,
+                        'quantity_rejected': log.quantity_rejected,
+                        'operator_id': operator.id,
+                        'part_number': order.part_number if order else None,
+                        'operation_description': operation.operation_description if operation else None,
+                        'machine_name': machine_name,
+                        'version_number': version.version_number if version else None,
+                        'notes': log.notes
+                    }
+
+            # Process production logs
+            logs_data = []
+            total_completed = 0
+            total_rejected = 0
+
+            for group_data in combined_logs.values():
+                setup = group_data['setup']
+                operation = group_data['operation']
+
+                if setup and operation:
+                    combined_entry = ProductionLogResponse(
+                        id=operation['id'],
+                        operator_id=operation['operator_id'],
+                        start_time=setup['start_time'],
+                        end_time=operation['end_time'],
+                        quantity_completed=operation['quantity_completed'],
+                        quantity_rejected=operation['quantity_rejected'],
+                        part_number=operation['part_number'],
+                        operation_description=operation['operation_description'],
+                        machine_name=operation['machine_name'],
+                        notes=f"Setup: {setup['notes']} | Operation: {operation['notes']}",
+                        version_number=operation['version_number']
+                    )
+                    logs_data.append(combined_entry)
+                    total_completed += operation['quantity_completed']
+                    total_rejected += operation['quantity_rejected']
+
+            # Get schedule data
+            df = fetch_operations()
+            component_quantities = fetch_component_quantities()
+            lead_times = fetch_lead_times()
+
+            schedule_df, overall_end_time, overall_time, daily_production, _, _ = schedule_operations(
+                df, component_quantities, lead_times
+            )
+
+            # Dictionary to store combined schedule operations
+            combined_schedule = {}
+
+            if not schedule_df.empty:
+                machine_details = {
+                    machine.id: f"{machine.work_center.code}-{machine.make}"
+                    for machine in Machine.select()
+                }
+
+                orders_map = {
+                    order.part_number: order.production_order
+                    for order in Order.select()
+                }
+
+                for _, row in schedule_df.iterrows():
+                    total_qty, current_qty, today_qty = extract_quantity(row['quantity'])
+
+                    # Create key for grouping schedule operations
+                    schedule_key = (
+                        row['partno'],
+                        row['operation'],
+                        machine_details.get(row['machine_id'], f"Machine-{row['machine_id']}"),
+                        orders_map.get(row['partno'], '')
+                    )
+
+                    is_setup = total_qty == 1
+
+                    if is_setup:
+                        if schedule_key not in combined_schedule:
+                            combined_schedule[schedule_key] = {
+                                'setup_start': row['start_time'],
+                                'setup_end': row['end_time'],
+                                'operation_end': None,
+                                'total_qty': 0,
+                                'current_qty': 0,
+                                'today_qty': 0
+                            }
+                    else:
+                        if schedule_key in combined_schedule:
+                            combined_schedule[schedule_key]['operation_end'] = row['end_time']
+                            combined_schedule[schedule_key]['total_qty'] = max(
+                                combined_schedule[schedule_key]['total_qty'], total_qty)
+                            combined_schedule[schedule_key]['current_qty'] = max(
+                                combined_schedule[schedule_key]['current_qty'], current_qty)
+                            combined_schedule[schedule_key]['today_qty'] = max(
+                                combined_schedule[schedule_key]['today_qty'], today_qty)
+                        else:
+                            combined_schedule[schedule_key] = {
+                                'setup_start': row['start_time'],
+                                'setup_end': row['end_time'],
+                                'operation_end': row['end_time'],
+                                'total_qty': total_qty,
+                                'current_qty': current_qty,
+                                'today_qty': today_qty
+                            }
+
+            scheduled_operations = []
+
+            for (component, description, machine, production_order), data in combined_schedule.items():
+                if data['operation_end']:  # Only include completed operations
+                    quantity_str = f"Process({data['current_qty']}/{data['total_qty']}pcs, Today: {data['today_qty']}pcs)"
+                    scheduled_operations.append(
+                        ScheduledOperation(
+                            component=component,
+                            description=description,
+                            machine=machine,
+                            start_time=data['setup_start'],
+                            end_time=data['operation_end'],
+                            quantity=quantity_str,
+                            production_order=production_order
+                        )
+                    )
+
+            return CombinedScheduleProductionResponse(
+                production_logs=logs_data,
+                total_completed=total_completed,
+                total_rejected=total_rejected,
+                total_logs=len(logs_data),
+                scheduled_operations=scheduled_operations,
+                overall_end_time=overall_end_time,
+                overall_time=str(overall_time),
+                daily_production=daily_production
+            )
+
+    except Exception as e:
+        print(f"Error in combined schedule production endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
