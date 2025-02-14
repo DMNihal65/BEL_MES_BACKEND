@@ -59,3 +59,4 @@ class ProductionLogsResponse(BaseModel):
 class CombinedScheduleProductionResponse(BaseModel):
     production_logs: List[ProductionLogResponse]
     scheduled_operations: List[ScheduledOperation]
+

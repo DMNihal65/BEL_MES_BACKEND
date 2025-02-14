@@ -4,8 +4,10 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Tuple
 
 from app.algorithm.scheduling import adjust_to_shift_hours
+from app.api.v1.endpoints.scheduled import get_combined_schedule_production
 from app.models import PlannedScheduleItem, ScheduleVersion, ProductionLog, Order, Operation, InventoryStatus, Status, \
     MachineStatus, Machine
+from app.schemas.scheduled import ProductionLogResponse, ScheduledOperation
 
 router = APIRouter(prefix="/api/v1/rescheduling", tags=["rescheduling"])
 
@@ -283,3 +285,4 @@ async def get_reschedule_history(item_id: int):
             status_code=500,
             detail=f"Error fetching reschedule history: {str(e)}"
         )
+
