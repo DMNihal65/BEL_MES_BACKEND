@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from datetime import datetime
 
 class OrderUpdateRequest(BaseModel):
@@ -165,3 +165,7 @@ class OrderListResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class SaveDataRequest(BaseModel):
+    data: Dict[str, Any]

@@ -6,8 +6,8 @@ import string
 
 from app.models import Program, Operation
 
-router = APIRouter(prefix="/programs", tags=["programs"])
 
+router = APIRouter(prefix="/api/v1/programs", tags=["programs"])
 
 def generate_program_details(operation):
     """

@@ -14,8 +14,8 @@ from app.models import Operation, Order, Machine, WorkCenter
 
 
 
-router = APIRouter(prefix="/operations", tags=["operations"])
 
+router = APIRouter(prefix="/api/v1/operations", tags=["operations"])
 
 @router.get("/schedule-batch/", response_model=ScheduleResponse)
 async def schedule():
