@@ -4,6 +4,7 @@ from ..config.settings import settings
 # Create a single database instance
 db = Database()
 
+
 def connect_to_db():
     db.bind(
         provider='postgres',
@@ -13,22 +14,32 @@ def connect_to_db():
         port=settings.DB_PORT,
         database=settings.DB_NAME
     )
-    
-    # Create schemas if they don't exist
-    db.execute("CREATE SCHEMA IF NOT EXISTS hr_schema")
-    db.execute("CREATE SCHEMA IF NOT EXISTS finance_schema")
-    db.execute("CREATE SCHEMA IF NOT EXISTS user_schema")
-    db.execute("CREATE SCHEMA IF NOT EXISTS master_order")
-    db.execute("CREATE SCHEMA IF NOT EXISTS inventory")
-    db.execute("CREATE SCHEMA IF NOT EXISTS scheduling")
-    db.execute("CREATE SCHEMA IF NOT EXISTS inventoryv1")
-    db.execute("CREATE SCHEMA IF NOT EXISTS document_management")
-    db.execute("CREATE SCHEMA IF NOT EXISTS auth")
 
-    # db.execute("CREATE SCHEMA IF NOT EXISTS mpp")
+    # Directly execute schema creation commands using db.get_connection()
+    with db_session:
+        conn = db.get_connection()
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute("CREATE SCHEMA IF NOT EXISTS hr_schema")
+        cursor.execute("CREATE SCHEMA IF NOT EXISTS finance_schema")
+        cursor.execute("CREATE SCHEMA IF NOT EXISTS user_schema")
+        cursor.execute("CREATE SCHEMA IF NOT EXISTS master_order")
+        cursor.execute("CREATE SCHEMA IF NOT EXISTS scheduling")
+        cursor.execute("CREATE SCHEMA IF NOT EXISTS inventoryv1")
+        cursor.execute("CREATE SCHEMA IF NOT EXISTS document_management")
+        cursor.execute("CREATE SCHEMA IF NOT EXISTS auth")
+        cursor.execute("CREATE SCHEMA IF NOT EXISTS production")
+
+        conn.commit()  # Ensure changes are saved
+    except Exception as e:
+        conn.rollback()  # Roll back on failure
+        print(f"Error creating schemas: {e}")
+    finally:
+        cursor.close()
 
     # Import all models to ensure they're registered with the database
-    from ..models import hr_models, finance_models, master_order, user
-    
+    from ..models import hr_models, finance_models, master_order, user, inventoryv1, production
+
     # Generate mapping after all models are imported
-    db.generate_mapping(create_tables=True) 
+    db.generate_mapping(create_tables=True)  # No db_session wrapping needed here!

@@ -5,6 +5,7 @@ from decimal import Decimal
 from app.models.user import User
 from ..database.connection import db  # Import the shared db instance
 
+
 class WorkCenter(db.Entity):
     _table_ = ("master_order", "WorkCenter")
     id = PrimaryKey(int, auto=True)
@@ -15,8 +16,9 @@ class WorkCenter(db.Entity):
     machines = Set('Machine')
     operations = Set('Operation')
 
+
 class Machine(db.Entity):
-    _table_ = ("master_order", "machines") 
+    _table_ = ("master_order", "machines")
     id = PrimaryKey(int, auto=True)
     work_center = Required(WorkCenter)
     type = Required(str)
@@ -36,20 +38,22 @@ class Machine(db.Entity):
 
 
 class MachineShift(db.Entity):
-    _table_ = ("master_order", "machine_shifts") 
+    _table_ = ("master_order", "machine_shifts")
     id = PrimaryKey(int, auto=True)
     machine = Required(Machine)
     shift_start = Required(datetime)
     shift_end = Required(datetime)
     is_active = Required(bool, default=True)
 
+
 class MachineDowntime(db.Entity):
-    _table_ = ("master_order", "machine_downtimes") 
+    _table_ = ("master_order", "machine_downtimes")
     id = PrimaryKey(int, auto=True)
     machine = Required(Machine)
     start_time = Required(datetime)
     end_time = Required(datetime)
     is_active = Required(bool, default=True)
+
 
 class Status(db.Entity):
     _table_ = ("master_order", "status")
@@ -58,6 +62,7 @@ class Status(db.Entity):
     description = Optional(str)
     machine_statuses = Set('MachineStatus', reverse='status')
 
+
 class MachineStatus(db.Entity):
     _table_ = ("master_order", "machine_status")
     id = PrimaryKey(int, auto=True)
@@ -65,6 +70,7 @@ class MachineStatus(db.Entity):
     status = Required(Status)
     description = Optional(str)
     available_from = Optional(datetime)  # New column
+
 
 class Project(db.Entity):
     _table_ = ("master_order", "projects")
@@ -75,6 +81,7 @@ class Project(db.Entity):
     end_date = Required(datetime)
     delivery_date = Required(datetime)  # New column
     orders = Set('Order')
+
 
 class Order(db.Entity):
     _table_ = ("master_order", "orders")
@@ -118,8 +125,9 @@ class Operation(db.Entity):
 
     inventory_requests = Set("InventoryRequest")
 
+
 class ProcessPlan(db.Entity):
-    _table_ = ("master_order", "process_plan") 
+    _table_ = ("master_order", "process_plan")
     id = PrimaryKey(int, auto=True)
     operation = Required(Operation)
     instructions = Optional(str)
@@ -127,8 +135,9 @@ class ProcessPlan(db.Entity):
     remarks = Optional(str)
     program = Optional('Program', reverse='process_plan')
 
+
 class Program(db.Entity):
-    _table_ = ("master_order", "programs") 
+    _table_ = ("master_order", "programs")
     id = PrimaryKey(int, auto=True)
     operation = Required(Operation)
     process_plan = Optional(ProcessPlan)
@@ -136,6 +145,7 @@ class Program(db.Entity):
     program_number = Required(str)
     version = Required(str)
     update_date = Required(datetime)
+
 
 # class Document(db.Entity):
 #     _table_ = ("master_order", "documents")
@@ -149,14 +159,15 @@ class Program(db.Entity):
 #     mpps = Set('MPP', reverse='document')
 
 class ToolList(db.Entity):
-    _table_ = ("master_order", "tool_list") 
+    _table_ = ("master_order", "tool_list")
     id = PrimaryKey(int, auto=True)
     order = Required(Order)
     operation = Required(Operation)
     tool_id = Required(str)
 
+
 class JigsAndFixturesList(db.Entity):
-    _table_ = ("master_order", "jigs_and_fixtures_list") 
+    _table_ = ("master_order", "jigs_and_fixtures_list")
     id = PrimaryKey(int, auto=True)
     order = Required(Order)
     operation = Required(Operation)
@@ -169,6 +180,7 @@ class UserLogs(db.Entity):
     user = Required('User', reverse='user_logs')  # Update to include proper reverse reference
     login_timestamp = Required(datetime)
     logout_timestamp = Optional(datetime)
+
 
 class MPP(db.Entity):
     _table_ = ("master_order", "mpp")
