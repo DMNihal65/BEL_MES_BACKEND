@@ -84,7 +84,7 @@ class RescheduleUpdate(BaseModel):
     last_available_operation: int
 
 class CombinedScheduleResponse(BaseModel):
-    updates: List[RescheduleUpdate]
+    reschedule: List[RescheduleUpdate]  # Changed from updates to reschedule
     total_updates: int
     production_logs: List[ProductionLogResponse]
     scheduled_operations: List[ScheduledOperation]
