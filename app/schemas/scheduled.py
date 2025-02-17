@@ -25,6 +25,16 @@ class ComponentStatus(BaseModel):
     completed_quantity: int
     total_quantity: int
 
+class MachineInfo(BaseModel):
+    id: str
+    name: str
+    model: str
+    type: str
+
+class WorkCenterInfo(BaseModel):
+    work_center_code: str
+    work_center_name: str
+    machines: List[MachineInfo]
 
 
 class ScheduleResponse(BaseModel):
@@ -84,3 +94,4 @@ class CombinedScheduleResponse(BaseModel):
     total_completed: int
     total_rejected: int
     total_logs: int
+    work_centers: List[WorkCenterInfo]

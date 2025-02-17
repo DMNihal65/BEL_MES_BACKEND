@@ -9,8 +9,10 @@ from app.crud.component_quantities import fetch_component_quantities
 from app.crud.leadtime import fetch_lead_times
 from app.crud.operation import fetch_operations
 from app.models import PlannedScheduleItem, ScheduleVersion, ProductionLog, Order, Operation, InventoryStatus, Status, \
-    MachineStatus, Machine
-from app.schemas.scheduled import ProductionLogResponse, ScheduledOperation, CombinedScheduleResponse
+    MachineStatus, Machine, WorkCenter
+from app.schemas.operations import MachineInfo
+from app.schemas.scheduled import ProductionLogResponse, ScheduledOperation, CombinedScheduleResponse, WorkCenterInfo
+from app.models.master_order import WorkCenter
 
 router = APIRouter(prefix="/api/v1/rescheduling", tags=["rescheduling"])
 
@@ -579,18 +581,43 @@ async def get_combined_schedule():
                         )
                     )
 
-            return CombinedScheduleResponse(
-                updates=updates,
-                total_updates=len(updates),
-                production_logs=production_logs,
-                scheduled_operations=scheduled_operations,
-                overall_end_time=overall_end_time,
-                overall_time=str(overall_time),
-                daily_production=daily_production,
-                total_completed=total_completed,
-                total_rejected=total_rejected,
-                total_logs=len(production_logs)
-            )
+                    # Query work centers and their machines (using the working pattern from schedule-batch)
+                    work_center_data = []
+                    for work_center in WorkCenter.select():
+                        machines_in_wc = []
+                        for machine in work_center.machines:
+                            machines_in_wc.append({
+                                "id": str(machine.id),
+                                "name": machine.make,
+                                "model": machine.model,
+                                "type": machine.type
+                            })
+
+                        work_center_data.append(
+                            WorkCenterInfo(
+                                work_center_code=work_center.code,
+                                work_center_name=work_center.work_center_name or "",
+                                machines=machines_in_wc
+                            )
+                        )
+
+                    print(f"Found {len(work_center_data)} work centers")
+
+                    # Move this outside of the for loop for scheduled operations
+                    return CombinedScheduleResponse(
+                        updates=updates,
+                        total_updates=len(updates),
+                        production_logs=production_logs,
+                        scheduled_operations=scheduled_operations,
+                        overall_end_time=overall_end_time,
+                        overall_time=str(overall_time),
+                        daily_production=daily_production,
+                        total_completed=total_completed,
+                        total_rejected=total_rejected,
+                        total_logs=len(production_logs),
+                        work_centers=work_center_data
+                    )
+
 
     except Exception as e:
         print(f"Error in combined schedule endpoint: {str(e)}")
