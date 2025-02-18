@@ -65,31 +65,8 @@ class ScheduleResponse(BaseModel):
 #     component_status: Dict
 #     partially_completed: List[str]
 
+
 class MachineSchedulesOut(BaseModel):
     machine_schedules: Dict[str, List[dict]]
 
 
-class MachineStatusBase(BaseModel):
-    machine_make: str
-    status_name: str
-    available_from: Optional[datetime] = None
-
-class MachineStatusOut(MachineStatusBase):
-    pass
-
-class MachineStatusResponse(BaseModel):
-    total_machines: int
-    statuses: List[MachineStatusOut]
-
-class UpdateMachineStatusRequest(BaseModel):
-    status_id: int
-    available_from: Optional[datetime] = None
-
-class StatusOut(BaseModel):
-    id: int
-    name: str
-    description: Optional[str] = None
-
-class StatusResponse(BaseModel):
-    total_statuses: int
-    statuses: List[StatusOut]

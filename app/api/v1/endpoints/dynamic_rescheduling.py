@@ -270,103 +270,89 @@ async def get_combined_schedule():
     """
     try:
         with db_session:
-            # Get all scheduled items ordered by priority
+            # Get all items ordered by operation number and ID
             schedule_items = select(p for p in PlannedScheduleItem
-                                    if p.status == 'scheduled'
-                                    ).order_by(lambda p: (p.order.project.priority, p.initial_start_time))[:]
+                                  ).order_by(lambda p: (p.operation.operation_number, p.id))[:]
 
             machine_end_times = {}
             updates = []
+            grouped_items = {}  # Dictionary to hold groups by machine and operation number
 
-            # Process rescheduling updates
+            # Group items by machine and operation number
             for item in schedule_items:
+                key = (item.machine.id, item.operation.operation_number)
+                if key not in grouped_items:
+                    grouped_items[key] = []
+                grouped_items[key].append(item)
+
+            # Process each group (matching dynamic-reschedule logic)
+            for (machine_id, operation_number), items in grouped_items.items():
                 try:
+                    if not items:
+                        continue
+
+                    # Sort items by ID to ensure consistent ordering
+                    items.sort(key=lambda x: x.id)
+                    last_item = items[-1]  # Get the last item in the group
+
+                    # Get the current version for the last item
                     current_version = select(v for v in ScheduleVersion
-                                             if v.schedule_item == item and
-                                             v.is_active == True).first()
+                                          if v.schedule_item == last_item and
+                                          v.is_active == True).first()
 
                     if not current_version:
                         continue
 
-                    # Check raw material availability
-                    raw_available, raw_time = check_raw_material_status(
-                        item.order, datetime.utcnow()
-                    )
+                    # Get all logs for the items in this group
+                    all_group_logs = []
+                    for item in items:
+                        item_logs = select(l for l in ProductionLog
+                                         for v in ScheduleVersion
+                                         if v.schedule_item == item and
+                                         l.schedule_version == v
+                                         ).order_by(lambda l: l.start_time)[:]
+                        all_group_logs.extend(item_logs)
 
-                    if not raw_available:
-                        continue
+                    # Calculate start and end times for the group
+                    if all_group_logs:
+                        group_start_time = min(log.start_time for log in all_group_logs if log.start_time is not None)
+                        group_end_time = max(log.end_time for log in all_group_logs if log.end_time is not None)
+                    else:
+                        # If no logs, use the previous end time or default
+                        group_start_time = machine_end_times.get(machine_id, datetime.now())
+                        group_end_time = group_start_time + timedelta(hours=2)
 
-                    # Get all dependent operations for this part
+                    # Calculate completed quantity for the last item
+                    last_item_logs = [log for log in all_group_logs if log.schedule_version.schedule_item == last_item]
+                    completed_qty = sum(log.quantity_completed for log in last_item_logs)
+                    remaining_qty = max(0, last_item.total_quantity - completed_qty)
+
+                    # Find last available operation
                     dependent_ops = select(o for o in Operation
-                                           if o.order == item.order
-                                           ).order_by(lambda o: o.operation_number)[:]
+                                         if o.order == last_item.order
+                                         ).order_by(lambda o: o.operation_number)[:]
+                    last_available_idx = find_last_available_operation(list(dependent_ops), group_start_time)
 
-                    # Get production logs
-                    logs = select(l for l in ProductionLog
-                                  if l.schedule_version == current_version)[:]
+                    # Add update only for the last item in the group
+                    updates.append({
+                        'item_id': last_item.id,
+                        'old_version': current_version.version_number,
+                        'new_version': current_version.version_number + 1,
+                        'completed_qty': completed_qty,
+                        'remaining_qty': remaining_qty,
+                        'start_time': group_start_time.isoformat(),
+                        'end_time': group_end_time.isoformat(),
+                        'machine_id': machine_id,
+                        'raw_material_status': 'Available',
+                        'operation_number': operation_number,
+                        'last_available_operation': last_available_idx
+                    })
 
-                    # Get machine's last end time
-                    machine_id = item.machine.id
-                    last_end_time = machine_end_times.get(machine_id, current_version.planned_start_time)
-
-                    # Determine start time considering both raw material and last end time
-                    start_time = max(
-                        last_end_time,
-                        raw_time if raw_time else datetime.min
-                    )
-                    start_time = adjust_to_shift_hours(start_time)
-
-                    # Find last available operation considering machine status
-                    last_available_idx = find_last_available_operation(dependent_ops, start_time)
-
-                    # Calculate completed quantity from logs
-                    completed_qty = sum(log.quantity_completed for log in logs)
-                    remaining_qty = max(0, item.total_quantity - completed_qty)
-
-                    # Calculate processing times
-                    setup_time = float(item.operation.setup_time) * 60
-                    cycle_time = float(item.operation.ideal_cycle_time) * 60
-                    total_time = setup_time if not logs else 0
-                    total_time += cycle_time * remaining_qty
-
-                    # Adjust end time to shift hours
-                    current_time = start_time
-                    actual_end_time = start_time
-
-                    while total_time > 0:
-                        shift_end = current_time.replace(hour=17, minute=0, second=0, microsecond=0)
-
-                        if current_time + timedelta(minutes=total_time) <= shift_end:
-                            actual_end_time = current_time + timedelta(minutes=total_time)
-                            break
-
-                        minutes_today = (shift_end - current_time).total_seconds() / 60
-                        total_time -= minutes_today
-                        current_time = (shift_end + timedelta(days=1)).replace(
-                            hour=9, minute=0, second=0, microsecond=0
-                        )
-                        actual_end_time = shift_end
-
-                    if actual_end_time > start_time:
-                        machine_end_times[machine_id] = actual_end_time
-                        updates.append({
-                            'item_id': item.id,
-                            'old_version': current_version.version_number,
-                            'new_version': current_version.version_number + 1,
-                            'completed_qty': completed_qty,
-                            'remaining_qty': remaining_qty,
-                            'start_time': start_time.isoformat(),
-                            'end_time': actual_end_time.isoformat(),
-                            'machine_id': machine_id,
-                            'raw_material_status': 'Available',
-                            'operation_number': item.operation.operation_number,
-                            'last_available_operation': last_available_idx
-                        })
-
-                except Exception as item_error:
-                    print(f"Error processing item {item.id}: {str(item_error)}")
+                except Exception as group_error:
+                    print(f"Error processing group for machine {machine_id}, operation {operation_number}: {str(group_error)}")
                     continue
 
+            # Rest of the existing code for production logs, scheduled operations, etc.
             # Get production logs with related information
             logs_query = select((
                 log,
@@ -567,9 +553,9 @@ async def get_combined_schedule():
                     )
                 )
 
-            # Return the combined response
+            # Return the combined response with updated reschedule data
             return CombinedScheduleResponse(
-                reschedule=updates,
+                reschedule=updates,  # Updated to match dynamic-reschedule format
                 total_updates=len(updates),
                 production_logs=production_logs,
                 scheduled_operations=scheduled_operations,
