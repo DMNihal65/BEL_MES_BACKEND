@@ -3,52 +3,78 @@ from minio.error import S3Error
 from fastapi import HTTPException
 from datetime import timedelta
 from typing import BinaryIO
+from io import BytesIO
+import os
 
 class MinioService:
     def __init__(self):
         # Replace these values with your direct MinIO connection settings
         self.client = Minio(
-            endpoint="172.18.7.89:9000",  # MinIO endpoint
-            access_key="SkSfn28fOBig7L7nraY4",  # MinIO access key
-            secret_key="4oSBg8nSsabb3kF0ZwG0IBz3Sfhkyb4EHLeTZKHn",  # MinIO secret key
-            secure=False  # Set to True if MinIO uses HTTPS
+            endpoint=os.getenv("MINIO_ENDPOINT", "172.18.7.89:9000"),
+            access_key=os.getenv("MINIO_ACCESS_KEY", "SkSfn28fOBig7L7nraY4"),
+            secret_key=os.getenv("MINIO_SECRET_KEY", "4oSBg8nSsabb3kF0ZwG0IBz3Sfhkyb4EHLeTZKHn"),
+            secure=False  # Set to True if using HTTPS
         )
-        self.bucket_name = "documents2"  # MinIO bucket name
+        self.bucket_name = os.getenv("MINIO_BUCKET_NAME", "documents3")
         self._ensure_bucket_exists()
 
     def _ensure_bucket_exists(self):
-        """Ensure the configured bucket exists, create if it doesn't"""
+        """Ensure the bucket exists, create if it doesn't"""
         try:
             if not self.client.bucket_exists(self.bucket_name):
                 self.client.make_bucket(self.bucket_name)
         except S3Error as e:
-            raise HTTPException(status_code=500, detail=f"MinIO error: {str(e)}")
+            raise Exception(f"Failed to create bucket: {str(e)}")
 
     def generate_object_path(self, part_number: str, doc_type: str, doc_id: int, version_id: int) -> str:
         """Generate standardized object path"""
         return f"{part_number}/{doc_type}/{doc_id}/{version_id}"
 
-    def upload_file(self, file: BinaryIO, object_name: str, content_type: str) -> dict:
+    def upload_file(self, file: BinaryIO, object_name: str, content_type: str | None = None) -> bool:
         """Upload a file to MinIO"""
         try:
-            file.seek(0, 2)  # Go to end of file
-            file_size = file.tell()  # Get current position (file size)
-            file.seek(0)  # Go back to start of file
+            # If file is a BytesIO, get its size
+            if isinstance(file, BytesIO):
+                file_size = file.getbuffer().nbytes
+            else:
+                # For other file-like objects, seek to end to get size
+                file.seek(0, 2)  # Seek to end
+                file_size = file.tell()
+                file.seek(0)  # Reset to beginning
 
-            result = self.client.put_object(
+            self.client.put_object(
                 bucket_name=self.bucket_name,
                 object_name=object_name,
                 data=file,
-                length=file_size,  # Specify the file size
-                content_type=content_type
+                length=file_size,
+                content_type=content_type or 'application/octet-stream'
             )
-            return {
-                "bucket_name": self.bucket_name,
-                "object_name": object_name,
-                "etag": result.etag
-            }
+            return True
         except S3Error as e:
-            raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+            raise Exception(f"Failed to upload file: {str(e)}")
+
+    def download_file(self, object_name: str) -> BytesIO:
+        """Download a file from MinIO"""
+        try:
+            # Get object data
+            data = self.client.get_object(
+                bucket_name=self.bucket_name,
+                object_name=object_name
+            )
+            
+            # Create a BytesIO object to store the file data
+            file_data = BytesIO()
+            
+            # Read the data in chunks and write to BytesIO
+            for d in data.stream(32*1024):
+                file_data.write(d)
+            
+            # Reset the pointer to the beginning of the file
+            file_data.seek(0)
+            
+            return file_data
+        except S3Error as e:
+            raise Exception(f"Failed to download file: {str(e)}")
 
     def get_file(self, object_name: str) -> BinaryIO:
         """Get a file from MinIO"""
@@ -69,9 +95,24 @@ class MinioService:
         except S3Error as e:
             raise HTTPException(status_code=500, detail=f"URL generation failed: {str(e)}")
 
-    def delete_file(self, object_name: str):
+    def delete_file(self, object_name: str) -> bool:
         """Delete a file from MinIO"""
         try:
-            self.client.remove_object(self.bucket_name, object_name)
+            self.client.remove_object(
+                bucket_name=self.bucket_name,
+                object_name=object_name
+            )
+            return True
         except S3Error as e:
-            raise HTTPException(status_code=500, detail=f"Delete failed: {str(e)}")
+            raise Exception(f"Failed to delete file: {str(e)}")
+
+    def get_file_url(self, object_name: str, expires: int = 3600) -> str:
+        """Get a presigned URL for object download"""
+        try:
+            return self.client.presigned_get_object(
+                bucket_name=self.bucket_name,
+                object_name=object_name,
+                expires=expires
+            )
+        except S3Error as e:
+            raise Exception(f"Failed to get file URL: {str(e)}")

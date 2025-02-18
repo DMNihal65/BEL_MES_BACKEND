@@ -91,12 +91,13 @@ class Order(db.Entity):
     plant_id = Required(str)
     project = Required('Project')  # ProjectID linked here
     operations = Set('Operation')
-    documents = Set('Document', reverse='part_number_id')  # Update reverse reference
+    documents = Set('Document', reverse='part_number_id')  # Match the field name in Document
     tools = Set('ToolList')
     jigs_fixtures = Set('JigsAndFixturesList')
     mpps = Set('MPP', reverse='order')  # Add this line for MPP relationship
     planned_schedule_items = Set('PlannedScheduleItem', reverse='order')
     inventory_requests = Set("InventoryRequest")
+    documents_v2 = Set('DocumentV2', reverse='production_order')
 
 
 class Operation(db.Entity):
