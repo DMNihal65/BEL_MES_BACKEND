@@ -25,6 +25,16 @@ class ComponentStatus(BaseModel):
     completed_quantity: int
     total_quantity: int
 
+class MachineInfo(BaseModel):
+    id: str
+    name: str
+    model: str
+    type: str
+
+class WorkCenterInfo(BaseModel):
+    work_center_code: str
+    work_center_name: str
+    machines: List[MachineInfo]
 
 
 class ScheduleResponse(BaseModel):
@@ -74,7 +84,7 @@ class RescheduleUpdate(BaseModel):
     last_available_operation: int
 
 class CombinedScheduleResponse(BaseModel):
-    updates: List[RescheduleUpdate]
+    reschedule: List[RescheduleUpdate]  # Changed from updates to reschedule
     total_updates: int
     production_logs: List[ProductionLogResponse]
     scheduled_operations: List[ScheduledOperation]
@@ -84,3 +94,4 @@ class CombinedScheduleResponse(BaseModel):
     total_completed: int
     total_rejected: int
     total_logs: int
+    work_centers: List[WorkCenterInfo]

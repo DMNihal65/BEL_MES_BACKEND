@@ -4,8 +4,7 @@ from datetime import datetime, timedelta
 from pony.orm import db_session, select
 from app.schemas.operations import (
     OperationOut, ScheduledOperation, ScheduleResponse,
-    MachineSchedulesOut, WorkCenterMachine, MachineStatusResponse, MachineStatusOut, UpdateMachineStatusRequest,
-    StatusOut, StatusResponse
+    MachineSchedulesOut, WorkCenterMachine
 )
 from app.crud.operation import fetch_operations
 from app.crud.component_quantities import fetch_component_quantities
@@ -268,153 +267,46 @@ async def unit_schedule():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/machine_schedules/", response_model=MachineSchedulesOut)
-async def get_machine_schedules(
-        start_date: Optional[datetime] = None,
-        end_date: Optional[datetime] = None
-):
-    """
-    Get schedules grouped by machine
-    """
-    with db_session:
-        df = fetch_operations()
-        component_quantities = fetch_component_quantities()
-        lead_times = fetch_lead_times()
-
-        schedule_df, _, _, _, _, _ = schedule_operations(
-            df, component_quantities, lead_times
-        )
-
-        machine_schedules = {}
-        if not schedule_df.empty:
-            # Get machine names mapping with work center info
-            machine_details = {}
-            for machine in Machine.select():
-                machine_name = f"{machine.work_center.code}-{machine.make}"
-                machine_details[machine.id] = machine_name
-
-            for _, row in schedule_df.iterrows():
-                machine_id = row['machine_id']
-                machine_name = machine_details.get(machine_id, f"Machine-{machine_id}")
-
-                if machine_name not in machine_schedules:
-                    machine_schedules[machine_name] = []
-
-                machine_schedules[machine_name].append({
-                    "part_number": row['partno'],
-                    "operation": row['operation'],
-                    "start_time": row['start_time'],
-                    "end_time": row['end_time'],
-                    "duration_minutes": (row['end_time'] - row['start_time']).total_seconds() / 60
-                })
-
-        return MachineSchedulesOut(machine_schedules=machine_schedules)
-
-
-@router.get("/machine-status/", response_model=MachineStatusResponse)
-async def get_machine_status():
-    """
-    Get status information for all machines.
-    Returns machine make, status name, and available from date.
-    Results are sorted by machine ID.
-    """
-    try:
-        with db_session:
-            machine_statuses_raw = list(select(ms for ms in MachineStatus).order_by(lambda ms: ms.machine.id))
-
-            machine_statuses = []
-            for ms in machine_statuses_raw:
-                machine_status = MachineStatusOut(
-                    machine_make=ms.machine.make,
-                    status_name=ms.status.name,
-                    available_from=ms.available_from
-                )
-                machine_statuses.append(machine_status)
-
-            return MachineStatusResponse(
-                total_machines=len(machine_statuses),
-                statuses=machine_statuses
-            )
-
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error fetching machine status: {str(e)}"
-        )
+# @router.get("/machine_schedules/", response_model=MachineSchedulesOut)
+# async def get_machine_schedules(
+#         start_date: Optional[datetime] = None,
+#         end_date: Optional[datetime] = None
+# ):
+#     """
+#     Get schedules grouped by machine
+#     """
+#     with db_session:
+#         df = fetch_operations()
+#         component_quantities = fetch_component_quantities()
+#         lead_times = fetch_lead_times()
+#
+#         schedule_df, _, _, _, _, _ = schedule_operations(
+#             df, component_quantities, lead_times
+#         )
+#
+#         machine_schedules = {}
+#         if not schedule_df.empty:
+#             # Get machine names mapping with work center info
+#             machine_details = {}
+#             for machine in Machine.select():
+#                 machine_name = f"{machine.work_center.code}-{machine.make}"
+#                 machine_details[machine.id] = machine_name
+#
+#             for _, row in schedule_df.iterrows():
+#                 machine_id = row['machine_id']
+#                 machine_name = machine_details.get(machine_id, f"Machine-{machine_id}")
+#
+#                 if machine_name not in machine_schedules:
+#                     machine_schedules[machine_name] = []
+#
+#                 machine_schedules[machine_name].append({
+#                     "part_number": row['partno'],
+#                     "operation": row['operation'],
+#                     "start_time": row['start_time'],
+#                     "end_time": row['end_time'],
+#                     "duration_minutes": (row['end_time'] - row['start_time']).total_seconds() / 60
+#                 })
+#
+#         return MachineSchedulesOut(machine_schedules=machine_schedules)
 
 
-@router.put("/machine-status/{machine_id}", response_model=MachineStatusOut)
-async def update_machine_status(machine_id: int, status_update: UpdateMachineStatusRequest):
-    """
-    Update the status of a specific machine.
-    """
-    try:
-        with db_session:
-            # Find the existing machine status
-            machine_status = MachineStatus.get(machine=machine_id)
-            if not machine_status:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Machine status not found for machine ID: {machine_id}"
-                )
-
-            # Find the new status
-            new_status = Status.get(id=status_update.status_id)
-            if not new_status:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Status with ID {status_update.status_id} not found"
-                )
-
-            # Update the machine status
-            machine_status.status = new_status
-            if status_update.available_from is not None:
-                machine_status.available_from = status_update.available_from
-
-            # Create response object with updated data
-            updated_status = MachineStatusOut(
-                machine_make=machine_status.machine.make,
-                status_name=new_status.name,
-                available_from=machine_status.available_from
-            )
-
-            return updated_status
-
-    except HTTPException as he:
-        raise he
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error updating machine status: {str(e)}"
-        )
-
-@router.get("/status-table", response_model=StatusResponse)
-async def get_all_statuses():
-    """
-    Get all statuses from the Status table.
-    Returns a list of all status types with their descriptions.
-    """
-    try:
-        with db_session:
-            # Get all statuses ordered by id
-            status_list = list(select(s for s in Status).order_by(lambda s: s.id))
-
-            statuses = []
-            for status in status_list:
-                status_data = StatusOut(
-                    id=status.id,
-                    name=status.name,
-                    description=status.description
-                )
-                statuses.append(status_data)
-
-            return StatusResponse(
-                total_statuses=len(statuses),
-                statuses=statuses
-            )
-
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error fetching statuses: {str(e)}"
-        )
