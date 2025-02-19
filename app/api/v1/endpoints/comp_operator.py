@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException, Query
 from pony.orm import db_session, select
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 from datetime import datetime
 from app.schemas.comp_maintainance import (
     MachineStatusResponse, MachineStatusOut, UpdateMachineStatusRequest,
@@ -10,6 +10,7 @@ from app.models import MachineStatus, Status
 
 # Temporary storage for pending changes (in production, use a proper database table)
 pending_changes: Dict[int, Dict] = {}
+status_messages: Dict[int, List[Dict]] = {}
 
 router = APIRouter(prefix="/api/v1/operator", tags=["operator"])
 
@@ -134,12 +135,48 @@ async def get_pending_changes():
         )
 
 
-# Also update the approve-change endpoint to handle description
+@router.get("/Machine-status-Notification/{machine_id}")
+async def get_latest_status_message(machine_id: int):
+    """
+    Get the latest status message for a specific machine
+    """
+    try:
+        with db_session:
+            # First verify if the machine exists
+            machine_status = MachineStatus.get(machine=machine_id)
+            if not machine_status:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Machine status not found for machine ID: {machine_id}"
+                )
+
+            if machine_id not in status_messages or not status_messages[machine_id]:
+                # If no status messages exist, return current machine status
+                return {
+                    "machine_id": machine_id,
+                    "messages": []
+                }
+
+            # Get the latest message
+            latest_message = status_messages[machine_id][-1]
+
+            return {
+                "machine_id": machine_id,
+                "latest_message": latest_message
+            }
+
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error fetching latest status message: {str(e)}"
+        )
+
+
+
 @router.post("/approve-change/{machine_id}")
 async def approve_status_change(machine_id: int):
-    """
-    Approve a pending machine status change (Supervisor endpoint)
-    """
     if machine_id not in pending_changes:
         raise HTTPException(
             status_code=404,
@@ -149,12 +186,24 @@ async def approve_status_change(machine_id: int):
     try:
         with db_session:
             change = pending_changes[machine_id]
-
             machine_status = MachineStatus.get(machine=machine_id)
             new_status = Status.get(id=change["status_id"])
 
+            # Store the approval message
+            if machine_id not in status_messages:
+                status_messages[machine_id] = []
+
+            status_messages[machine_id].append({
+                "type": "approval",
+                "timestamp": datetime.now().isoformat(),
+                "old_status": machine_status.status.name,
+                "new_status": new_status.name,
+                "description": change["description"]
+            })
+
+            # Update machine status
             machine_status.status = new_status
-            machine_status.description = change["description"]  # Update description
+            machine_status.description = change["description"]
             machine_status.available_from = change["available_from"]
 
             # Remove the pending change
@@ -164,7 +213,7 @@ async def approve_status_change(machine_id: int):
                 "message": "Change approved and implemented",
                 "machine_id": machine_id,
                 "new_status": new_status.name,
-                "description": change["description"]  # Added to response
+                "description": change["description"]
             }
 
     except Exception as e:
@@ -173,11 +222,10 @@ async def approve_status_change(machine_id: int):
             detail=f"Error approving change: {str(e)}"
         )
 
+
+
 @router.post("/reject-change/{machine_id}")
 async def reject_status_change(machine_id: int, reason: str = Query(..., description="Reason for rejection")):
-    """
-    Reject a pending machine status change (Supervisor endpoint)
-    """
     if machine_id not in pending_changes:
         raise HTTPException(
             status_code=404,
@@ -185,6 +233,20 @@ async def reject_status_change(machine_id: int, reason: str = Query(..., descrip
         )
 
     try:
+        change = pending_changes[machine_id]
+
+        # Store the rejection message
+        if machine_id not in status_messages:
+            status_messages[machine_id] = []
+
+        status_messages[machine_id].append({
+            "type": "rejection",
+            "timestamp": datetime.now().isoformat(),
+            "requested_status": Status.get(id=change["status_id"]).name,
+            "reason": reason,
+            "description": change["description"]
+        })
+
         # Remove the pending change
         del pending_changes[machine_id]
 
