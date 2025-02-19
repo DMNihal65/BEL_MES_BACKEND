@@ -41,6 +41,7 @@ async def get_machine_status():
             detail=f"Error fetching machine status: {str(e)}"
         )
 
+
 @router.put("/machine-status/{machine_id}", response_model=MachineStatusOut)
 async def update_machine_status(machine_id: int, status_update: UpdateMachineStatusRequest):
     """
@@ -69,11 +70,15 @@ async def update_machine_status(machine_id: int, status_update: UpdateMachineSta
             if status_update.available_from is not None:
                 machine_status.available_from = status_update.available_from
 
+            # Update description - add this line
+            machine_status.description = status_update.description
+
             # Create response object with updated data
             updated_status = MachineStatusOut(
                 machine_make=machine_status.machine.make,
                 status_name=new_status.name,
-                available_from=machine_status.available_from
+                available_from=machine_status.available_from,
+                description=machine_status.description  # Add this line
             )
 
             return updated_status
