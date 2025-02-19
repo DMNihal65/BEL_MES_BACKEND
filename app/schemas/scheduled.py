@@ -54,3 +54,33 @@ class ProductionLogsResponse(BaseModel):
     total_completed: int
     total_rejected: int
     total_logs: int
+
+
+class CombinedScheduleProductionResponse(BaseModel):
+    production_logs: List[ProductionLogResponse]
+    scheduled_operations: List[ScheduledOperation]
+
+class RescheduleUpdate(BaseModel):
+    item_id: int
+    old_version: int
+    new_version: int
+    completed_qty: int
+    remaining_qty: int
+    start_time: str
+    end_time: str
+    machine_id: int
+    raw_material_status: str
+    operation_number: int
+    last_available_operation: int
+
+class CombinedScheduleResponse(BaseModel):
+    updates: List[RescheduleUpdate]
+    total_updates: int
+    production_logs: List[ProductionLogResponse]
+    scheduled_operations: List[ScheduledOperation]
+    overall_end_time: datetime
+    overall_time: str
+    daily_production: dict
+    total_completed: int
+    total_rejected: int
+    total_logs: int
