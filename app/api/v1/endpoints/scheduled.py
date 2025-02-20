@@ -481,7 +481,7 @@ async def get_combined_production_logs():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/actual-planned/", response_model=CombinedScheduleProductionResponse)
+@router.get("/actual-planned-schedule/", response_model=CombinedScheduleProductionResponse)
 async def get_combined_schedule_production():
     """Retrieve combined production logs with schedule batch information"""
     try:

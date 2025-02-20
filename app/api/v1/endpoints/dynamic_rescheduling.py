@@ -2,17 +2,14 @@ from fastapi import APIRouter, HTTPException
 from pony.orm import db_session, select, desc
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple
-
 from app.algorithm.scheduling import adjust_to_shift_hours, schedule_operations
-from app.api.v1.endpoints.scheduled import get_combined_schedule_production
 from app.crud.component_quantities import fetch_component_quantities
 from app.crud.leadtime import fetch_lead_times
 from app.crud.operation import fetch_operations
-from app.models import PlannedScheduleItem, ScheduleVersion, ProductionLog, Order, Operation, InventoryStatus, Status, \
-    MachineStatus, Machine, WorkCenter
-from app.schemas.operations import MachineInfo
-from app.schemas.scheduled import ProductionLogResponse, ScheduledOperation, CombinedScheduleResponse, WorkCenterInfo
-from app.models.master_order import WorkCenter
+from app.models import PlannedScheduleItem, ScheduleVersion, ProductionLog, Order, Operation, Status
+from app.schemas.scheduled import CombinedScheduleResponse, WorkCenterInfo
+from app.models.master_order import WorkCenter,MachineStatus, Machine
+from app.schemas.scheduled import ProductionLogResponse, ScheduledOperation
 
 router = APIRouter(prefix="/api/v1/rescheduling", tags=["rescheduling"])
 
@@ -92,6 +89,7 @@ def check_raw_material_status(order: Order, time: datetime) -> Tuple[bool, datet
         return True, raw_available_time
 
     return True, time
+
 
 @router.post("/dynamic-reschedule")
 async def dynamic_reschedule():
