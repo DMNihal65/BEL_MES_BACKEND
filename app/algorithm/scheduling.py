@@ -117,7 +117,7 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
         for partno, group in df_sorted.groupby('partno')
     }
 
-    start_date = datetime(2025, 12, 20, 9, 0)
+    start_date = datetime(2024, 12, 20, 9, 0)
     start_date = adjust_to_shift_hours(start_date)
 
     schedule = []
