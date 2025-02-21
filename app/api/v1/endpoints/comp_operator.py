@@ -134,42 +134,32 @@ async def get_pending_changes():
         )
 
 
-@router.get("/Machine-status-Notification/{machine_id}")
-async def get_latest_status_message(machine_id: int):
+@router.get("/Machine-status-Notification")
+async def get_latest_status_message():
     """
-    Get the latest status message for a specific machine
+    Get the latest status message from the system
     """
     try:
         with db_session:
-            # First verify if the machine exists
-            machine_status = MachineStatus.get(machine=machine_id)
-            if not machine_status:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Machine status not found for machine ID: {machine_id}"
-                )
-
-            if machine_id not in status_messages or not status_messages[machine_id]:
-                # If no status messages exist, return current machine status
+            # Get all machine statuses
+            if not status_messages:
                 return {
-                    "machine_id": machine_id,
                     "messages": []
                 }
 
-            # Get the latest message
-            latest_message = status_messages[machine_id][-1]
+            # Get the latest messages for all machines
+            latest_messages = {}
+            for machine_id, messages in status_messages.items():
+                if messages:  # If there are messages for this machine
+                    latest_messages[machine_id] = messages[-1]
 
             return {
-                "machine_id": machine_id,
-                "latest_message": latest_message
+                "latest_messages": latest_messages
             }
-
-    except HTTPException as he:
-        raise he
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Error fetching latest status message: {str(e)}"
+            detail=f"Error fetching latest status messages: {str(e)}"
         )
 
 
