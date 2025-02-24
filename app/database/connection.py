@@ -30,6 +30,7 @@ def connect_to_db():
         cursor.execute("CREATE SCHEMA IF NOT EXISTS document_management")
         cursor.execute("CREATE SCHEMA IF NOT EXISTS auth")
         cursor.execute("CREATE SCHEMA IF NOT EXISTS production")
+        cursor.execute("CREATE SCHEMA IF NOT EXISTS EMS")
 
         conn.commit()  # Ensure changes are saved
     except Exception as e:

@@ -48,7 +48,6 @@ class MachineSimulator:
             (self.schedule_df['machine'] == machine_id) &
             (self.schedule_df['operation'] == operation)
             ].sort_values(by='initial_end_time', ascending=False)
-        # print(last_job.iloc[0]['remaining_quantity'])
         if len(last_job) > 1:
             return last_job.iloc[1]['remaining_quantity'] if not last_job.empty else None
 
@@ -62,7 +61,6 @@ class MachineSimulator:
                 lambda x: x.order == corresponding_order and x.operation == corresponding_operation
                           and x.total_quantity != 1).first()
             schedule_version_id = ScheduleVersion.select(lambda x: x.schedule_item == planned_schedule_item).first()
-            # print('$$$ ', schedule_version_id)
             return schedule_version_id.id
 
     @db_session
@@ -71,9 +69,13 @@ class MachineSimulator:
         state_changed = False
 
         for machine in self.unique_machines:
+            machine_live = MachineRawLive.get(machine_id=int(machine))
             current_job = self.get_current_job(machine, current_time)
             machine_raw_live = MachineRawLive.get(machine_id=int(machine))
             active_program = 'x'
+
+            last_status_entry = MachineRaw.select(lambda m: m.machine_id == int(machine)).order_by(
+                desc(MachineRaw.time_stamp)).first()
 
             if current_job is not None:
                 total_duration = (current_job['initial_end_time'] - current_job['initial_start_time']).total_seconds()
@@ -97,13 +99,22 @@ class MachineSimulator:
                 job_in_progress = 0
                 program_number = str(current_job['operation'])
             else:
-                last_status_entry = MachineRaw.select(lambda m: m.machine_id == int(machine)).order_by(
-                    desc(MachineRaw.time_stamp)).first()
 
                 if last_status_entry and last_status_entry.status.status_name == "PRODUCTION":
                     machine_state = StatusLookup.get(status_name="ON")
                     job_in_progress = 0
                     part_count = last_status_entry.part_count + 1
+
+                    pending_log = ProductionLog.select(
+                        lambda p: p.machine_id == int(machine) and
+                                  p.start_time is not None and
+                                  p.end_time is None
+                    ).order_by(lambda p: desc(p.start_time)).first()
+                    pending_log.end_time = current_time
+                    pending_log.quantity_completed = part_count
+                    pending_log.quantity_rejected = 0
+                    machine_live.job_status = 0
+
                 else:
                     machine_state = StatusLookup.get(status_name="ON")
                     job_in_progress = 0
@@ -144,7 +155,6 @@ class MachineSimulator:
                     self.last_machine_status[machine] = machine_statuses[machine]
 
                     if jip:
-                        machine_live = MachineRawLive.get(machine_id=int(machine))
                         if machine_live.job_status == 0:
                             ProductionLog(
                                 machine_id=int(machine),
@@ -188,6 +198,7 @@ class MachineSimulator:
     def initialize_tables(self, start_time):
         # Truncate the machine_raw table and restart identity
         MachineRaw._database_.execute("TRUNCATE TABLE production.machine_raw RESTART IDENTITY CASCADE;")
+        ProductionLog._database_.execute("TRUNCATE TABLE scheduling.production_logs RESTART IDENTITY CASCADE;")
 
         # Reset columns in machine_raw_live except for machine_id using ORM update
         for live_entry in MachineRawLive.select():
