@@ -69,7 +69,7 @@ class ProductionLog(db.Entity):
     schedule_version = Required(ScheduleVersion)
     operator = Required(User)
     start_time = Required(datetime)
-    end_time = Required(datetime)
+    end_time = Optional(datetime)
     quantity_completed = Required(int)
     quantity_rejected = Required(int)
     notes = Optional(str)

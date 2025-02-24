@@ -9,6 +9,7 @@ from .api.v1.endpoints import auth, planning, mpp, operations, scheduled, dynami
 
 app = FastAPI(title="BEL MES API")
 
+
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
