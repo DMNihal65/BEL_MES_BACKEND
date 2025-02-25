@@ -6,3 +6,4 @@ from .finance_models import *
 from .master_order import *
 from .inventory import *
 from .scheduled import *
+from  .quality import  *

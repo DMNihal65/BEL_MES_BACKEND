@@ -4,7 +4,7 @@ from .database.connection import connect_to_db
 from .routes import hr_routes, finance_routes, master_order_routes
 from .api.v1.endpoints import document_management, inventoryv1
 from .api.v1.endpoints import component_status, programs, daily_production
-from .api.v1.endpoints import auth, planning, mpp, operations, scheduled, dynamic_rescheduling, comp_maintainance, comp_operator
+from .api.v1.endpoints import auth, planning, mpp, operations, scheduled, dynamic_rescheduling, comp_maintainance, comp_operator, quality_endpoints
 
 
 app = FastAPI(title="BEL MES API")
@@ -44,6 +44,7 @@ app.include_router(programs.router)
 app.include_router(daily_production.router)
 app.include_router(document_management.router, prefix="/api/v1")
 app.include_router(inventoryv1.router, prefix="/api/v1")
+app.include_router(quality_endpoints.router)
 # router = APIRouter(prefix="/api/inventory", tags=["inventory"])
 
 @app.get("/")
@@ -51,7 +52,5 @@ def read_root():
     return {"message": "BEL MES API"}
 
 
-# uvicorn app.main:app --reload
-# uvicorn app.main:app --host 172.18.7.88 --port 7780 --reload
 
-# uvicorn app.main:app --host 172.18.7.88 --port 4470 --reload
+# uvicorn app.main:app --host 172.18.7.85 --port 6641 --reload

@@ -24,6 +24,7 @@ def connect_to_db():
     db.execute("CREATE SCHEMA IF NOT EXISTS inventoryv1")
     db.execute("CREATE SCHEMA IF NOT EXISTS document_management")
     db.execute("CREATE SCHEMA IF NOT EXISTS auth")
+    db.execute("CREATE SCHEMA IF NOT EXISTS quality")
 
     # db.execute("CREATE SCHEMA IF NOT EXISTS mpp")
 
