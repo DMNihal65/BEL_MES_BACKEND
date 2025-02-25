@@ -197,7 +197,9 @@ async def dynamic_reschedule():
                         'machine_id': machine_id,
                         'raw_material_status': 'Available',
                         'operation_number': operation_number,
-                        'last_available_operation': last_available_idx
+                        'last_available_operation': last_available_idx,
+                        'part_number': last_item.order.part_number,
+                        'production_order': last_item.order.production_order
                     })
 
                 except Exception as group_error:
@@ -340,7 +342,9 @@ async def get_combined_schedule():
                         'machine_id': machine_id,
                         'raw_material_status': 'Available',
                         'operation_number': operation_number,
-                        'last_available_operation': last_available_idx
+                        'last_available_operation': last_available_idx,
+                        'part_number': last_item.order.part_number,
+                        'production_order': last_item.order.production_order
                     })
 
                 except Exception as group_error:

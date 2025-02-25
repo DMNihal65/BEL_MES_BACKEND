@@ -82,6 +82,8 @@ class RescheduleUpdate(BaseModel):
     raw_material_status: str
     operation_number: int
     last_available_operation: int
+    part_number: str
+    production_order: str
 
 class CombinedScheduleResponse(BaseModel):
     reschedule: List[RescheduleUpdate]  # Changed from updates to reschedule
