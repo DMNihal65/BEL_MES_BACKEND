@@ -86,6 +86,7 @@ def check_raw_material_status(order: Order, time: datetime) -> Tuple[bool, datet
 
     return True, time
 
+
 @router.post("/dynamic-reschedule")
 async def dynamic_reschedule():
     """Dynamically reschedule operations based on production logs"""
@@ -93,7 +94,7 @@ async def dynamic_reschedule():
         with db_session:
             # Get all items ordered by operation number and ID
             schedule_items = select(p for p in PlannedScheduleItem
-                                  ).order_by(lambda p: (p.operation.operation_number, p.id))[:]
+                                    ).order_by(lambda p: (p.operation.operation_number, p.id))[:]
 
             if not schedule_items:
                 return {
@@ -104,14 +105,35 @@ async def dynamic_reschedule():
 
             machine_end_times = {}
             updates = []
+            valid_part_numbers = set()  # To track part numbers with valid production logs
             grouped_items = {}  # Dictionary to hold groups by machine and operation number
 
-            # Group items by machine and operation number
+            # First pass: Identify part numbers with production logs
             for item in schedule_items:
-                key = (item.machine.id, item.operation.operation_number)
-                if key not in grouped_items:
-                    grouped_items[key] = []
-                grouped_items[key].append(item)
+                # Get all versions for this item
+                versions = select(v for v in ScheduleVersion
+                                  if v.schedule_item == item)[:]
+
+                # Check if there are any production logs for any version of this item
+                has_logs = False
+                for version in versions:
+                    logs = select(l for l in ProductionLog
+                                  if l.schedule_version == version)[:]
+                    if logs:
+                        has_logs = True
+                        valid_part_numbers.add(item.order.part_number)
+                        break
+
+            print(f"Valid part numbers with production logs: {valid_part_numbers}")
+
+            # Group items by part number, machine and operation number
+            for item in schedule_items:
+                # Only include items with valid part numbers
+                if item.order.part_number in valid_part_numbers:
+                    key = (item.machine.id, item.operation.operation_number)
+                    if key not in grouped_items:
+                        grouped_items[key] = []
+                    grouped_items[key].append(item)
 
             # Process each group
             for (machine_id, operation_number), items in grouped_items.items():
@@ -125,8 +147,8 @@ async def dynamic_reschedule():
 
                     # Get the current version for the last item
                     current_version = select(v for v in ScheduleVersion
-                                          if v.schedule_item == last_item and
-                                          v.is_active == True).first()
+                                             if v.schedule_item == last_item and
+                                             v.is_active == True).first()
 
                     if not current_version:
                         continue
@@ -135,10 +157,10 @@ async def dynamic_reschedule():
                     all_group_logs = []
                     for item in items:
                         item_logs = select(l for l in ProductionLog
-                                         for v in ScheduleVersion
-                                         if v.schedule_item == item and
-                                         l.schedule_version == v
-                                         ).order_by(lambda l: l.start_time)[:]
+                                           for v in ScheduleVersion
+                                           if v.schedule_item == item and
+                                           l.schedule_version == v
+                                           ).order_by(lambda l: l.start_time)[:]
                         all_group_logs.extend(item_logs)
 
                     # Skip if no production logs exist for this group
@@ -151,7 +173,7 @@ async def dynamic_reschedule():
 
                     # Calculate completed quantity for the last item
                     last_item_logs = [log for log in all_group_logs if log.schedule_version.schedule_item == last_item]
-                    completed_qty = sum(log.quantity_completed for log in last_item_logs)
+                    completed_qty = sum(log.quantity_completed for log in last_item_logs) if last_item_logs else 0
                     remaining_qty = max(0, last_item.total_quantity - completed_qty)
 
                     # Create new version for the last item
@@ -181,8 +203,8 @@ async def dynamic_reschedule():
 
                     # Find last available operation
                     dependent_ops = select(o for o in Operation
-                                         if o.order == last_item.order
-                                         ).order_by(lambda o: o.operation_number)[:]
+                                           if o.order == last_item.order
+                                           ).order_by(lambda o: o.operation_number)[:]
                     last_available_idx = find_last_available_operation(list(dependent_ops), group_start_time)
 
                     # Add update only for the last item in the group
@@ -203,8 +225,23 @@ async def dynamic_reschedule():
                     })
 
                 except Exception as group_error:
-                    print(f"Error processing group for machine {machine_id}, operation {operation_number}: {str(group_error)}")
+                    print(
+                        f"Error processing group for machine {machine_id}, operation {operation_number}: {str(group_error)}")
                     continue
+
+            # Sort updates by operation_number to ensure proper sequencing
+            updates.sort(key=lambda x: (x['part_number'], x['operation_number']))
+
+            # Use this to debug if we're still missing operations
+            operation_counts = {}
+            for update in updates:
+                part = update['part_number']
+                if part not in operation_counts:
+                    operation_counts[part] = set()
+                operation_counts[part].add(update['operation_number'])
+
+            for part, ops in operation_counts.items():
+                print(f"Part {part} has {len(ops)} operations: {sorted(list(ops))}")
 
             return {
                 'message': 'Dynamic rescheduling completed',
@@ -219,6 +256,7 @@ async def dynamic_reschedule():
             detail=f"Error during rescheduling: {str(e)}"
         )
 
+
 @router.get("/reschedule-history/{item_id}")
 async def get_reschedule_history(item_id: int):
     """Get version history for a scheduled item"""
@@ -231,9 +269,28 @@ async def get_reschedule_history(item_id: int):
                     detail=f"Schedule item {item_id} not found"
                 )
 
+            # Check if the part number has any production logs
+            has_production_logs = False
             versions = select(v for v in ScheduleVersion
                               if v.schedule_item.id == item_id).order_by(
                 lambda v: desc(v.version_number))[:]
+
+            for version in versions:
+                logs = select(l for l in ProductionLog
+                              if l.schedule_version == version)[:]
+                if logs:
+                    has_production_logs = True
+                    break
+
+            if not has_production_logs:
+                return {
+                    'item_id': item_id,
+                    'message': 'No production logs found for this schedule item',
+                    'total_quantity': schedule_item.total_quantity,
+                    'current_version': schedule_item.current_version,
+                    'version_history': [],
+                    'total_versions': 0
+                }
 
             history = []
             for version in versions:
@@ -263,6 +320,7 @@ async def get_reschedule_history(item_id: int):
             detail=f"Error fetching reschedule history: {str(e)}"
         )
 
+
 @router.get("/reschedule-actual-planned-combined", response_model=CombinedScheduleResponse)
 async def get_combined_schedule():
     """
@@ -272,18 +330,38 @@ async def get_combined_schedule():
         with db_session:
             # Get all items ordered by operation number and ID
             schedule_items = select(p for p in PlannedScheduleItem
-                                  ).order_by(lambda p: (p.operation.operation_number, p.id))[:]
+                                    ).order_by(lambda p: (p.operation.operation_number, p.id))[:]
 
             machine_end_times = {}
             updates = []
+            valid_part_numbers = set()  # To track part numbers with valid production logs
             grouped_items = {}  # Dictionary to hold groups by machine and operation number
 
-            # Group items by machine and operation number
+            # First pass: Identify part numbers with production logs
             for item in schedule_items:
-                key = (item.machine.id, item.operation.operation_number)
-                if key not in grouped_items:
-                    grouped_items[key] = []
-                grouped_items[key].append(item)
+                # Get all versions for this item
+                versions = select(v for v in ScheduleVersion
+                                  if v.schedule_item == item)[:]
+
+                # Check if there are any production logs for any version of this item
+                has_logs = False
+                for version in versions:
+                    logs = select(l for l in ProductionLog
+                                  if l.schedule_version == version)[:]
+                    if logs:
+                        has_logs = True
+                        valid_part_numbers.add(item.order.part_number)
+                        break
+
+            print(f"Valid part numbers with production logs: {valid_part_numbers}")
+
+            # Group items by machine and operation number, but only for valid part numbers
+            for item in schedule_items:
+                if item.order.part_number in valid_part_numbers:
+                    key = (item.machine.id, item.operation.operation_number)
+                    if key not in grouped_items:
+                        grouped_items[key] = []
+                    grouped_items[key].append(item)
 
             # Process each group (matching dynamic-reschedule logic)
             for (machine_id, operation_number), items in grouped_items.items():
@@ -295,8 +373,8 @@ async def get_combined_schedule():
                     last_item = items[-1]
 
                     current_version = select(v for v in ScheduleVersion
-                                          if v.schedule_item == last_item and
-                                          v.is_active == True).first()
+                                             if v.schedule_item == last_item and
+                                             v.is_active == True).first()
 
                     if not current_version:
                         continue
@@ -305,10 +383,10 @@ async def get_combined_schedule():
                     all_group_logs = []
                     for item in items:
                         item_logs = select(l for l in ProductionLog
-                                         for v in ScheduleVersion
-                                         if v.schedule_item == item and
-                                         l.schedule_version == v
-                                         ).order_by(lambda l: l.start_time)[:]
+                                           for v in ScheduleVersion
+                                           if v.schedule_item == item and
+                                           l.schedule_version == v
+                                           ).order_by(lambda l: l.start_time)[:]
                         all_group_logs.extend(item_logs)
 
                     # Skip if no production logs exist
@@ -321,13 +399,13 @@ async def get_combined_schedule():
 
                     # Calculate completed quantity for the last item
                     last_item_logs = [log for log in all_group_logs if log.schedule_version.schedule_item == last_item]
-                    completed_qty = sum(log.quantity_completed for log in last_item_logs)
+                    completed_qty = sum(log.quantity_completed for log in last_item_logs) if last_item_logs else 0
                     remaining_qty = max(0, last_item.total_quantity - completed_qty)
 
                     # Find last available operation
                     dependent_ops = select(o for o in Operation
-                                         if o.order == last_item.order
-                                         ).order_by(lambda o: o.operation_number)[:]
+                                           if o.order == last_item.order
+                                           ).order_by(lambda o: o.operation_number)[:]
                     last_available_idx = find_last_available_operation(list(dependent_ops), group_start_time)
 
                     # Add update only for the last item in the group
@@ -348,19 +426,23 @@ async def get_combined_schedule():
                     })
 
                 except Exception as group_error:
-                    print(f"Error processing group for machine {machine_id}, operation {operation_number}: {str(group_error)}")
+                    print(
+                        f"Error processing group for machine {machine_id}, operation {operation_number}: {str(group_error)}")
                     continue
+
+            # Sort updates by operation_number to ensure proper sequencing
+            updates.sort(key=lambda x: (x['part_number'], x['operation_number']))
 
             # Get production logs with related information
             logs_query = select((
-                log,
-                log.operator,
-                log.schedule_version,
-                log.schedule_version.schedule_item,
-                log.schedule_version.schedule_item.machine,
-                log.schedule_version.schedule_item.operation,
-                log.schedule_version.schedule_item.order
-            ) for log in ProductionLog)
+                                    log,
+                                    log.operator,
+                                    log.schedule_version,
+                                    log.schedule_version.schedule_item,
+                                    log.schedule_version.schedule_item.machine,
+                                    log.schedule_version.schedule_item.operation,
+                                    log.schedule_version.schedule_item.order
+                                ) for log in ProductionLog)
 
             # Dictionary to store combined logs
             combined_logs = {}
@@ -375,12 +457,14 @@ async def get_combined_schedule():
                 group_key = (
                     order.part_number if order else None,
                     operation.operation_description if operation else None,
-                    machine.work_center.code + "-" + machine.make if machine and hasattr(machine, 'work_center') else None,
+                    machine.work_center.code + "-" + machine.make if machine and hasattr(machine,
+                                                                                         'work_center') else None,
                     version.version_number if version else None
                 )
 
                 is_setup = log.quantity_completed == 1
-                machine_name = f"{machine.work_center.code}-{machine.make}" if machine and hasattr(machine, 'work_center') else None
+                machine_name = f"{machine.work_center.code}-{machine.make}" if machine and hasattr(machine,
+                                                                                                   'work_center') else None
 
                 if group_key not in combined_logs:
                     combined_logs[group_key] = {
@@ -456,6 +540,10 @@ async def get_combined_schedule():
                 }
 
                 for _, row in schedule_df.iterrows():
+                    # Check if the part number has production logs
+                    if row['partno'] not in valid_part_numbers:
+                        continue
+
                     # Extract quantities from the quantity string
                     quantity_str = row['quantity']
                     total_qty = 1
