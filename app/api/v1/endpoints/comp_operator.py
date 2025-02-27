@@ -1,19 +1,15 @@
 from fastapi import APIRouter, HTTPException, Query
 from pony.orm import db_session, select
-from typing import Dict, Optional, List, Set
+from typing import Dict, Optional, List
 from datetime import datetime
 from app.schemas.comp_maintainance import (
     MachineStatusResponse, MachineStatusOut, UpdateMachineStatusRequest,
 )
 from app.models import MachineStatus, Status
 
-# Modified storage to include read status tracking
+# Temporary storage for pending changes (in production, use a proper database table)
 pending_changes: Dict[int, Dict] = {}
 status_messages: Dict[int, List[Dict]] = {}
-read_messages: Dict[int, Set[str]] = {}  # Machine ID -> Set of read message timestamps
-# Add a dictionary to track read status of messages
-message_read_status: Dict[str, bool] = {}
-
 
 router = APIRouter(prefix="/api/v1/operator", tags=["operator"])
 
@@ -137,34 +133,44 @@ async def get_pending_changes():
             detail=f"Error fetching pending changes: {str(e)}"
         )
 
-#
-# @router.get("/Machine-status-Notification")
-# async def get_latest_status_message():
-#     """
-#     Get the latest status message from the system
-#     """
-#     try:
-#         with db_session:
-#             # Get all machine statuses
-#             if not status_messages:
-#                 return {
-#                     "messages": []
-#                 }
-#
-#             # Get the latest messages for all machines
-#             latest_messages = {}
-#             for machine_id, messages in status_messages.items():
-#                 if messages:  # If there are messages for this machine
-#                     latest_messages[machine_id] = messages[-1]
-#
-#             return {
-#                 "latest_messages": latest_messages
-#             }
-#     except Exception as e:
-#         raise HTTPException(
-#             status_code=500,
-#             detail=f"Error fetching latest status messages: {str(e)}"
-#         )
+
+@router.get("/Machine-status-Notification/{machine_id}")
+async def get_latest_status_message(machine_id: int):
+    """
+    Get the latest status message for a specific machine
+    """
+    try:
+        with db_session:
+            # First verify if the machine exists
+            machine_status = MachineStatus.get(machine=machine_id)
+            if not machine_status:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Machine status not found for machine ID: {machine_id}"
+                )
+
+            if machine_id not in status_messages or not status_messages[machine_id]:
+                # If no status messages exist, return current machine status
+                return {
+                    "machine_id": machine_id,
+                    "messages": []
+                }
+
+            # Get the latest message
+            latest_message = status_messages[machine_id][-1]
+
+            return {
+                "machine_id": machine_id,
+                "latest_message": latest_message
+            }
+
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error fetching latest status message: {str(e)}"
+        )
 
 
 
@@ -253,107 +259,4 @@ async def reject_status_change(machine_id: int, reason: str = Query(..., descrip
         raise HTTPException(
             status_code=500,
             detail=f"Error rejecting change: {str(e)}"
-        )
-
-
-@router.get("/Machine-status-Notification")
-async def get_status_messages():
-    """
-    Get all unread status messages from the system across all machines.
-    Also returns messages marked for retention.
-    """
-    try:
-        with db_session:
-            if not status_messages:
-                return {"messages": []}
-
-            # Collect all unread messages
-            unread_messages = []
-
-            for machine_id, messages in status_messages.items():
-                for message in messages:
-                    msg_id = f"{machine_id}_{message['timestamp']}"
-
-                    # Include message if it's unread or marked for retention
-                    if msg_id not in message_read_status or \
-                            not message_read_status[msg_id].get("read", False) or \
-                            message_read_status[msg_id].get("retain", False):
-                        unread_messages.append({
-                            "machine_id": machine_id,
-                            **message
-                        })
-
-            # Sort messages by timestamp (newest first)
-            unread_messages.sort(
-                key=lambda x: datetime.fromisoformat(x["timestamp"]),
-                reverse=True
-            )
-
-            return {"messages": unread_messages}
-
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error fetching status messages: {str(e)}"
-        )
-
-
-@router.put("/Machine-status-Notification/{machine_id}/{timestamp}")
-async def update_message_read_status(
-        machine_id: int,
-        timestamp: str,
-        read: bool = True,
-        retain: bool = False
-):
-    """
-    Update the read status of a specific message.
-
-    Parameters:
-    - machine_id: ID of the machine
-    - timestamp: Timestamp of the message
-    - read: Boolean indicating if message is read (default: True)
-    - retain: Boolean indicating if message should be retained even when read (default: False)
-    """
-    try:
-        # Verify machine and message exist
-        if machine_id not in status_messages:
-            raise HTTPException(
-                status_code=404,
-                detail="No messages found for this machine"
-            )
-
-        # Find message with matching timestamp
-        message_found = False
-        for msg in status_messages[machine_id]:
-            if msg["timestamp"] == timestamp:
-                message_found = True
-                break
-
-        if not message_found:
-            raise HTTPException(
-                status_code=404,
-                detail="Message not found"
-            )
-
-        # Update read status and retention flag
-        msg_id = f"{machine_id}_{timestamp}"
-        message_read_status[msg_id] = {
-            "read": read,
-            "retain": retain
-        }
-
-        return {
-            "message": "Message status updated successfully",
-            "machine_id": machine_id,
-            "timestamp": timestamp,
-            "read": read,
-            "retain": retain
-        }
-
-    except HTTPException as he:
-        raise he
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error updating message status: {str(e)}"
         )

@@ -1,9 +1,10 @@
+from datetime import datetime
 from traceback import format_exc
 
 from fastapi import APIRouter, HTTPException, Query, Path
 from typing import List, Optional
-from pony.orm import db_session, commit, select
-from ..models.master_order import WorkCenter, Machine
+from pony.orm import db_session, commit, select, rollback
+from ..models.master_order import WorkCenter, Machine, MachineStatus, Status
 from ..schemas.master_order_schemas import (
     WorkCenterCreate, WorkCenterUpdate, WorkCenterResponse,
     MachineCreate, MachineUpdate, MachineResponse
@@ -121,7 +122,18 @@ def create_machine(machine: MachineCreate):
                 status_code=404,
                 detail="Work center not found"
             )
-        
+
+        # Get the "ON" status from status table
+        on_status = Status.get(name="ON")
+        if not on_status:
+            # If "ON" status doesn't exist, create it
+            on_status = Status(
+                name="ON",
+                description="Machine is operational and available"
+            )
+            commit()  # Commit the status creation
+
+        # Create the machine
         db_machine = Machine(
             work_center=work_center,
             type=machine.type,
@@ -134,12 +146,21 @@ def create_machine(machine: MachineCreate):
             calibration_date=machine.calibration_date,
             last_maintenance_date=machine.last_maintenance_date
         )
-        commit()
+        commit()  # Commit the machine creation
 
-        # Explicitly return a dictionary that matches the MachineResponse schema
+        # Create machine status entry
+        machine_status = MachineStatus(
+            machine=db_machine,
+            status=on_status,
+            description="Initial status",
+            available_from=datetime(2025, 1, 21, 11, 41, 20, 417587)
+        )
+        commit()  # Commit the machine status creation
+
+        # Return response that matches MachineResponse schema
         return {
             "id": db_machine.id,
-            "work_center_id": work_center.id,  # Explicitly set work_center_id
+            "work_center_id": work_center.id,
             "type": db_machine.type,
             "make": db_machine.make,
             "model": db_machine.model,
@@ -158,8 +179,9 @@ def create_machine(machine: MachineCreate):
             }
         }
     except Exception as e:
+        # Rollback in case of any error
+        rollback()
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @router.get("/machines/", response_model=List[MachineResponse])
 @db_session

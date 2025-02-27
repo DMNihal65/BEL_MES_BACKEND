@@ -8,11 +8,10 @@ from app.crud.leadtime import fetch_lead_times
 from app.crud.operation import fetch_operations
 from app.models import PlannedScheduleItem, ScheduleVersion, ProductionLog, Order, Operation, Status
 from app.schemas.scheduled import CombinedScheduleResponse, WorkCenterInfo
-from app.models.master_order import WorkCenter,MachineStatus, Machine
+from app.models.master_order import WorkCenter, MachineStatus, Machine
 from app.schemas.scheduled import ProductionLogResponse, ScheduledOperation
 
 router = APIRouter(prefix="/api/v1/rescheduling", tags=["rescheduling"])
-
 
 def adjust_to_shift_hours(time: datetime) -> datetime:
     """Adjust time to fit within shift hours (9 AM to 5 PM)"""
@@ -21,7 +20,6 @@ def adjust_to_shift_hours(time: datetime) -> datetime:
     elif time.hour >= 17:
         return (time + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
     return time
-
 
 def check_machine_status(machine_id: int, time: datetime) -> Tuple[bool, datetime]:
     """Check if a machine is available at a given time using algorithm logic"""
@@ -49,7 +47,6 @@ def check_machine_status(machine_id: int, time: datetime) -> Tuple[bool, datetim
 
         return True, time
 
-
 def find_last_available_operation(operations: List[dict], current_time: datetime) -> int:
     """Find the last operation that can be performed in sequence"""
     last_available = -1
@@ -72,7 +69,6 @@ def find_last_available_operation(operations: List[dict], current_time: datetime
 
     return last_available
 
-
 def check_raw_material_status(order: Order, time: datetime) -> Tuple[bool, datetime]:
     """Check raw material availability"""
     if not order or not order.raw_material:
@@ -90,7 +86,6 @@ def check_raw_material_status(order: Order, time: datetime) -> Tuple[bool, datet
 
     return True, time
 
-
 @router.post("/dynamic-reschedule")
 async def dynamic_reschedule():
     """Dynamically reschedule operations based on production logs"""
@@ -99,6 +94,13 @@ async def dynamic_reschedule():
             # Get all items ordered by operation number and ID
             schedule_items = select(p for p in PlannedScheduleItem
                                   ).order_by(lambda p: (p.operation.operation_number, p.id))[:]
+
+            if not schedule_items:
+                return {
+                    'message': 'No schedule items found for rescheduling',
+                    'updates': [],
+                    'total_updates': 0
+                }
 
             machine_end_times = {}
             updates = []
@@ -139,14 +141,13 @@ async def dynamic_reschedule():
                                          ).order_by(lambda l: l.start_time)[:]
                         all_group_logs.extend(item_logs)
 
-                    # Calculate start and end times for the group
-                    if all_group_logs:
-                        group_start_time = min(log.start_time for log in all_group_logs if log.start_time is not None)
-                        group_end_time = max(log.end_time for log in all_group_logs if log.end_time is not None)
-                    else:
-                        # If no logs, use the previous end time or default
-                        group_start_time = machine_end_times.get(machine_id, datetime.now())
-                        group_end_time = group_start_time + timedelta(hours=2)
+                    # Skip if no production logs exist for this group
+                    if not all_group_logs:
+                        continue
+
+                    # Calculate times from actual production logs
+                    group_start_time = min(log.start_time for log in all_group_logs if log.start_time is not None)
+                    group_end_time = max(log.end_time for log in all_group_logs if log.end_time is not None)
 
                     # Calculate completed quantity for the last item
                     last_item_logs = [log for log in all_group_logs if log.schedule_version.schedule_item == last_item]
@@ -155,7 +156,6 @@ async def dynamic_reschedule():
 
                     # Create new version for the last item
                     new_version_number = current_version.version_number + 1
-
                     new_version = ScheduleVersion(
                         schedule_item=last_item,
                         version_number=new_version_number,
@@ -289,11 +289,9 @@ async def get_combined_schedule():
                     if not items:
                         continue
 
-                    # Sort items by ID to ensure consistent ordering
                     items.sort(key=lambda x: x.id)
-                    last_item = items[-1]  # Get the last item in the group
+                    last_item = items[-1]
 
-                    # Get the current version for the last item
                     current_version = select(v for v in ScheduleVersion
                                           if v.schedule_item == last_item and
                                           v.is_active == True).first()
@@ -311,14 +309,13 @@ async def get_combined_schedule():
                                          ).order_by(lambda l: l.start_time)[:]
                         all_group_logs.extend(item_logs)
 
-                    # Calculate start and end times for the group
-                    if all_group_logs:
-                        group_start_time = min(log.start_time for log in all_group_logs if log.start_time is not None)
-                        group_end_time = max(log.end_time for log in all_group_logs if log.end_time is not None)
-                    else:
-                        # If no logs, use the previous end time or default
-                        group_start_time = machine_end_times.get(machine_id, datetime.now())
-                        group_end_time = group_start_time + timedelta(hours=2)
+                    # Skip if no production logs exist
+                    if not all_group_logs:
+                        continue
+
+                    # Calculate times from actual production logs
+                    group_start_time = min(log.start_time for log in all_group_logs if log.start_time is not None)
+                    group_end_time = max(log.end_time for log in all_group_logs if log.end_time is not None)
 
                     # Calculate completed quantity for the last item
                     last_item_logs = [log for log in all_group_logs if log.schedule_version.schedule_item == last_item]
@@ -350,7 +347,6 @@ async def get_combined_schedule():
                     print(f"Error processing group for machine {machine_id}, operation {operation_number}: {str(group_error)}")
                     continue
 
-            # Rest of the existing code for production logs, scheduled operations, etc.
             # Get production logs with related information
             logs_query = select((
                 log,
