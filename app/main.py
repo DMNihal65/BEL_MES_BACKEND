@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="BEL MES API")
 
-# Add CORS middleware
+# Configure CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # Allows all origins

@@ -1,15 +1,141 @@
 from datetime import datetime, timedelta
 import random
 from typing import List, Dict
-from pony.orm import select
+from pony.orm import db_session, select, avg, count, desc, sum
+from app.models.production import MachineRaw, MachineRawLive, StatusLookup
+from app.models import ProductionLog, Machine
+from app.database.connection import db
 
-def calculate_machine_uptime(machine_id: int) -> float:
-    """Simulate machine uptime in hours"""
-    return random.uniform(6.0, 23.0)
+@db_session
+def calculate_machine_uptime(machine_id: int, start_time: datetime, end_time: datetime) -> float:
+    """Calculate actual machine uptime based on status data"""
+    total_time = (end_time - start_time).total_seconds() / 3600  # hours
+    production_records = count(s for s in MachineRaw 
+        if s.machine_id == machine_id 
+        and s.time_stamp >= start_time 
+        and s.time_stamp <= end_time 
+        and s.status.status_name in ['ON', 'PRODUCTION']
+    )
+    total_records = count(s for s in MachineRaw 
+        if s.machine_id == machine_id 
+        and s.time_stamp >= start_time 
+        and s.time_stamp <= end_time
+    )
+    return (production_records / total_records * 100) if total_records > 0 else 0
 
-def calculate_machine_efficiency(machine_id: int) -> float:
-    """Simulate machine efficiency percentage"""
-    return random.uniform(75.0, 98.0)
+@db_session
+def get_machine_current_status(machine_id: int) -> dict:
+    """Get current machine status from MachineRawLive"""
+    live_status = MachineRawLive.get(machine_id=machine_id)
+    if live_status:
+        return {
+            'status': live_status.status.status_name,
+            'program': live_status.active_program,
+            'part_count': live_status.part_count or 0,
+            'job_status': live_status.job_status,
+            'timestamp': live_status.time_stamp
+        }
+    return None
+
+@db_session
+def calculate_machine_efficiency(machine_id: int, start_time: datetime, end_time: datetime) -> float:
+    """Calculate machine efficiency based on production status"""
+    total_records = count(s for s in MachineRaw 
+                        if s.machine_id == machine_id 
+                        and s.time_stamp >= start_time 
+                        and s.time_stamp <= end_time)
+    
+    production_records = count(s for s in MachineRaw 
+                             if s.machine_id == machine_id 
+                             and s.time_stamp >= start_time 
+                             and s.time_stamp <= end_time 
+                             and s.status.status_name == 'PRODUCTION')
+    
+    return (production_records / total_records * 100) if total_records > 0 else 0
+
+@db_session
+def get_machine_production_metrics(machine_id: int, start_time: datetime, end_time: datetime) -> dict:
+    """Get detailed production metrics for a machine"""
+    records = select(r for r in MachineRaw 
+                    if r.machine_id == machine_id 
+                    and r.time_stamp >= start_time 
+                    and r.time_stamp <= end_time)
+    
+    status_counts = {}
+    total_records = 0
+    
+    for status in StatusLookup.select():
+        status_count = count(r for r in records if r.status == status)
+        status_counts[status.status_name] = status_count
+        total_records += status_count
+    
+    part_counts = select(r.part_count for r in records if r.part_count is not None).fetch()
+    max_part_count = max(part_counts) if part_counts else 0
+    
+    return {
+        'status_distribution': {
+            status: (count / total_records * 100) if total_records > 0 else 0 
+            for status, count in status_counts.items()
+        },
+        'part_count': max_part_count,
+        'programs_used': list(set(r.active_program for r in records if r.active_program))
+    }
+
+@db_session
+def calculate_shift_metrics(shift_start: datetime, shift_end: datetime) -> dict:
+    """Calculate production metrics for a shift"""
+    machines = select(m for m in Machine)
+    shift_metrics = {}
+    
+    for machine in machines:
+        records = select(r for r in MachineRaw 
+                       if r.machine_id == machine.id 
+                       and r.time_stamp >= shift_start 
+                       and r.time_stamp <= shift_end)
+        
+        production_time = count(r for r in records if r.status.status_name == 'PRODUCTION')
+        total_time = count(r for r in records)
+        
+        shift_metrics[machine.id] = {
+            'efficiency': (production_time / total_time * 100) if total_time > 0 else 0,
+            'part_count': max((r.part_count or 0) for r in records) if records else 0,
+            'status_changes': count(records)
+        }
+        
+    return shift_metrics
+
+@db_session
+def get_production_trends(start_time: datetime, end_time: datetime, interval_minutes: int = 60) -> List[dict]:
+    """Get production trends over time"""
+    trends = []
+    current_time = start_time
+    
+    while current_time <= end_time:
+        interval_end = current_time + timedelta(minutes=interval_minutes)
+        
+        machines_data = {}
+        for machine in Machine.select():
+            records = select(r for r in MachineRaw 
+                           if r.machine_id == machine.id 
+                           and r.time_stamp >= current_time 
+                           and r.time_stamp < interval_end)
+            
+            production_time = count(r for r in records if r.status.status_name == 'PRODUCTION')
+            total_time = count(r for r in records)
+            
+            machines_data[machine.id] = {
+                'efficiency': (production_time / total_time * 100) if total_time > 0 else 0,
+                'part_count': max((r.part_count or 0) for r in records) if records else 0
+            }
+        
+        trends.append({
+            'timestamp': current_time,
+            'machines': machines_data
+        })
+        
+        current_time = interval_end
+        
+    return trends
 
 def calculate_overall_machine_utilization() -> float:
     """Simulate overall machine utilization percentage"""
