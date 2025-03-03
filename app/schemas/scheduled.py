@@ -97,3 +97,21 @@ class CombinedScheduleResponse(BaseModel):
     total_rejected: int
     total_logs: int
     work_centers: List[WorkCenterInfo]
+
+class PartProductionTimeline(BaseModel):
+    part_number: str
+    production_order: str
+    first_operation: str
+    first_machine: str
+    first_start_time: datetime
+    last_operation: str
+    last_machine: str
+    last_end_time: datetime
+    total_quantity: int
+    remaining_quantity: int
+    operations_count: int
+    status: Optional[str]
+
+class PartProductionResponse(BaseModel):
+    items: List[PartProductionTimeline]
+    total_parts: int

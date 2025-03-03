@@ -52,5 +52,11 @@
     "old_priority": 3,
     "new_priority": 1,
     "timestamp": "2025-02-28T14:31:55.770145"
+  },
+  {
+    "part_number": "213511100114",
+    "old_priority": 1,
+    "new_priority": 2,
+    "timestamp": "2025-03-03T11:54:05.083862"
   }
 ]

@@ -1,7 +1,10 @@
+from collections import defaultdict
+
 from fastapi import APIRouter, HTTPException
 from pony.orm import db_session, select
 from app.schemas.scheduled import ScheduledOperation, ScheduleResponse, ProductionLogResponse, ProductionLogsResponse, \
-    CombinedScheduleProductionResponse
+    CombinedScheduleProductionResponse, PartProductionResponse, \
+    PartProductionTimeline
 from app.models import Order, Operation, Machine, PartScheduleStatus, PlannedScheduleItem, ScheduleVersion, \
     ProductionLog
 from app.crud.operation import fetch_operations
@@ -665,4 +668,84 @@ async def get_combined_schedule_production():
 
     except Exception as e:
         print(f"Error in combined schedule production endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# Add the new endpoint to your existing router
+@router.get("/part-production-timeline/", response_model=PartProductionResponse)
+async def get_part_production_timeline():
+    """Retrieve the first and last operations for each part number"""
+    try:
+        with db_session:
+            items_query = select((
+                                     item,
+                                     item.order,
+                                     item.operation,
+                                     item.machine
+                                 ) for item in PlannedScheduleItem)
+
+            # Dictionary to store all operations by part number
+            part_operations = defaultdict(list)
+
+            # Group operations by part number
+            for (item, order, operation, machine) in items_query:
+                machine_name = f"{machine.work_center.code}-{machine.make}" if hasattr(machine,
+                                                                                       'work_center') else f"Machine-{machine.id}"
+
+                part_operations[order.part_number].append({
+                    'operation_description': operation.operation_description,
+                    'operation_number': operation.operation_number if hasattr(operation, 'operation_number') else 0,
+                    'machine_name': machine_name,
+                    'start_time': item.initial_start_time,
+                    'end_time': item.initial_end_time,
+                    'total_quantity': item.total_quantity,
+                    'remaining_quantity': item.remaining_quantity,
+                    'status': item.status,
+                    'production_order': order.production_order
+                })
+
+            results = []
+            for part_number, operations in part_operations.items():
+                # If there's an operation_number attribute, sort by that
+                # Otherwise, sort by start_time to determine first and last
+                try:
+                    operations.sort(key=lambda x: x['operation_number'])
+                except:
+                    operations.sort(key=lambda x: x['start_time'])
+
+                first_op = operations[0]
+                last_op = operations[-1]
+
+                # Count total quantities (could sum up all or just use first/last)
+                total_quantity = first_op['total_quantity']
+                remaining_quantity = first_op['remaining_quantity']
+
+                # Use status from the last operation
+                status = last_op['status']
+
+                results.append(PartProductionTimeline(
+                    part_number=part_number,
+                    production_order=first_op['production_order'],
+                    first_operation=first_op['operation_description'],
+                    first_machine=first_op['machine_name'],
+                    first_start_time=first_op['start_time'],
+                    last_operation=last_op['operation_description'],
+                    last_machine=last_op['machine_name'],
+                    last_end_time=last_op['end_time'],
+                    total_quantity=total_quantity,
+                    remaining_quantity=remaining_quantity,
+                    operations_count=len(operations),
+                    status=status
+                ))
+
+            # Sort by start time of first operation
+            results.sort(key=lambda x: x.first_start_time)
+
+            return PartProductionResponse(
+                items=results,
+                total_parts=len(results)
+            )
+
+    except Exception as e:
+        print(f"Error retrieving part production timeline: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
