@@ -101,13 +101,14 @@ class CombinedScheduleResponse(BaseModel):
 class PartProductionTimeline(BaseModel):
     part_number: str
     production_order: str
-    first_operation: str
-    first_machine: str
-    first_start_time: datetime
-    last_operation: str
-    last_machine: str
-    last_end_time: datetime
-    total_quantity: int
+    # Removed the following fields:
+    # first_operation
+    # first_machine
+    # first_start_time
+    # last_operation
+    # last_machine
+    # last_end_time
+    completed_total_quantity: int  # Renamed from total_quantity
     remaining_quantity: int
     operations_count: int
     status: Optional[str]

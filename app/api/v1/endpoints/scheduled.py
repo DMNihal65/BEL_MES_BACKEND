@@ -671,10 +671,10 @@ async def get_combined_schedule_production():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# Add the new endpoint to your existing router
+# Then, update the endpoint in the router file
 @router.get("/part-production-timeline/", response_model=PartProductionResponse)
 async def get_part_production_timeline():
-    """Retrieve the first and last operations for each part number"""
+    """Retrieve the production timeline for each part number with simplified data"""
     try:
         with db_session:
             # Get all PlannedScheduleItems with related data
@@ -690,9 +690,6 @@ async def get_part_production_timeline():
 
             # Group operations by part number
             for (item, order, operation, machine) in items_query:
-                machine_name = f"{machine.work_center.code}-{machine.make}" if hasattr(machine,
-                                                                                       'work_center') else f"Machine-{machine.id}"
-
                 # Extract the proper quantity from item
                 total_qty = item.total_quantity
 
@@ -700,7 +697,6 @@ async def get_part_production_timeline():
                 # from the operation details or related tables if available
                 if total_qty == 1:
                     # Query for a better quantity value from related operations
-                    # This can be from the Operation table or from component_quantities
                     order_operations = Operation.select(lambda op: op.order == order)
                     if order_operations:
                         # Look for the operation with the highest quantity as the true quantity
@@ -713,10 +709,9 @@ async def get_part_production_timeline():
                 part_operations[order.part_number].append({
                     'operation_description': operation.operation_description,
                     'operation_number': operation.operation_number if hasattr(operation, 'operation_number') else 0,
-                    'machine_name': machine_name,
                     'start_time': item.initial_start_time,
                     'end_time': item.initial_end_time,
-                    'total_quantity': total_qty,  # Use the updated quantity
+                    'total_quantity': total_qty,
                     'remaining_quantity': item.remaining_quantity,
                     'status': item.status,
                     'production_order': order.production_order
@@ -732,9 +727,6 @@ async def get_part_production_timeline():
                 except:
                     operations.sort(key=lambda x: x['start_time'])
 
-                first_op = operations[0]
-                last_op = operations[-1]
-
                 # Get the max quantity from all operations for this part number
                 max_quantity = max(op['total_quantity'] for op in operations)
 
@@ -748,44 +740,43 @@ async def get_part_production_timeline():
 
                 # If we still have quantity = 1, try to get quantity from the extract_quantity function
                 if total_quantity == 1:
-                    # Try to call extract_quantity if the function is available in the module
                     try:
-                        # This assumes the extract_quantity function exists and is imported
                         for op in operations:
                             if hasattr(op, 'quantity_str'):
                                 total_qty, _, _ = extract_quantity(op['quantity_str'])
                                 if total_qty > total_quantity:
                                     total_quantity = total_qty
                     except:
-                        pass  # If extract_quantity isn't available, keep the current total_quantity
+                        pass
 
                 # Calculate remaining based on the ratio
-                if first_op['total_quantity'] > 0:
-                    remaining_ratio = first_op['remaining_quantity'] / first_op['total_quantity']
+                if operations[0]['total_quantity'] > 0:
+                    remaining_ratio = operations[0]['remaining_quantity'] / operations[0]['total_quantity']
                     remaining_quantity = int(total_quantity * remaining_ratio)
                 else:
                     remaining_quantity = 0
 
                 # Use status from the last operation
-                status = last_op['status']
+                status = operations[-1]['status']
 
                 results.append(PartProductionTimeline(
                     part_number=part_number,
-                    production_order=first_op['production_order'],
-                    first_operation=first_op['operation_description'],
-                    first_machine=first_op['machine_name'],
-                    first_start_time=first_op['start_time'],
-                    last_operation=last_op['operation_description'],
-                    last_machine=last_op['machine_name'],
-                    last_end_time=last_op['end_time'],
-                    total_quantity=total_quantity,  # Use the determined total quantity
+                    production_order=operations[0]['production_order'],
+                    # Removed the following fields:
+                    # first_operation=operations[0]['operation_description'],
+                    # first_machine=operations[0]['machine_name'],
+                    # first_start_time=operations[0]['start_time'],
+                    # last_operation=operations[-1]['operation_description'],
+                    # last_machine=operations[-1]['machine_name'],
+                    # last_end_time=operations[-1]['end_time'],
+                    completed_total_quantity=total_quantity,  # Renamed from total_quantity
                     remaining_quantity=remaining_quantity,
                     operations_count=len(operations),
                     status=status
                 ))
 
-            # Sort by start time of first operation
-            results.sort(key=lambda x: x.first_start_time)
+            # Sort by part number alphabetically instead of start time
+            results.sort(key=lambda x: x.part_number)
 
             return PartProductionResponse(
                 items=results,

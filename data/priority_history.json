@@ -58,5 +58,17 @@
     "old_priority": 1,
     "new_priority": 2,
     "timestamp": "2025-03-03T11:54:05.083862"
+  },
+  {
+    "part_number": "62805080AA",
+    "old_priority": 4,
+    "new_priority": 1,
+    "timestamp": "2025-03-04T11:10:25.874669"
+  },
+  {
+    "part_number": "213001220002",
+    "old_priority": 2,
+    "new_priority": 1,
+    "timestamp": "2025-03-04T11:11:08.386908"
   }
 ]
