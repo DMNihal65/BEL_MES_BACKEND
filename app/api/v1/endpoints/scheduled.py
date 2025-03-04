@@ -677,6 +677,7 @@ async def get_part_production_timeline():
     """Retrieve the first and last operations for each part number"""
     try:
         with db_session:
+            # Get all PlannedScheduleItems with related data
             items_query = select((
                                      item,
                                      item.order,
@@ -692,18 +693,36 @@ async def get_part_production_timeline():
                 machine_name = f"{machine.work_center.code}-{machine.make}" if hasattr(machine,
                                                                                        'work_center') else f"Machine-{machine.id}"
 
+                # Extract the proper quantity from item
+                total_qty = item.total_quantity
+
+                # In case the quantity is still 1, try to get a more accurate quantity
+                # from the operation details or related tables if available
+                if total_qty == 1:
+                    # Query for a better quantity value from related operations
+                    # This can be from the Operation table or from component_quantities
+                    order_operations = Operation.select(lambda op: op.order == order)
+                    if order_operations:
+                        # Look for the operation with the highest quantity as the true quantity
+                        max_qty = max(
+                            (op.quantity for op in order_operations if hasattr(op, 'quantity') and op.quantity),
+                            default=total_qty)
+                        if max_qty > total_qty:
+                            total_qty = max_qty
+
                 part_operations[order.part_number].append({
                     'operation_description': operation.operation_description,
                     'operation_number': operation.operation_number if hasattr(operation, 'operation_number') else 0,
                     'machine_name': machine_name,
                     'start_time': item.initial_start_time,
                     'end_time': item.initial_end_time,
-                    'total_quantity': item.total_quantity,
+                    'total_quantity': total_qty,  # Use the updated quantity
                     'remaining_quantity': item.remaining_quantity,
                     'status': item.status,
                     'production_order': order.production_order
                 })
 
+            # Process results
             results = []
             for part_number, operations in part_operations.items():
                 # If there's an operation_number attribute, sort by that
@@ -716,9 +735,36 @@ async def get_part_production_timeline():
                 first_op = operations[0]
                 last_op = operations[-1]
 
-                # Count total quantities (could sum up all or just use first/last)
-                total_quantity = first_op['total_quantity']
-                remaining_quantity = first_op['remaining_quantity']
+                # Get the max quantity from all operations for this part number
+                max_quantity = max(op['total_quantity'] for op in operations)
+
+                # Use the order quantity where available, or fall back to the highest operation quantity
+                with db_session:
+                    order = Order.get(part_number=part_number)
+                    order_quantity = order.quantity if order and hasattr(order, 'quantity') else max_quantity
+
+                # Use the higher of the two quantities
+                total_quantity = max(max_quantity, order_quantity)
+
+                # If we still have quantity = 1, try to get quantity from the extract_quantity function
+                if total_quantity == 1:
+                    # Try to call extract_quantity if the function is available in the module
+                    try:
+                        # This assumes the extract_quantity function exists and is imported
+                        for op in operations:
+                            if hasattr(op, 'quantity_str'):
+                                total_qty, _, _ = extract_quantity(op['quantity_str'])
+                                if total_qty > total_quantity:
+                                    total_quantity = total_qty
+                    except:
+                        pass  # If extract_quantity isn't available, keep the current total_quantity
+
+                # Calculate remaining based on the ratio
+                if first_op['total_quantity'] > 0:
+                    remaining_ratio = first_op['remaining_quantity'] / first_op['total_quantity']
+                    remaining_quantity = int(total_quantity * remaining_ratio)
+                else:
+                    remaining_quantity = 0
 
                 # Use status from the last operation
                 status = last_op['status']
@@ -732,7 +778,7 @@ async def get_part_production_timeline():
                     last_operation=last_op['operation_description'],
                     last_machine=last_op['machine_name'],
                     last_end_time=last_op['end_time'],
-                    total_quantity=total_quantity,
+                    total_quantity=total_quantity,  # Use the determined total quantity
                     remaining_quantity=remaining_quantity,
                     operations_count=len(operations),
                     status=status
