@@ -671,30 +671,29 @@ async def get_combined_schedule_production():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# Then, update the endpoint in the router file
 @router.get("/part-production-timeline/", response_model=PartProductionResponse)
 async def get_part_production_timeline():
-    """Retrieve the production timeline for each part number with simplified data"""
+    """Retrieve the production timeline for each part number using schedule_versions table"""
     try:
         with db_session:
-            # Get all PlannedScheduleItems with related data
-            items_query = select((
-                                     item,
-                                     item.order,
-                                     item.operation,
-                                     item.machine
-                                 ) for item in PlannedScheduleItem)
+            # Get all active ScheduleVersions with related data
+            versions_query = select((
+                                        version,
+                                        version.schedule_item,
+                                        version.schedule_item.order,
+                                        version.schedule_item.operation,
+                                        version.schedule_item.machine
+                                    ) for version in ScheduleVersion if version.is_active == True)
 
             # Dictionary to store all operations by part number
             part_operations = defaultdict(list)
 
             # Group operations by part number
-            for (item, order, operation, machine) in items_query:
-                # Extract the proper quantity from item
-                total_qty = item.total_quantity
+            for (version, schedule_item, order, operation, machine) in versions_query:
+                # Extract the proper quantity from the version
+                total_qty = version.planned_quantity
 
                 # In case the quantity is still 1, try to get a more accurate quantity
-                # from the operation details or related tables if available
                 if total_qty == 1:
                     # Query for a better quantity value from related operations
                     order_operations = Operation.select(lambda op: op.order == order)
@@ -709,11 +708,13 @@ async def get_part_production_timeline():
                 part_operations[order.part_number].append({
                     'operation_description': operation.operation_description,
                     'operation_number': operation.operation_number if hasattr(operation, 'operation_number') else 0,
-                    'start_time': item.initial_start_time,
-                    'end_time': item.initial_end_time,
+                    'start_time': version.planned_start_time,
+                    'end_time': version.planned_end_time,
                     'total_quantity': total_qty,
-                    'remaining_quantity': item.remaining_quantity,
-                    'status': item.status,
+                    'remaining_quantity': version.remaining_quantity,
+                    'completed_quantity': version.completed_quantity,
+                    'version_number': version.version_number,
+                    'status': schedule_item.status,
                     'production_order': order.production_order
                 })
 
@@ -749,12 +750,11 @@ async def get_part_production_timeline():
                     except:
                         pass
 
-                # Calculate remaining based on the ratio
-                if operations[0]['total_quantity'] > 0:
-                    remaining_ratio = operations[0]['remaining_quantity'] / operations[0]['total_quantity']
-                    remaining_quantity = int(total_quantity * remaining_ratio)
-                else:
-                    remaining_quantity = 0
+                # Sum the completed quantities across all operations
+                total_completed = sum(op['completed_quantity'] for op in operations)
+
+                # For remaining quantity, take the sum of remaining quantities or calculate from the ratio
+                total_remaining = sum(op['remaining_quantity'] for op in operations)
 
                 # Use status from the last operation
                 status = operations[-1]['status']
@@ -762,20 +762,12 @@ async def get_part_production_timeline():
                 results.append(PartProductionTimeline(
                     part_number=part_number,
                     production_order=operations[0]['production_order'],
-                    # Removed the following fields:
-                    # first_operation=operations[0]['operation_description'],
-                    # first_machine=operations[0]['machine_name'],
-                    # first_start_time=operations[0]['start_time'],
-                    # last_operation=operations[-1]['operation_description'],
-                    # last_machine=operations[-1]['machine_name'],
-                    # last_end_time=operations[-1]['end_time'],
-                    completed_total_quantity=total_quantity,  # Renamed from total_quantity
-                    remaining_quantity=remaining_quantity,
+                    completed_total_quantity=total_quantity,
                     operations_count=len(operations),
                     status=status
                 ))
 
-            # Sort by part number alphabetically instead of start time
+            # Sort by part number alphabetically
             results.sort(key=lambda x: x.part_number)
 
             return PartProductionResponse(

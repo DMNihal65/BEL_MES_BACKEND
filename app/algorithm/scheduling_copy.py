@@ -1,3 +1,5 @@
+################## machine utilization code #########################
+
 
 from datetime import datetime, timedelta, date
 import pandas as pd
@@ -127,6 +129,9 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
     part_status = {}
     partially_completed = []
 
+    # Modified: Track machine schedules to find optimal slots
+    machine_schedules = {machine: [] for machine in df_sorted["machine_id"].unique()}
+
     def check_machine_status(machine_id: int, time: datetime) -> Tuple[bool, datetime]:
         """Check if a machine is available at a given time"""
         machine_status = machine_statuses.get(machine_id, {})
@@ -170,9 +175,56 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
 
         return last_available
 
+    def find_optimal_machine_slot(machine_id: int, duration_minutes: float, earliest_start: datetime) -> datetime:
+        """Find the best time slot for an operation on a machine considering utilization"""
+        earliest_start = adjust_to_shift_hours(earliest_start)
+
+        # Check machine availability
+        machine_available, available_time = check_machine_status(machine_id, earliest_start)
+        if not machine_available:
+            if available_time is None:
+                return None  # Machine is permanently unavailable
+            earliest_start = adjust_to_shift_hours(available_time)
+
+        # Get machine schedule
+        schedule = machine_schedules.get(machine_id, [])
+
+        # If no existing schedule, use earliest_start
+        if not schedule:
+            return earliest_start
+
+        # Sort schedule by start_time
+        schedule.sort(key=lambda x: x['start_time'])
+
+        # Check for gaps between operations where this operation could fit
+        for i in range(len(schedule)):
+            current = schedule[i]
+
+            # If this is the first operation and there's room before it
+            if i == 0 and earliest_start < current['start_time']:
+                gap_duration = (current['start_time'] - earliest_start).total_seconds() / 60
+                if gap_duration >= duration_minutes:
+                    return earliest_start
+
+            # If this isn't the last operation, check gap to next operation
+            if i < len(schedule) - 1:
+                next_op = schedule[i + 1]
+                gap_start = max(current['end_time'], earliest_start)
+                gap_duration = (next_op['start_time'] - gap_start).total_seconds() / 60
+
+                if gap_duration >= duration_minutes:
+                    return gap_start
+
+        # If no suitable gap found, schedule after the last operation
+        if schedule:
+            last_end = max(op['end_time'] for op in schedule)
+            return max(last_end, earliest_start)
+        else:
+            return earliest_start
+
     def schedule_batch_operations(partno: str, operations: List[dict], quantity: int, start_time: datetime) -> Tuple[
         List[list], int, Dict[int, datetime]]:
-        """Schedule operations for a batch of components"""
+        """Schedule operations for a batch of components with improved machine utilization"""
 
         batch_schedule = []
         operation_time = start_time
@@ -201,6 +253,9 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
 
         available_operations = operations[:last_available_idx + 1]
 
+        # Track completion time of previous operation for sequencing
+        prev_op_end_time = None
+
         for op_idx, op in enumerate(available_operations):
             machine_id = op['machine_id']
             operation_key = f"{op['operation']}_{machine_id}"
@@ -219,17 +274,22 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
 
             setup_minutes = float(operation.setup_time) * 60
             cycle_minutes = float(operation.ideal_cycle_time) * 60
+            total_op_minutes = setup_minutes + (cycle_minutes * quantity)
 
-            current_time = operation_time
-            machine_available, available_time = check_machine_status(machine_id, current_time)
+            # Determine earliest possible start time (respecting operation sequence)
+            if prev_op_end_time is not None:
+                # Must wait for previous operation to complete
+                earliest_start = prev_op_end_time
+            else:
+                # First operation can start at operation_time
+                earliest_start = operation_time
 
-            if not machine_available:
-                if available_time is None:
-                    continue
-                current_time = available_time
+            # Find optimal slot for this operation on this machine
+            current_time = find_optimal_machine_slot(machine_id, total_op_minutes, earliest_start)
 
-            current_time = adjust_to_shift_hours(current_time)
-            current_time = max(current_time, machine_end_times.get(machine_id, current_time))
+            if current_time is None:
+                continue  # Skip this operation if machine not available
+
             operation_start = current_time
 
             # Handle setup time
@@ -243,6 +303,15 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
                         operation_start, shift_end,
                         f"Setup({int((shift_end - operation_start).total_seconds() / 60)}/{setup_minutes}min)"
                     ])
+
+                    # Add to machine schedule
+                    machine_schedules[machine_id].append({
+                        'partno': partno,
+                        'operation': op['operation'],
+                        'start_time': operation_start,
+                        'end_time': shift_end,
+                        'type': 'setup'
+                    })
 
                     next_day = shift_end + timedelta(days=1)
                     next_start = next_day.replace(hour=9, minute=0, second=0, microsecond=0)
@@ -259,6 +328,15 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
                             f"Setup({setup_minutes - remaining_setup + setup_possible}/{setup_minutes}min)"
                         ])
 
+                        # Add to machine schedule
+                        machine_schedules[machine_id].append({
+                            'partno': partno,
+                            'operation': op['operation'],
+                            'start_time': next_start,
+                            'end_time': current_end,
+                            'type': 'setup'
+                        })
+
                         remaining_setup -= setup_possible
                         if remaining_setup > 0:
                             next_start = (current_shift_end + timedelta(days=1)).replace(hour=9, minute=0, second=0,
@@ -272,6 +350,16 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
                         operation_start, setup_end,
                         f"Setup({setup_minutes}/{setup_minutes}min)"
                     ])
+
+                    # Add to machine schedule
+                    machine_schedules[machine_id].append({
+                        'partno': partno,
+                        'operation': op['operation'],
+                        'start_time': operation_start,
+                        'end_time': setup_end,
+                        'type': 'setup'
+                    })
+
                     operation_start = setup_end
                     current_time = setup_end
 
@@ -295,6 +383,16 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
                         operation_start, shift_end,
                         f"Process({new_cumulative}/{quantity}pcs)"
                     ])
+
+                    # Add to machine schedule
+                    machine_schedules[machine_id].append({
+                        'partno': partno,
+                        'operation': op['operation'],
+                        'start_time': operation_start,
+                        'end_time': shift_end,
+                        'type': 'process'
+                    })
+
                     cumulative_pieces[operation_key] = new_cumulative
 
                 remaining_time = total_processing_time - work_minutes_today
@@ -321,6 +419,15 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
                         f"Process({new_cumulative}/{quantity}pcs)"
                     ])
 
+                    # Add to machine schedule
+                    machine_schedules[machine_id].append({
+                        'partno': partno,
+                        'operation': op['operation'],
+                        'start_time': next_start,
+                        'end_time': current_end,
+                        'type': 'process'
+                    })
+
                     cumulative_pieces[operation_key] = new_cumulative
                     remaining_pieces = quantity - new_cumulative
                     remaining_time -= work_possible
@@ -338,14 +445,25 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
                     operation_start, processing_end,
                     f"Process({quantity}/{quantity}pcs)"
                 ])
+
+                # Add to machine schedule
+                machine_schedules[machine_id].append({
+                    'partno': partno,
+                    'operation': op['operation'],
+                    'start_time': operation_start,
+                    'end_time': processing_end,
+                    'type': 'process'
+                })
+
                 current_time = processing_end
                 machine_end_times[machine_id] = processing_end
+
+            # Update previous operation end time for next operation's sequencing
+            prev_op_end_time = current_time
 
             if op_idx == len(available_operations) - 1:
                 for unit_number in range(1, quantity + 1):
                     unit_completion_times[unit_number] = current_time
-
-            operation_time = max(machine_end_times[machine_id], operation_time)
 
         return batch_schedule, len(available_operations), unit_completion_times
 
@@ -407,3 +525,4 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
     overall_time = (overall_end_time - start_date).total_seconds() / 60
 
     return schedule_df, overall_end_time, overall_time, daily_production, part_status, partially_completed
+
