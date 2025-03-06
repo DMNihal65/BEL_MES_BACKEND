@@ -4,7 +4,7 @@ from .database.connection import connect_to_db
 from .routes import hr_routes, finance_routes, master_order_routes
 from .api.v1.endpoints import document_management, inventoryv1, priority_scheduling
 from .api.v1.endpoints import component_status, programs, daily_production
-from .api.v1.endpoints import auth, planning, mpp, operations, scheduled, dynamic_rescheduling, comp_maintainance, comp_operator
+from .api.v1.endpoints import auth, planning, mpp, operations, scheduled, dynamic_rescheduling, comp_maintainance, comp_operator, operator_login
 
 
 app = FastAPI(title="BEL MES API")
@@ -32,7 +32,7 @@ async def startup_event():
 # app.include_router(hr_routes.router)
 # app.include_router(finance_routes.router)
 app.include_router(auth.router)
-# app.include_router(operator_auth.router)
+app.include_router(operator_login.router)
 app.include_router(master_order_routes.router)
 app.include_router(planning.router)
 app.include_router(mpp.router)
