@@ -32,7 +32,7 @@ async def startup_event():
 # app.include_router(hr_routes.router)
 # app.include_router(finance_routes.router)
 app.include_router(auth.router)
-
+# app.include_router(operator_auth.router)
 app.include_router(master_order_routes.router)
 app.include_router(planning.router)
 app.include_router(mpp.router)
@@ -58,6 +58,7 @@ def read_root():
 
 
 # uvicorn app.main:app --reload
-# uvicorn app.main:app --host 172.18.7.88 --port 7721 --reload
+# uvicorn app.main:app --host 172.18.7.88 --port 6699 --reload
+#uvicorn app.main:app --host 172.18.7.88 --port 8877 --reload
 
 # uvicorn app.main:app --host 172.18.7.88 --port 4470 --reload
