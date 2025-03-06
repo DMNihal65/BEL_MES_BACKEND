@@ -13,7 +13,7 @@ from app.models import (
     Unit, RawMaterial, InventoryStatus, PartScheduleStatus, MachineStatus, MachineShift, Status
 )
 from app.schemas.planning import CreateOperationRequest, CreateOrderRequest, OrderUpdateRequest, OperationUpdateRequest, \
-    SaveDataRequest
+    SaveDataRequest, ProjectPriorityUpdateRequest
 
 router = APIRouter(prefix="/api/v1/planning", tags=["planning"])
 
@@ -978,3 +978,91 @@ def save_to_database_endpoint(request: SaveDataRequest):
             return response_data
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/order/{order_id}/priority")
+async def update_order_priority(order_id: int, priority_data: ProjectPriorityUpdateRequest):
+    """
+    Update the priority of a project associated with an order and reorder other projects.
+
+    If any project is moved to a higher priority (lower number), all projects between the
+    new priority and the old priority will be shifted down (increment priority number).
+
+    If any project is moved to a lower priority (higher number), all projects between the
+    old priority and the new priority will be shifted up (decrement priority number).
+    """
+    try:
+        with db_session:
+            # Find the order by ID
+            order = Order.get(id=order_id)
+            if not order:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Order with ID {order_id} not found"
+                )
+
+            # Check if order has an associated project
+            if not order.project:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Order with ID {order_id} does not have an associated project"
+                )
+
+            current_project = order.project
+            old_priority = current_project.priority
+            new_priority = priority_data.priority
+
+            # If the priority is the same, no change needed
+            if old_priority == new_priority:
+                return {
+                    "message": "No change in priority",
+                    "project_id": current_project.id,
+                    "priority": current_project.priority
+                }
+
+            # Get all projects ordered by priority
+            all_projects = select(p for p in Project).order_by(Project.priority)[:]
+
+            # Moving to a higher priority (lower number)
+            if new_priority < old_priority:
+                # Shift down projects that are between new and old priority (inclusive of new, exclusive of old)
+                for project in all_projects:
+                    if project.id != current_project.id:
+                        if new_priority <= project.priority < old_priority:
+                            project.priority += 1
+
+            # Moving to a lower priority (higher number)
+            elif new_priority > old_priority:
+                # Shift up projects that are between old and new priority (exclusive of old, inclusive of new)
+                for project in all_projects:
+                    if project.id != current_project.id:
+                        if old_priority < project.priority <= new_priority:
+                            project.priority -= 1
+
+            # Set the new priority for the current project
+            current_project.priority = new_priority
+
+            # Commit the changes
+            commit()
+
+            # Get updated projects to verify changes
+            updated_projects = select(p for p in Project).order_by(Project.priority)[:]
+
+            # Return a success response
+            return {
+                "message": "Project priority updated successfully",
+                "project_id": current_project.id,
+                "new_priority": current_project.priority,
+                "updated_priorities": [
+                    {"project_id": p.id, "name": p.name, "priority": p.priority}
+                    for p in updated_projects
+                ]
+            }
+
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error updating project priority: {str(e)}"
+        )

@@ -169,3 +169,6 @@ class OrderListResponse(BaseModel):
 
 class SaveDataRequest(BaseModel):
     data: Dict[str, Any]
+
+class ProjectPriorityUpdateRequest(BaseModel):
+    priority: int

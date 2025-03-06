@@ -1,7 +1,10 @@
+from collections import defaultdict
+
 from fastapi import APIRouter, HTTPException
 from pony.orm import db_session, select
 from app.schemas.scheduled import ScheduledOperation, ScheduleResponse, ProductionLogResponse, ProductionLogsResponse, \
-    CombinedScheduleProductionResponse
+    CombinedScheduleProductionResponse, PartProductionResponse, \
+    PartProductionTimeline
 from app.models import Order, Operation, Machine, PartScheduleStatus, PlannedScheduleItem, ScheduleVersion, \
     ProductionLog
 from app.crud.operation import fetch_operations
@@ -665,4 +668,113 @@ async def get_combined_schedule_production():
 
     except Exception as e:
         print(f"Error in combined schedule production endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/part-production-timeline/", response_model=PartProductionResponse)
+async def get_part_production_timeline():
+    """Retrieve the production timeline for each part number using schedule_versions table"""
+    try:
+        with db_session:
+            # Get all active ScheduleVersions with related data
+            versions_query = select((
+                                        version,
+                                        version.schedule_item,
+                                        version.schedule_item.order,
+                                        version.schedule_item.operation,
+                                        version.schedule_item.machine
+                                    ) for version in ScheduleVersion if version.is_active == True)
+
+            # Dictionary to store all operations by part number
+            part_operations = defaultdict(list)
+
+            # Group operations by part number
+            for (version, schedule_item, order, operation, machine) in versions_query:
+                # Extract the proper quantity from the version
+                total_qty = version.planned_quantity
+
+                # In case the quantity is still 1, try to get a more accurate quantity
+                if total_qty == 1:
+                    # Query for a better quantity value from related operations
+                    order_operations = Operation.select(lambda op: op.order == order)
+                    if order_operations:
+                        # Look for the operation with the highest quantity as the true quantity
+                        max_qty = max(
+                            (op.quantity for op in order_operations if hasattr(op, 'quantity') and op.quantity),
+                            default=total_qty)
+                        if max_qty > total_qty:
+                            total_qty = max_qty
+
+                part_operations[order.part_number].append({
+                    'operation_description': operation.operation_description,
+                    'operation_number': operation.operation_number if hasattr(operation, 'operation_number') else 0,
+                    'start_time': version.planned_start_time,
+                    'end_time': version.planned_end_time,
+                    'total_quantity': total_qty,
+                    'remaining_quantity': version.remaining_quantity,
+                    'completed_quantity': version.completed_quantity,
+                    'version_number': version.version_number,
+                    'status': schedule_item.status,
+                    'production_order': order.production_order
+                })
+
+            # Process results
+            results = []
+            for part_number, operations in part_operations.items():
+                # If there's an operation_number attribute, sort by that
+                # Otherwise, sort by start_time to determine first and last
+                try:
+                    operations.sort(key=lambda x: x['operation_number'])
+                except:
+                    operations.sort(key=lambda x: x['start_time'])
+
+                # Get the max quantity from all operations for this part number
+                max_quantity = max(op['total_quantity'] for op in operations)
+
+                # Use the order quantity where available, or fall back to the highest operation quantity
+                with db_session:
+                    order = Order.get(part_number=part_number)
+                    order_quantity = order.quantity if order and hasattr(order, 'quantity') else max_quantity
+
+                # Use the higher of the two quantities
+                total_quantity = max(max_quantity, order_quantity)
+
+                # If we still have quantity = 1, try to get quantity from the extract_quantity function
+                if total_quantity == 1:
+                    try:
+                        for op in operations:
+                            if hasattr(op, 'quantity_str'):
+                                total_qty, _, _ = extract_quantity(op['quantity_str'])
+                                if total_qty > total_quantity:
+                                    total_quantity = total_qty
+                    except:
+                        pass
+
+                # Sum the completed quantities across all operations
+                total_completed = sum(op['completed_quantity'] for op in operations)
+
+                # For remaining quantity, take the sum of remaining quantities or calculate from the ratio
+                total_remaining = sum(op['remaining_quantity'] for op in operations)
+
+                # Use status from the last operation
+                status = operations[-1]['status']
+
+                results.append(PartProductionTimeline(
+                    part_number=part_number,
+                    production_order=operations[0]['production_order'],
+                    completed_total_quantity=total_quantity,
+                    operations_count=len(operations),
+                    status=status
+                ))
+
+            # Sort by part number alphabetically
+            results.sort(key=lambda x: x.part_number)
+
+            return PartProductionResponse(
+                items=results,
+                total_parts=len(results)
+            )
+
+    except Exception as e:
+        print(f"Error retrieving part production timeline: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
