@@ -3,12 +3,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from .database.connection import connect_to_db
 from .routes import hr_routes, finance_routes, master_order_routes
 from .api.v1.endpoints import document_management, inventoryv1
-from .api.v1.endpoints import component_status, programs, daily_production
+from .api.v1.endpoints import component_status, programs, daily_production,operator_login
 from .api.v1.endpoints import auth, planning, mpp, operations, scheduled, dynamic_rescheduling, comp_maintainance, comp_operator, quality_endpoints
-from .api.v1.endpoints import auth, planning, mpp, operations, scheduled, dynamic_rescheduling, comp_maintainance, comp_operator, priority_scheduling
 
 
 app = FastAPI(title="BEL MES API")
+
 
 # Add CORS middleware
 app.add_middleware(
@@ -32,6 +32,7 @@ async def startup_event():
 # app.include_router(hr_routes.router)
 # app.include_router(finance_routes.router)
 app.include_router(auth.router)
+app.include_router(operator_login.router)
 app.include_router(master_order_routes.router)
 app.include_router(planning.router)
 app.include_router(mpp.router)
@@ -40,7 +41,7 @@ app.include_router(comp_maintainance.router)
 app.include_router(comp_operator.router)
 app.include_router(component_status.router)
 app.include_router(scheduled.router)
-app.include_router(priority_scheduling.router)
+# app.include_router(priority_scheduling.router)
 app.include_router(dynamic_rescheduling.router)
 app.include_router(programs.router)
 app.include_router(daily_production.router)
@@ -55,6 +56,6 @@ def read_root():
 
 
 # uvicorn app.main:app --reload
-# uvicorn app.main:app --host 172.18.7.88 --port 7780 --reload
+# uvicorn app.main:app --host 172.18.7.88 --port 7222 --reload
 
-# uvicorn app.main:app --host 172.18.7.85 --port 6641 --reload
+# uvicorn app.main:app --host 172.18.7.85 --port 6651 --reload
