@@ -6,9 +6,15 @@ from .api.v1.endpoints import document_management, inventoryv1
 from .api.v1.endpoints import component_status, programs, daily_production,operator_login
 from .api.v1.endpoints import auth, planning, mpp, operations, scheduled, dynamic_rescheduling, comp_maintainance, comp_operator, quality_endpoints
 
+# from .api.v1.endpoints import document_management  # Comment out v1 endpoint
+from .api.v1.endpoints import inventoryv1
+from .api.v1.endpoints import component_status, programs, daily_production
+from .api.v1.endpoints import auth, planning, mpp, operations, scheduled, document_management_v2
+import logging
+from datetime import datetime
+
 
 app = FastAPI(title="BEL MES API")
-
 
 # Add CORS middleware
 app.add_middleware(
@@ -27,6 +33,7 @@ async def startup_event():
     except Exception as e:
         print(f"Error connecting to database: {str(e)}")
         raise e
+
 
 # Include routers
 # app.include_router(hr_routes.router)
@@ -49,6 +56,7 @@ app.include_router(document_management.router, prefix="/api/v1")
 app.include_router(inventoryv1.router, prefix="/api/v1")
 app.include_router(quality_endpoints.router)
 # router = APIRouter(prefix="/api/inventory", tags=["inventory"])
+# app.include_router(production_monitoring.router, tags=["production_monitoring"])
 
 @app.get("/")
 def read_root():

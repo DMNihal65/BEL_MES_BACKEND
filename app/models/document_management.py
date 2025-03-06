@@ -28,7 +28,7 @@ class Document(db.Entity):
     _table_ = ("document_management", "documents")
     id = PrimaryKey(int, auto=True)
     folder = Required(DocFolder)
-    part_number_id = Required(Order)  # Link to Order model
+    part_number_id = Required(Order,)  # Changed column name to match
     doc_type = Required(DocType)
     document_name = Required(str)
     description = Optional(str)

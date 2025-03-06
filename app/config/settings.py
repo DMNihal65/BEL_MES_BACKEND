@@ -6,11 +6,11 @@ load_dotenv()
 
 class Settings(BaseSettings):
     # Database settings
-    DB_HOST: str
-    DB_PORT: int
-    DB_NAME: str
-    DB_USER: str
-    DB_PASSWORD: str
+    DB_HOST: str = "172.18.7.91"
+    DB_PORT: int = 5432
+    DB_NAME: str = "BEL_DEMO1"
+    DB_USER: str = "postgres"
+    DB_PASSWORD: str = "postgres"
     
     # JWT settings
     SECRET_KEY: str = "BEL_MES_25"  # Default value
