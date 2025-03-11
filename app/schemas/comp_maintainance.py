@@ -1,17 +1,12 @@
 from datetime import datetime
 from typing import Optional, List
-
 from pydantic import BaseModel
-
-from app.schemas.planning import RawMaterialResponse
-
 
 class MachineStatusBase(BaseModel):
     machine_make: str
     status_name: str
-    description: Optional[str] = None  # Added this field
+    description: Optional[str] = None
     available_from: Optional[datetime] = None
-
 
 class MachineStatusOut(MachineStatusBase):
     pass
@@ -22,9 +17,17 @@ class MachineStatusResponse(BaseModel):
 
 class UpdateMachineStatusRequest(BaseModel):
     status_id: int
-    description: Optional[str] = None  # Added this field
+    description: Optional[str] = None
     available_from: Optional[datetime] = None
 
+# Models for operator updates
+class OperatorMachineUpdate(BaseModel):
+    description: str
+    is_on: bool  # True for machine ON, False for machine OFF
+
+class OperatorRawMaterialUpdate(BaseModel):
+    description: str
+    is_available: bool  # True for available, False for unavailable
 
 class StatusOut(BaseModel):
     id: int
@@ -35,8 +38,7 @@ class StatusResponse(BaseModel):
     total_statuses: int
     statuses: List[StatusOut]
 
-
-# Pydantic models
+# Order info model
 class OrderInfo(BaseModel):
     production_order: str
     part_number: str
@@ -62,7 +64,6 @@ class UpdateRawMaterialRequest(BaseModel):
     status_id: int
     available_from: datetime | None
 
-
 class StatusResponse1(BaseModel):
     id: int
     name: str
@@ -75,3 +76,29 @@ class UnitResponse(BaseModel):
 class ReferenceDataResponse(BaseModel):
     statuses: List[StatusResponse1]
     units: List[UnitResponse]
+
+# Updated notification models (without is_critical)
+class MachineNotification(BaseModel):
+    machine_id: int
+    machine_make: str
+    status_name: str
+    description: Optional[str]
+    updated_at: Optional[datetime]  # Using available_from as a proxy for update time
+
+class RawMaterialNotification(BaseModel):
+    id: int
+    # child_part_number: str
+    part_number: Optional[str]  # From associated order if available
+    status_name: str
+    description: Optional[str]
+    updated_at: Optional[datetime]  # Using available_from as a proxy for update time
+
+class MachineNotificationsResponse(BaseModel):
+    total_notifications: int
+    notifications: List[MachineNotification]
+
+class RawMaterialNotificationsResponse(BaseModel):
+    total_notifications: int
+    notifications: List[RawMaterialNotification]
+
+

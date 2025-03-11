@@ -7,9 +7,9 @@ from app.crud.component_quantities import fetch_component_quantities
 from app.crud.leadtime import fetch_lead_times
 from app.crud.operation import fetch_operations
 from app.models import PlannedScheduleItem, ScheduleVersion, ProductionLog, Order, Operation, Status
-from app.schemas.scheduled import CombinedScheduleResponse, WorkCenterInfo
+from app.schemas.scheduled1 import CombinedScheduleResponse, WorkCenterInfo
 from app.models.master_order import WorkCenter, MachineStatus, Machine
-from app.schemas.scheduled import ProductionLogResponse, ScheduledOperation
+from app.schemas.scheduled1 import ProductionLogResponse, ScheduledOperation
 
 router = APIRouter(prefix="/api/v1/rescheduling", tags=["rescheduling"])
 

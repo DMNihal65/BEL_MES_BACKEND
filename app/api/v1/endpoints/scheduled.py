@@ -2,9 +2,7 @@ from collections import defaultdict
 
 from fastapi import APIRouter, HTTPException
 from pony.orm import db_session, select
-from app.schemas.scheduled import ScheduledOperation, ScheduleResponse, ProductionLogResponse, ProductionLogsResponse, \
-    CombinedScheduleProductionResponse, PartProductionResponse, \
-    PartProductionTimeline
+
 from app.models import Order, Operation, Machine, PartScheduleStatus, PlannedScheduleItem, ScheduleVersion, \
     ProductionLog
 from app.crud.operation import fetch_operations
@@ -12,6 +10,9 @@ from app.crud.component_quantities import fetch_component_quantities
 from app.crud.leadtime import fetch_lead_times
 from app.algorithm.scheduling import schedule_operations
 import re
+
+from app.schemas.scheduled1 import ScheduleResponse, ProductionLogsResponse, ProductionLogResponse, ScheduledOperation, \
+    CombinedScheduleProductionResponse, PartProductionResponse, PartProductionTimeline
 
 router = APIRouter(prefix="/api/v1/scheduling", tags=["scheduling"])
 

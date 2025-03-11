@@ -26,11 +26,12 @@ from app.models.master_order import Operation
 router = APIRouter(prefix="/documents", tags=["Document Management"])
 minio_service = MinioService()
 
+
 # Document Type Endpoints
 @router.post("/types/", response_model=DocTypeResponse)
 async def create_doc_type(
-    doc_type: DocTypeCreate,
-    current_user: User = Depends(get_current_admin_user)
+        doc_type: DocTypeCreate,
+        current_user: User = Depends(get_current_admin_user)
 ):
     """Create a new document type"""
     with db_session:
@@ -38,7 +39,7 @@ async def create_doc_type(
             existing = DocType.get(type_name=doc_type.type_name)
             if existing:
                 raise HTTPException(status_code=400, detail="Document type already exists")
-            
+
             db_doc_type = DocType(
                 type_name=doc_type.type_name,
                 description=doc_type.description,
@@ -53,10 +54,11 @@ async def create_doc_type(
             rollback()
             raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.get("/types/", response_model=List[DocTypeResponse])
 async def list_doc_types(
-    current_user: User = Depends(get_current_user),
-    include_inactive: bool = False
+        current_user: User = Depends(get_current_user),
+        include_inactive: bool = False
 ):
     """List all document types"""
     with db_session:
@@ -65,11 +67,12 @@ async def list_doc_types(
             query = query.filter(lambda dt: dt.is_active)
         return list(query)
 
+
 # Folder Endpoints
 @router.post("/folders/", response_model=FolderResponse)
 async def create_folder(
-    folder: FolderCreate,
-    current_user: User = Depends(get_current_user)
+        folder: FolderCreate,
+        current_user: User = Depends(get_current_user)
 ):
     """Create a new folder"""
     user_id = current_user.id  # Get user ID outside session
@@ -94,7 +97,7 @@ async def create_folder(
                     parent_path = parent.folder_path
 
             folder_path = f"{parent_path}/{folder.folder_name}".lstrip("/")
-            
+
             existing_folder = DocFolder.get(folder_path=folder_path)
             if existing_folder:
                 raise HTTPException(
@@ -109,7 +112,7 @@ async def create_folder(
                 created_by=user,  # Use re-fetched user
                 is_active=folder.is_active
             )
-            
+
             flush()
             commit()
 
@@ -129,13 +132,12 @@ async def create_folder(
         except Exception as e:
             rollback()
             raise HTTPException(status_code=500, detail=str(e))
-        
 
 
 @router.get("/folders/", response_model=List[FolderResponse])
 async def list_folders(
-    current_user: User = Depends(get_current_user),
-    parent_id: Optional[int] = None
+        current_user: User = Depends(get_current_user),
+        parent_id: Optional[int] = None
 ):
     """List folders, optionally filtered by parent folder"""
     with db_session:
@@ -145,7 +147,7 @@ async def list_folders(
                 query = query.filter(lambda f: f.parent_folder is None)
             else:
                 query = query.filter(lambda f: f.parent_folder == parent_id)
-        
+
         folders = list(query)
         return [
             FolderResponse(
@@ -159,20 +161,21 @@ async def list_folders(
             ) for f in folders
         ]
 
+
 # Document Endpoints
 
 
 @router.post("/upload/", response_model=DocumentResponse)
 async def upload_document(
-    file: UploadFile = File(...),
-    folder_id: int = Form(...),
-    part_number_id: int = Form(...),
-    doc_type_id: int = Form(...),
-    document_name: str = Form(...),
-    description: Optional[str] = Form(None),
-    version_number: str = Form(...),
-    metadata: Optional[str] = Form("{}"),
-    current_user: User = Depends(get_current_user)
+        file: UploadFile = File(...),
+        folder_id: int = Form(...),
+        part_number_id: int = Form(...),
+        doc_type_id: int = Form(...),
+        document_name: str = Form(...),
+        description: Optional[str] = Form(None),
+        version_number: str = Form(...),
+        metadata: Optional[str] = Form("{}"),
+        current_user: User = Depends(get_current_user)
 ):
     """Upload a new document with initial version"""
     try:
@@ -209,7 +212,7 @@ async def upload_document(
                     raise HTTPException(status_code=404, detail="Document type not found")
                 if not doc_type.is_active:
                     raise HTTPException(status_code=400, detail="Document type is inactive")
-                
+
                 if file_ext not in [ext.lower().strip('.') for ext in doc_type.file_extensions]:
                     raise HTTPException(
                         status_code=400,
@@ -241,7 +244,7 @@ async def upload_document(
                 try:
                     # Create BytesIO object with the file contents
                     file_object = io.BytesIO(file_contents)
-                    
+
                     # Upload to MinIO
                     minio_result = minio_service.upload_file(
                         file=file_object,
@@ -326,11 +329,12 @@ async def upload_document(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.get("/{document_id}/download/{version_id}")
 async def download_document(
-    document_id: int,
-    version_id: int,
-    current_user: User = Depends(get_current_user)
+        document_id: int,
+        version_id: int,
+        current_user: User = Depends(get_current_user)
 ):
     """Download a specific version of a document"""
     # First db session to get and validate entities
@@ -340,11 +344,11 @@ async def download_document(
             raise HTTPException(status_code=404, detail="Document not found")
         if not document.is_active:
             raise HTTPException(status_code=400, detail="Document is inactive")
-            
+
         version = DocumentVersion.get(id=version_id, document=document)
         if not version:
             raise HTTPException(status_code=404, detail="Version not found")
-        
+
         # Store necessary values
         minio_object_id = version.minio_object_id
         file_size = version.file_size
@@ -353,7 +357,7 @@ async def download_document(
     try:
         # Get file from MinIO (outside db session)
         file_stream = minio_service.get_file(minio_object_id)
-        
+
         # Create access log in a separate db session
         with db_session:
             DocumentAccessLog(
@@ -363,7 +367,7 @@ async def download_document(
                 action_type="download"
             )
             commit()
-        
+
         return StreamingResponse(
             file_stream,
             media_type=file_stream.headers.get("content-type", "application/octet-stream"),
@@ -378,13 +382,14 @@ async def download_document(
             detail=f"Failed to retrieve file: {str(e)}"
         )
 
+
 @router.post("/{document_id}/versions/", response_model=DocumentVersionResponse)
 async def create_document_version(
-    document_id: int,
-    file: UploadFile = File(...),
-    version_number: str = Form(...),
-    metadata: Optional[str] = Form("{}"),
-    current_user: User = Depends(get_current_user)
+        document_id: int,
+        file: UploadFile = File(...),
+        version_number: str = Form(...),
+        metadata: Optional[str] = Form("{}"),
+        current_user: User = Depends(get_current_user)
 ):
     """Create a new version of an existing document"""
     try:
@@ -443,7 +448,7 @@ async def create_document_version(
                 )
 
                 commit()
-                
+
                 # Return response in correct format
                 return {
                     "id": new_version.id,
@@ -466,12 +471,13 @@ async def create_document_version(
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Invalid metadata JSON format")
 
+
 @router.get("/folder/{folder_id}/documents", response_model=DocumentSearchResponse)
 async def list_folder_documents(
-    folder_id: int,
-    skip: int = 0,
-    limit: int = 100,
-    current_user: User = Depends(get_current_user)
+        folder_id: int,
+        skip: int = 0,
+        limit: int = 100,
+        current_user: User = Depends(get_current_user)
 ):
     """List all documents in a folder with pagination"""
     with db_session:
@@ -479,17 +485,17 @@ async def list_folder_documents(
             folder = DocFolder.get(id=folder_id)
             if not folder:
                 raise HTTPException(status_code=404, detail="Folder not found")
-            
+
             query = select(d for d in Document if d.folder.id == folder_id and d.is_active)
             total = query.count()
-            documents = query[skip:skip+limit]
-            
+            documents = query[skip:skip + limit]
+
             # Convert Pony entities to dict format
             doc_list = []
             for d in documents:
                 latest_ver = d.latest_version
                 versions = list(d.versions)
-                
+
                 doc_dict = {
                     "id": d.id,
                     "folder_id": d.folder.id,
@@ -523,48 +529,49 @@ async def list_folder_documents(
                     } for v in versions]
                 }
                 doc_list.append(doc_dict)
-            
+
             return DocumentSearchResponse(
                 total=total,
                 documents=doc_list,
                 skip=skip,
                 limit=limit
             )
-            
+
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.get("/search/", response_model=DocumentSearchResponse)
 async def search_documents(
-    search_text: Optional[str] = None,
-    doc_type_id: Optional[int] = None,
-    folder_id: Optional[int] = None,
-    skip: int = 0,
-    limit: int = 100,
-    current_user: User = Depends(get_current_user)
+        search_text: Optional[str] = None,
+        doc_type_id: Optional[int] = None,
+        folder_id: Optional[int] = None,
+        skip: int = 0,
+        limit: int = 100,
+        current_user: User = Depends(get_current_user)
 ):
     """Search documents by name, description"""
     with db_session:
         try:
             # Base query for active documents
             query = select(d for d in Document if d.is_active)
-            
+
             # Apply filters
             if search_text:
-                query = query.filter(lambda d: 
-                    search_text.lower() in d.document_name.lower() or
-                    (d.description and search_text.lower() in d.description.lower())
-                )
-            
+                query = query.filter(lambda d:
+                                     search_text.lower() in d.document_name.lower() or
+                                     (d.description and search_text.lower() in d.description.lower())
+                                     )
+
             if doc_type_id:
                 query = query.filter(lambda d: d.doc_type.id == doc_type_id)
-                
+
             if folder_id:
                 query = query.filter(lambda d: d.folder.id == folder_id)
-            
+
             total = query.count()
-            documents = list(query[skip:skip+limit])
-            
+            documents = list(query[skip:skip + limit])
+
             doc_list = [{
                 "id": d.id,
                 "folder_id": d.folder.id,
@@ -597,22 +604,23 @@ async def search_documents(
                     "status": v.status
                 } for v in d.versions]
             } for d in documents]
-            
+
             return DocumentSearchResponse(
                 total=total,
                 documents=doc_list,
                 skip=skip,
                 limit=limit
             )
-            
+
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.get("/by-part-number/", response_model=DocumentSearchResponse)
 async def get_documents_by_part_number(
-    part_number: str,
-    doc_type_id: Optional[int] = None,
-    current_user: User = Depends(get_current_user)
+        part_number: str,
+        doc_type_id: Optional[int] = None,
+        current_user: User = Depends(get_current_user)
 ):
     """Get documents by part number and optional document type"""
     with db_session:
@@ -623,15 +631,15 @@ async def get_documents_by_part_number(
                 raise HTTPException(status_code=404, detail="Part number not found")
 
             # Base query for active documents with matching part number
-            query = select(d for d in Document 
-                         if d.is_active and d.part_number_id.id == order.id)
-            
+            query = select(d for d in Document
+                           if d.is_active and d.part_number_id.id == order.id)
+
             # Apply doc type filter if provided
             if doc_type_id:
                 query = query.filter(lambda d: d.doc_type.id == doc_type_id)
-            
+
             documents = list(query)
-            
+
             doc_list = [{
                 "id": d.id,
                 "folder_id": d.folder.id,
@@ -664,23 +672,24 @@ async def get_documents_by_part_number(
                     "status": v.status
                 } for v in d.versions]
             } for d in documents]
-            
+
             return DocumentSearchResponse(
                 total=len(documents),
                 documents=doc_list,
                 skip=0,
                 limit=len(documents)
             )
-            
+
         except HTTPException:
             raise
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.get("/{document_id}/download")
 async def download_latest_document(
-    document_id: int,
-    current_user: User = Depends(get_current_user)
+        document_id: int,
+        current_user: User = Depends(get_current_user)
 ):
     """Download the latest version of a document"""
     with db_session:
@@ -689,11 +698,11 @@ async def download_latest_document(
             raise HTTPException(status_code=404, detail="Document not found")
         if not document.is_active:
             raise HTTPException(status_code=400, detail="Document is inactive")
-        
+
         latest_version = document.latest_version
         if not latest_version:
             raise HTTPException(status_code=404, detail="No versions found for this document")
-        
+
         # Store necessary values
         minio_object_id = latest_version.minio_object_id
         file_size = latest_version.file_size
@@ -702,7 +711,7 @@ async def download_latest_document(
     try:
         # Get file from MinIO (outside db session)
         file_stream = minio_service.get_file(minio_object_id)
-        
+
         # Create access log in a separate db session
         with db_session:
             DocumentAccessLog(
@@ -712,7 +721,7 @@ async def download_latest_document(
                 action_type="download"
             )
             commit()
-        
+
         return StreamingResponse(
             file_stream,
             media_type=file_stream.headers.get("content-type", "application/octet-stream"),
@@ -727,11 +736,12 @@ async def download_latest_document(
             detail=f"Failed to retrieve file: {str(e)}"
         )
 
+
 @router.put("/{document_id}", response_model=DocumentResponse)
 async def update_document(
-    document_id: int,
-    update_data: DocumentUpdate,
-    current_user: User = Depends(get_current_user)
+        document_id: int,
+        update_data: DocumentUpdate,
+        current_user: User = Depends(get_current_user)
 ):
     """Update document metadata"""
     with db_session:
@@ -739,7 +749,7 @@ async def update_document(
             document = Document.get(id=document_id)
             if not document:
                 raise HTTPException(status_code=404, detail="Document not found")
-                
+
             if update_data.folder_id is not None:
                 folder = DocFolder.get(id=update_data.folder_id)
                 if not folder:
@@ -747,13 +757,13 @@ async def update_document(
                 if not folder.is_active:
                     raise HTTPException(status_code=400, detail="Folder is inactive")
                 document.folder = folder
-                
+
             if update_data.document_name is not None:
                 document.document_name = update_data.document_name
-                
+
             if update_data.description is not None:
                 document.description = update_data.description
-                
+
             if update_data.is_active is not None:
                 document.is_active = update_data.is_active
 
@@ -763,7 +773,7 @@ async def update_document(
                 user=current_user,
                 action_type="update"
             )
-            
+
             commit()
             return DocumentResponse.from_orm(document)
 
@@ -774,10 +784,11 @@ async def update_document(
             rollback()
             raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.delete("/{document_id}")
 async def delete_document(
-    document_id: int,
-    current_user: User = Depends(get_current_user)
+        document_id: int,
+        current_user: User = Depends(get_current_user)
 ):
     """Soft delete a document"""
     with db_session:
@@ -785,7 +796,7 @@ async def delete_document(
             document = Document.get(id=document_id)
             if not document:
                 raise HTTPException(status_code=404, detail="Document not found")
-            
+
             document.is_active = False
 
             # Create access log
@@ -794,7 +805,7 @@ async def delete_document(
                 user=current_user,
                 action_type="delete"
             )
-            
+
             commit()
             return {"message": "Document deleted successfully"}
 
@@ -805,12 +816,13 @@ async def delete_document(
             rollback()
             raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.put("/{document_id}/versions/{version_id}", response_model=DocumentVersionResponse)
 async def update_version(
-    document_id: int,
-    version_id: int,
-    update_data: DocumentVersionUpdateRequest,
-    current_user: User = Depends(get_current_user)
+        document_id: int,
+        version_id: int,
+        update_data: DocumentVersionUpdateRequest,
+        current_user: User = Depends(get_current_user)
 ):
     """Update version metadata or status"""
     with db_session:
@@ -820,18 +832,18 @@ async def update_version(
                 raise HTTPException(status_code=404, detail="Document not found")
             if not document.is_active:
                 raise HTTPException(status_code=400, detail="Document is inactive")
-                
+
             version = DocumentVersion.get(id=version_id, document=document)
             if not version:
                 raise HTTPException(status_code=404, detail="Version not found")
-            
+
             # Validate status
             if update_data.status not in ["active", "archived", "deprecated"]:
                 raise HTTPException(
                     status_code=400,
                     detail="Invalid status. Must be one of: active, archived, deprecated"
                 )
-            
+
             version.status = update_data.status
             if update_data.metadata is not None:
                 version.metadata = update_data.metadata
@@ -843,7 +855,7 @@ async def update_version(
                 user=current_user,
                 action_type="update_version"
             )
-            
+
             commit()
             return DocumentVersionResponse(
                 id=version.id,
@@ -863,10 +875,11 @@ async def update_version(
             rollback()
             raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.get("/{document_id}/versions", response_model=List[DocumentVersionResponse])
 async def list_versions(
-    document_id: int,
-    current_user: User = Depends(get_current_user)
+        document_id: int,
+        current_user: User = Depends(get_current_user)
 ):
     """List all versions of a document"""
     with db_session:
@@ -874,7 +887,7 @@ async def list_versions(
             document = Document.get(id=document_id)
             if not document:
                 raise HTTPException(status_code=404, detail="Document not found")
-                
+
             versions = list(document.versions)
             return [{
                 "id": v.id,
@@ -890,11 +903,12 @@ async def list_versions(
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.put("/folders/{folder_id}", response_model=FolderResponse)
 async def update_folder(
-    folder_id: int,
-    folder_data: FolderCreate,
-    current_user: User = Depends(get_current_user)
+        folder_id: int,
+        folder_data: FolderCreate,
+        current_user: User = Depends(get_current_user)
 ):
     """Update folder details"""
     with db_session:
@@ -902,7 +916,7 @@ async def update_folder(
             folder = DocFolder.get(id=folder_id)
             if not folder:
                 raise HTTPException(status_code=404, detail="Folder not found")
-                
+
             if folder_data.parent_folder_id:
                 parent = DocFolder.get(id=folder_data.parent_folder_id)
                 if not parent:
@@ -910,17 +924,17 @@ async def update_folder(
                 if not parent.is_active:
                     raise HTTPException(status_code=400, detail="Parent folder is inactive")
                 folder.parent_folder = folder_data.parent_folder_id
-                
+
             folder.folder_name = folder_data.folder_name
             folder.is_active = folder_data.is_active
-            
+
             parent_path = ""
             if folder.parent_folder:
                 parent = DocFolder.get(id=folder.parent_folder)
                 parent_path = parent.folder_path
-                
+
             new_folder_path = f"{parent_path}/{folder.folder_name}".lstrip("/")
-            
+
             # Check if new path already exists
             existing = DocFolder.get(folder_path=new_folder_path)
             if existing and existing.id != folder_id:
@@ -928,9 +942,9 @@ async def update_folder(
                     status_code=400,
                     detail="A folder with this path already exists"
                 )
-                
+
             folder.folder_path = new_folder_path
-            
+
             commit()
             return FolderResponse.from_orm(folder)
 
@@ -941,10 +955,11 @@ async def update_folder(
             rollback()
             raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.delete("/folders/{folder_id}")
 async def delete_folder(
-    folder_id: int,
-    current_user: User = Depends(get_current_user)
+        folder_id: int,
+        current_user: User = Depends(get_current_user)
 ):
     """Soft delete a folder"""
     with db_session:
@@ -952,19 +967,19 @@ async def delete_folder(
             folder = DocFolder.get(id=folder_id)
             if not folder:
                 raise HTTPException(status_code=404, detail="Folder not found")
-                
+
             # Check if folder has active documents
             docs_count = select(
-                d for d in Document 
+                d for d in Document
                 if d.folder.id == folder_id and d.is_active
             ).count()
-            
+
             if docs_count > 0:
                 raise HTTPException(
                     status_code=400,
                     detail="Cannot delete folder containing active documents"
                 )
-                
+
             folder.is_active = False
             commit()
             return {"message": "Folder deleted successfully"}
@@ -976,11 +991,12 @@ async def delete_folder(
             rollback()
             raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.get("/download-by-part-number")
 async def download_by_part_number_and_type(
-    part_number: str,
-    doc_type_id: int,
-    current_user: User = Depends(get_current_user)
+        part_number: str,
+        doc_type_id: int,
+        current_user: User = Depends(get_current_user)
 ):
     """Download the latest version of a document for a specific part number and document type"""
     with db_session:
@@ -991,11 +1007,11 @@ async def download_by_part_number_and_type(
                 raise HTTPException(status_code=404, detail="Part number not found")
 
             # First get all matching documents
-            documents = select(d for d in Document 
-                if d.is_active and 
-                d.part_number_id.id == order.id and 
-                d.doc_type.id == doc_type_id
-            ).order_by(lambda d: desc(d.created_at))
+            documents = select(d for d in Document
+                               if d.is_active and
+                               d.part_number_id.id == order.id and
+                               d.doc_type.id == doc_type_id
+                               ).order_by(lambda d: desc(d.created_at))
 
             # Get the first document with a latest version
             document = None
@@ -1006,14 +1022,14 @@ async def download_by_part_number_and_type(
 
             if not document:
                 raise HTTPException(
-                    status_code=404, 
+                    status_code=404,
                     detail="No document found for this part number and document type"
                 )
 
             latest_version = document.latest_version
             if not latest_version:
                 raise HTTPException(
-                    status_code=404, 
+                    status_code=404,
                     detail="No versions found for this document"
                 )
 
@@ -1032,7 +1048,7 @@ async def download_by_part_number_and_type(
     try:
         # Get file from MinIO (outside db session)
         file_stream = minio_service.get_file(minio_object_id)
-        
+
         # Create access log in a separate db session
         with db_session:
             DocumentAccessLog(
@@ -1042,7 +1058,7 @@ async def download_by_part_number_and_type(
                 action_type="download"
             )
             commit()
-        
+
         return StreamingResponse(
             file_stream,
             media_type=file_stream.headers.get("content-type", "application/octet-stream"),
@@ -1057,14 +1073,15 @@ async def download_by_part_number_and_type(
             detail=f"Failed to retrieve file: {str(e)}"
         )
 
+
 @router.put("/{document_id}/versions/{version_id}/file", response_model=DocumentVersionResponse)
 async def update_version_file(
-    document_id: int,
-    version_id: int,
-    file: UploadFile = File(...),
-    version_number: Optional[str] = Form(None),
-    metadata: Optional[str] = Form("{}"),
-    current_user: User = Depends(get_current_user)
+        document_id: int,
+        version_id: int,
+        file: UploadFile = File(...),
+        version_number: Optional[str] = Form(None),
+        metadata: Optional[str] = Form("{}"),
+        current_user: User = Depends(get_current_user)
 ):
     """Update a version with a new file, replacing the existing one"""
     try:
@@ -1073,7 +1090,7 @@ async def update_version_file(
         file_size = len(file_contents)
         file_ext = file.filename.split('.')[-1].lower()
         user_id = current_user.id
-        
+
         # Parse metadata
         try:
             metadata_dict = json.loads(metadata) if metadata else {}
@@ -1122,7 +1139,7 @@ async def update_version_file(
                 version.minio_object_id = object_name
                 version.file_size = file_size
                 version.checksum = checksum
-                
+
                 if version_number:
                     version.version_number = version_number
                 if metadata_dict is not None:
@@ -1166,11 +1183,12 @@ async def update_version_file(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.post("/folders/{folder_id}/operation", response_model=FolderOperationResponse)
 async def folder_operation(
-    folder_id: int,
-    operation: FolderOperation,
-    current_user: User = Depends(get_current_user)
+        folder_id: int,
+        operation: FolderOperation,
+        current_user: User = Depends(get_current_user)
 ):
     """Copy or cut (move) a folder to another location"""
     with db_session:
@@ -1239,7 +1257,7 @@ async def folder_operation(
                         'description': doc.description,
                         'versions': []
                     }
-                    
+
                     for ver in doc.versions:
                         ver_data = {
                             'version_number': ver.version_number,
@@ -1251,7 +1269,7 @@ async def folder_operation(
                             'is_latest': ver == doc.latest_version
                         }
                         doc_data['versions'].append(ver_data)
-                    
+
                     docs_to_copy.append(doc_data)
 
                 # Process each document
@@ -1338,11 +1356,12 @@ async def folder_operation(
             rollback()
             raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.delete("/{document_id}/versions/{version_id}", response_model=DocumentResponse)
 async def delete_document_version(
-    document_id: int,
-    version_id: int,
-    current_user: User = Depends(get_current_user)
+        document_id: int,
+        version_id: int,
+        current_user: User = Depends(get_current_user)
 ):
     """Delete a specific version of a document"""
     # First transaction: Get necessary data and validate
@@ -1374,10 +1393,10 @@ async def delete_document_version(
             if is_latest:
                 # Find the new latest version
                 other_versions = select(
-                    v for v in DocumentVersion 
+                    v for v in DocumentVersion
                     if v.document == document and v.id != version_id
                 ).order_by(lambda v: desc(v.created_at))
-                
+
                 if other_versions:
                     new_latest_id = other_versions.first().id
 
@@ -1478,16 +1497,17 @@ async def delete_document_version(
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.get("/{document_id}", response_model=DocumentResponse)
 async def get_document(
-    document_id: int,
-    current_user: User = Depends(get_current_user)
+        document_id: int,
+        current_user: User = Depends(get_current_user)
 ):
     with db_session:
         document = Document.get(id=document_id)
         if not document:
             raise HTTPException(status_code=404, detail="Document not found")
-            
+
         return {
             "id": document.id,
             "folder_id": document.folder.id,
@@ -1523,24 +1543,25 @@ async def get_document(
             ]
         }
 
+
 @router.get("/search/by-partnumber/", response_model=DocumentSearchResponse)
 async def search_documents_by_partnumber(
-    part_number_query: str,
-    skip: int = 0,
-    limit: int = 100,
-    current_user: User = Depends(get_current_user)
+        part_number_query: str,
+        skip: int = 0,
+        limit: int = 100,
+        current_user: User = Depends(get_current_user)
 ):
     """
     Search documents by partial part number match.
-    
+
     Args:
         part_number_query (str): Partial part number to search for (minimum 3 characters)
         skip (int): Number of records to skip for pagination
         limit (int): Maximum number of records to return
-        
+
     Returns:
         DocumentSearchResponse: Matching documents with pagination info
-        
+
     Raises:
         HTTPException: If part number query is less than 3 characters
     """
@@ -1549,25 +1570,25 @@ async def search_documents_by_partnumber(
             status_code=400,
             detail="Part number search query must be at least 3 characters long"
         )
-    
+
     with db_session:
         try:
             # First find matching orders using like operator
-            matching_orders = select(o for o in Order 
-                                  if part_number_query.lower() in o.production_order.lower())
-            
+            matching_orders = select(o for o in Order
+                                     if part_number_query.lower() in o.production_order.lower())
+
             # Then find documents for these orders
-            query = select(d for d in Document 
-                         if d.is_active and d.part_number_id in matching_orders)
-            
+            query = select(d for d in Document
+                           if d.is_active and d.part_number_id in matching_orders)
+
             total = query.count()
-            documents = query.order_by(desc(Document.created_at))[skip:skip+limit]
+            documents = query.order_by(desc(Document.created_at))[skip:skip + limit]
 
             doc_list = []
             for d in documents:
                 latest_ver = d.latest_version
                 versions = list(d.versions)
-                
+
                 doc_dict = {
                     "id": d.id,
                     "folder_id": d.folder.id,
@@ -1601,20 +1622,21 @@ async def search_documents_by_partnumber(
                     } for v in versions]
                 }
                 doc_list.append(doc_dict)
-            
+
             return DocumentSearchResponse(
                 total=total,
                 documents=doc_list,
                 skip=skip,
                 limit=limit
             )
-            
+
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.get("/analytics/metrics", response_model=DocumentMetrics)
 async def get_document_metrics(
-    current_user: User = Depends(get_current_user)
+        current_user: User = Depends(get_current_user)
 ):
     """
     Get basic document management metrics
@@ -1644,8 +1666,8 @@ async def get_document_metrics(
             storage_usage_mb = round(total_size_bytes / (1024 * 1024), 2)
 
             # Recent activity count (last 24h)
-            recent_activity = select(l for l in DocumentAccessLog 
-                                  if l.action_timestamp >= last_24h).count()
+            recent_activity = select(l for l in DocumentAccessLog
+                                     if l.action_timestamp >= last_24h).count()
 
             return DocumentMetrics(
                 total_documents=total_documents,
@@ -1661,16 +1683,17 @@ async def get_document_metrics(
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.post("/ipid/upload/", response_model=DocumentResponse)
 async def upload_ipid_document(
-    file: UploadFile = File(...),
-    production_order: str = Form(...),
-    operation_number: int = Form(...),
-    document_name: str = Form(...),
-    description: Optional[str] = Form(None),
-    version_number: str = Form(...),
-    metadata: Optional[str] = Form("{}"),
-    current_user: User = Depends(get_current_user)
+        file: UploadFile = File(...),
+        production_order: str = Form(...),
+        operation_number: int = Form(...),
+        document_name: str = Form(...),
+        description: Optional[str] = Form(None),
+        version_number: str = Form(...),
+        metadata: Optional[str] = Form("{}"),
+        current_user: User = Depends(get_current_user)
 ):
     """Upload an in-process document for a specific production order and operation"""
     try:
@@ -1825,11 +1848,12 @@ async def upload_ipid_document(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.get("/ipid/{production_order}", response_model=List[DocumentResponse])
 def get_ipid_documents(
-    production_order: str,
-    operation_number: Optional[int] = None,
-    current_user: User = Depends(get_current_user)
+        production_order: str,
+        operation_number: Optional[int] = None,
+        current_user: User = Depends(get_current_user)
 ):
     """Get all IPID documents for a production order, optionally filtered by operation number"""
     try:
@@ -1848,17 +1872,17 @@ def get_ipid_documents(
 
             # Build query for IPID documents
             documents = select(d for d in Document
-                if d.is_active and
-                d.part_number_id == order and
-                d.doc_type == doc_type
-            )[:]
+                               if d.is_active and
+                               d.part_number_id == order and
+                               d.doc_type == doc_type
+                               )[:]
 
             # Filter by operation number if provided
             if operation_number is not None:
                 documents = [
                     d for d in documents
                     if d.latest_version and
-                    d.latest_version.metadata.get("operation_number") == operation_number
+                       d.latest_version.metadata.get("operation_number") == operation_number
                 ]
 
             # Log access and prepare response
@@ -1910,12 +1934,13 @@ def get_ipid_documents(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 # Add a helper function to get documents by operation
 @router.get("/by-operation/{production_order}/{operation_number}", response_model=List[DocumentResponse])
 def get_documents_by_operation(
-    production_order: str,
-    operation_number: int,
-    current_user: User = Depends(get_current_user)
+        production_order: str,
+        operation_number: int,
+        current_user: User = Depends(get_current_user)
 ):
     """Get all documents (including IPID) for a specific operation of a production order"""
     try:
@@ -1934,10 +1959,10 @@ def get_documents_by_operation(
 
             # Get all documents for this operation
             documents = select(d for d in Document
-                if d.is_active and
-                d.part_number_id == order and
-                d.latest_version
-            )[:]
+                               if d.is_active and
+                               d.part_number_id == order and
+                               d.latest_version
+                               )[:]
 
             # Prepare response data
             response_data = []
@@ -1992,11 +2017,12 @@ def get_documents_by_operation(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.get("/ipid/download/{production_order}/{operation_number}")
 def download_ipid_document(
-    production_order: str,
-    operation_number: int,
-    current_user: User = Depends(get_current_user)
+        production_order: str,
+        operation_number: int,
+        current_user: User = Depends(get_current_user)
 ):
     """Download the latest IPID document for a specific production order and operation"""
     try:
@@ -2016,11 +2042,11 @@ def download_ipid_document(
 
             # Get all active documents
             documents = select(d for d in Document
-                if d.is_active and
-                d.part_number_id == order and
-                d.doc_type == doc_type and
-                d.latest_version
-            ).order_by(lambda d: desc(d.created_at))[:]
+                               if d.is_active and
+                               d.part_number_id == order and
+                               d.doc_type == doc_type and
+                               d.latest_version
+                               ).order_by(lambda d: desc(d.created_at))[:]
 
             # Filter for matching operation number
             matching_docs = []
@@ -2078,12 +2104,13 @@ def download_ipid_document(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 # Optional: Add an endpoint to list available documents before downloading
 @router.get("/ipid/available/{production_order}/{operation_number}")
 def list_available_ipid_documents(
-    production_order: str,
-    operation_number: int,
-    current_user: User = Depends(get_current_user)
+        production_order: str,
+        operation_number: int,
+        current_user: User = Depends(get_current_user)
 ):
     """List all available IPID documents for a specific production order and operation"""
     try:
@@ -2100,11 +2127,11 @@ def list_available_ipid_documents(
 
             # Get all documents
             documents = select(d for d in Document
-                if d.is_active and
-                d.part_number_id == order and
-                d.doc_type == doc_type and
-                d.latest_version
-            ).order_by(lambda d: desc(d.created_at))[:]
+                               if d.is_active and
+                               d.part_number_id == order and
+                               d.doc_type == doc_type and
+                               d.latest_version
+                               ).order_by(lambda d: desc(d.created_at))[:]
 
             # Filter and prepare response
             response_data = []

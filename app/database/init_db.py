@@ -21,7 +21,9 @@ def init_database():
         "document_management",
         "hr",
         "finance",
-        "inventoryv1"
+        "inventoryv1",
+        "inventory",
+        "document_management_v2"
     ]
 
     for schema in schemas:

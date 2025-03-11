@@ -1,11 +1,16 @@
-from fastapi import APIRouter, HTTPException, Query
+import traceback
+
+from fastapi import APIRouter, HTTPException, Query, Depends
 from pony.orm import db_session, select
-from typing import Dict, Optional, List, Set
-from datetime import datetime
+from typing import Dict, Optional, List, Set, Any
+from datetime import datetime, timedelta
+
+from app.core.security import get_current_user
 from app.schemas.comp_maintainance import (
     MachineStatusResponse, MachineStatusOut, UpdateMachineStatusRequest,
 )
-from app.models import MachineStatus, Status
+from app.models import MachineStatus, Status, ProductionLog, ScheduleVersion, PlannedScheduleItem, Machine, Operation, \
+    Order
 
 # Modified storage to include read status tracking
 pending_changes: Dict[int, Dict] = {}
@@ -357,4 +362,589 @@ async def update_message_read_status(
         raise HTTPException(
             status_code=500,
             detail=f"Error updating message status: {str(e)}"
+        )
+
+
+@router.get("/machines/{machine_id}/operations", response_model=Dict[str, Any])
+@db_session
+def get_machine_operations(
+        machine_id: int,
+):
+    """
+    Get machine details and operation status information for a specific machine.
+
+    Operations are categorized as:
+    - completed: Operations where planned quantity has been completed before the current time
+    - inprogress: Operations running their quantity in the current time
+    - scheduled: Operations not yet started their quantity in the current time
+    """
+    # Debug variables to track where the error happens
+    debug_step = "start"
+
+    try:
+        print(f"Starting get_machine_operations for machine_id={machine_id}")
+        debug_step = "machine_check"
+
+        # Check if machine exists
+        machine = Machine.get(id=machine_id)
+        if not machine:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Machine with ID {machine_id} not found"
+            )
+
+        print(f"Found machine: ID={machine_id}, Type={machine.type}, Make={machine.make}")
+        debug_step = "machine_details"
+
+        # Get machine details
+        machine_details = {
+            "id": machine.id,
+            "type": machine.type,
+            "make": machine.make,
+            "model": machine.model,
+            "cnc_controller": machine.cnc_controller if machine.cnc_controller else "",
+            "work_center": {
+                "id": machine.work_center.id,
+                "code": machine.work_center.code,
+                "name": machine.work_center.work_center_name if machine.work_center.work_center_name else ""
+            } if machine.work_center else None
+        }
+
+        print("Machine details created successfully")
+        debug_step = "get_operations"
+
+        # Current time for status determination
+        now = datetime.utcnow()
+        print(f"Current time for operation status determination: {now.isoformat()}")
+
+        # First, get all unique operations for this machine
+        operations_query = select((o.id, o.operation_number, o.operation_description, o.setup_time, o.ideal_cycle_time,
+                                   o.order.id, o.order.production_order, o.order.part_number, o.order.part_description)
+                                  for o in Operation if o.machine.id == machine_id)
+
+        operations_data = []
+        try:
+            operations_data = list(operations_query)
+            print(f"Found {len(operations_data)} unique operations for machine")
+        except Exception as op_error:
+            print(f"Error retrieving operations: {str(op_error)}")
+            operations_data = []
+
+        # Initialize response structure
+        operations_response = {
+            "completed": [],
+            "inprogress": [],
+            "scheduled": []
+        }
+
+        debug_step = "process_operations"
+
+        # Process each unique operation
+        for op_data in operations_data:
+            op_id, op_number, op_description, setup_time, cycle_time, order_id, production_order, part_number, part_description = op_data
+
+            try:
+                print(f"Processing operation ID={op_id}, Number={op_number}")
+
+                # Find the active schedule version for this operation
+                # We'll join PlannedScheduleItem to get to ScheduleVersion
+                schedule_version_query = select(sv for sv in ScheduleVersion
+                                                if sv.schedule_item.operation.id == op_id
+                                                and sv.schedule_item.machine.id == machine_id
+                                                and sv.is_active == True)
+
+                schedule_versions = list(schedule_version_query)
+
+                if not schedule_versions:
+                    print(f"No active schedule versions found for operation {op_id}")
+                    continue
+
+                # Use the latest version if multiple exist
+                current_version = max(schedule_versions, key=lambda sv: sv.version_number)
+                print(f"Using schedule version {current_version.id} for operation {op_id}")
+
+                # Get data directly from the schedule version
+                planned_quantity = 0
+                if hasattr(current_version, 'planned_quantity') and current_version.planned_quantity is not None:
+                    planned_quantity = int(current_version.planned_quantity)
+
+                remaining_quantity = 0
+                if hasattr(current_version, 'remaining_quantity') and current_version.remaining_quantity is not None:
+                    remaining_quantity = int(current_version.remaining_quantity)
+
+                # Get start and end times from schedule version
+                planned_start_time = None
+                if hasattr(current_version, 'planned_start_time') and current_version.planned_start_time is not None:
+                    planned_start_time = current_version.planned_start_time
+
+                planned_end_time = None
+                if hasattr(current_version, 'planned_end_time') and current_version.planned_end_time is not None:
+                    planned_end_time = current_version.planned_end_time
+
+                # Get completed quantity from production logs
+                completed_quantity = 0
+                try:
+                    production_logs = list(select(pl for pl in ProductionLog if pl.schedule_version == current_version))
+                    for pl in production_logs:
+                        if hasattr(pl, 'quantity_completed') and pl.quantity_completed is not None:
+                            completed_quantity += int(pl.quantity_completed)
+                except Exception as logs_error:
+                    print(f"Error getting production logs: {str(logs_error)}")
+
+                # If remaining not set properly, calculate it
+                if remaining_quantity == 0 and planned_quantity > 0:
+                    remaining_quantity = max(0, planned_quantity - completed_quantity)
+
+                # Now determine status based on the CORRECT criteria
+                status = "scheduled"  # Default status
+
+                # If no time data available, default to scheduled
+                if planned_start_time is None or planned_end_time is None:
+                    print(f"Missing time data for operation {op_id}, defaulting to scheduled")
+                    status = "scheduled"
+                else:
+                    # 1. COMPLETED: Fully completed quantity before current time
+                    if planned_quantity > 0 and completed_quantity >= planned_quantity and now > planned_start_time:
+                        status = "completed"
+                        print(f"Operation {op_id} is COMPLETED (quantity completed)")
+
+                    # 2. IN PROGRESS: Operation is running now (within time window & not completed)
+                    elif planned_start_time <= now <= planned_end_time and completed_quantity < planned_quantity:
+                        # Check if there's at least one started production log
+                        has_active_production = any(
+                            hasattr(pl, 'start_time') and pl.start_time is not None and
+                            (not hasattr(pl, 'end_time') or pl.end_time is None)
+                            for pl in production_logs
+                        )
+
+                        if has_active_production or (completed_quantity > 0 and remaining_quantity > 0):
+                            status = "inprogress"
+                            print(f"Operation {op_id} is IN PROGRESS (active production)")
+                        else:
+                            # Time-wise we're in the window but no actual production has started
+                            if now < planned_start_time:
+                                status = "scheduled"
+                                print(f"Operation {op_id} is SCHEDULED (not yet started)")
+                            else:
+                                status = "inprogress"  # Default to inprogress if in time window
+                                print(f"Operation {op_id} is IN PROGRESS (in time window)")
+
+                    # 3. SCHEDULED: Not yet started (before start time)
+                    elif now < planned_start_time:
+                        status = "scheduled"
+                        print(f"Operation {op_id} is SCHEDULED (before start time)")
+
+                    # 4. Past end time but not completed
+                    elif now > planned_end_time:
+                        status = "completed"
+                        print(f"Operation {op_id} is COMPLETED (past end time)")
+
+                # Create operation data object
+                operation_data = {
+                    "operation_id": op_id,
+                    "operation_number": op_number,
+                    "description": op_description or "",
+                    "order_id": order_id,
+                    "production_order": production_order,
+                    "part_number": part_number,
+                    "part_description": part_description or "",
+                    "schedule_info": {
+                        "planned_start_time": planned_start_time.isoformat() if planned_start_time else None,
+                        "planned_end_time": planned_end_time.isoformat() if planned_end_time else None,
+                        "planned_quantity": planned_quantity,
+                        "completed_quantity": completed_quantity,
+                        "remaining_quantity": remaining_quantity,
+                        "setup_time": float(setup_time) if setup_time else 0,
+                        "cycle_time": float(cycle_time) if cycle_time else 0
+                    }
+                }
+
+                # Add to appropriate category in response
+                operations_response[status].append(operation_data)
+                print(f"Successfully added operation {op_id} to {status} category")
+
+            except Exception as op_process_error:
+                print(f"Error processing operation {op_id}: {str(op_process_error)}")
+                print(traceback.format_exc())
+                continue
+
+        debug_step = "sort_operations"
+
+        # Sort each category by planned start time
+        for status_key in operations_response:
+            try:
+                operations_response[status_key] = sorted(
+                    operations_response[status_key],
+                    key=lambda x: (x.get("schedule_info", {}).get("planned_start_time") or "9999-12-31")
+                )
+                print(f"Successfully sorted {len(operations_response[status_key])} operations in {status_key} category")
+            except Exception as sort_error:
+                print(f"Error sorting operations for status {status_key}: {str(sort_error)}")
+
+        debug_step = "build_response"
+
+        # Build complete response
+        response = {
+            "machine": machine_details,
+            "operations": operations_response,
+            "totals": {
+                "completed": len(operations_response["completed"]),
+                "inprogress": len(operations_response["inprogress"]),
+                "scheduled": len(operations_response["scheduled"])
+            }
+        }
+
+        print("Response built successfully")
+        return response
+
+    except Exception as e:
+        print(f"ERROR in get_machine_operations at step {debug_step}: {str(e)}")
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error retrieving machine operations at step {debug_step}: {str(e)}"
+        )
+
+
+@router.get("/machines123/{machine_id}/operations", response_model=Dict[str, Any])
+
+@db_session
+def get_machine_operations(
+        machine_id: int,
+):
+    """
+    Get machine details, operation status information, and order details for a specific machine.
+
+    Operations are categorized as:
+    - completed: Operations where planned quantity has been completed before the current time
+    - inprogress: Operations running their quantity in the current time
+    - scheduled: Operations not yet started their quantity in the current time
+    """
+    # Debug variables to track where the error happens
+    debug_step = "start"
+
+    try:
+        print(f"Starting get_machine_operations for machine_id={machine_id}")
+        debug_step = "machine_check"
+
+        # Check if machine exists
+        machine = Machine.get(id=machine_id)
+        if not machine:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Machine with ID {machine_id} not found"
+            )
+
+        print(f"Found machine: ID={machine_id}, Type={machine.type}, Make={machine.make}")
+        debug_step = "machine_details"
+
+        # Get machine details
+        machine_details = {
+            "id": machine.id,
+            "type": machine.type,
+            "make": machine.make,
+            "model": machine.model,
+            "cnc_controller": machine.cnc_controller if machine.cnc_controller else "",
+            "work_center": {
+                "id": machine.work_center.id,
+                "code": machine.work_center.code,
+                "name": machine.work_center.work_center_name if machine.work_center.work_center_name else ""
+            } if machine.work_center else None
+        }
+
+        print("Machine details created successfully")
+        debug_step = "get_operations"
+
+        # Current time for status determination
+        now = datetime.utcnow()
+        print(f"Current time for operation status determination: {now.isoformat()}")
+
+        # First, get all unique operations for this machine
+        operations_query = select((o.id, o.operation_number, o.operation_description, o.setup_time, o.ideal_cycle_time,
+                                   o.order.id, o.order.production_order, o.order.part_number, o.order.part_description)
+                                  for o in Operation if o.machine.id == machine_id)
+
+        operations_data = []
+        try:
+            operations_data = list(operations_query)
+            print(f"Found {len(operations_data)} unique operations for machine")
+        except Exception as op_error:
+            print(f"Error retrieving operations: {str(op_error)}")
+            operations_data = []
+
+        # Initialize response structure
+        operations_response = {
+            "completed": [],
+            "inprogress": [],
+            "scheduled": []
+        }
+
+        # Dictionary to store order details to avoid duplicate queries
+        order_details_cache = {}
+
+        # STEP 1: First collect all operations with their schedule info
+        all_operations = []
+
+        # STEP 1.1: Get all schedule versions regardless of operation - to find the latest end date
+        all_schedule_versions = []
+
+        for op_data in operations_data:
+            op_id, op_number, op_description, setup_time, cycle_time, order_id, production_order, part_number, part_description = op_data
+
+            try:
+                # Get the corresponding planned schedule item
+                schedule_item_query = select(psi for psi in PlannedScheduleItem
+                                             if psi.operation.id == op_id
+                                             and psi.machine.id == machine_id)
+
+                schedule_items = list(schedule_item_query)
+                if not schedule_items:
+                    print(f"No planned schedule items found for operation {op_id}")
+                    continue
+
+                schedule_item = schedule_items[0]  # Should be only one item per operation-machine combination
+
+                # Find the active schedule version for this schedule item
+                schedule_version_query = select(sv for sv in ScheduleVersion
+                                                if sv.schedule_item.id == schedule_item.id
+                                                and sv.is_active == True)
+
+                schedule_versions = list(schedule_version_query)
+
+                if not schedule_versions:
+                    print(f"No active schedule versions found for operation {op_id}")
+                    continue
+
+                # Use the latest version if multiple exist
+                current_version = max(schedule_versions, key=lambda sv: sv.version_number)
+
+                # Get start time
+                planned_start_time = None
+                if hasattr(current_version, 'planned_start_time') and current_version.planned_start_time is not None:
+                    planned_start_time = current_version.planned_start_time
+
+                if not planned_start_time:
+                    print(f"No start time found for operation {op_id}")
+                    continue
+
+                # Get end time for reference
+                planned_end_time = None
+                if hasattr(current_version, 'planned_end_time') and current_version.planned_end_time is not None:
+                    planned_end_time = current_version.planned_end_time
+
+                # Get other operation data
+                planned_quantity = 0
+                if hasattr(current_version, 'planned_quantity') and current_version.planned_quantity is not None:
+                    planned_quantity = int(current_version.planned_quantity)
+
+                remaining_quantity = 0
+                if hasattr(current_version, 'remaining_quantity') and current_version.remaining_quantity is not None:
+                    remaining_quantity = int(current_version.remaining_quantity)
+
+                # Get completed quantity from production logs
+                completed_quantity = 0
+                try:
+                    production_logs = list(select(pl for pl in ProductionLog if pl.schedule_version == current_version))
+                    for pl in production_logs:
+                        if hasattr(pl, 'quantity_completed') and pl.quantity_completed is not None:
+                            completed_quantity += int(pl.quantity_completed)
+                except Exception as logs_error:
+                    print(f"Error getting production logs: {str(logs_error)}")
+
+                # Get order details if not already cached
+                if order_id not in order_details_cache:
+                    order = Order.get(id=order_id)
+                    if order:
+                        # Get project details for delivery date
+                        project = order.project
+
+                        order_details_cache[order_id] = {
+                            "order_id": order.id,
+                            "priority": project.priority if project else 1,
+                            "part_number": order.part_number,
+                            "production_order": order.production_order,
+                            "material_description": order.part_description or "",
+                            "required_qty": order.required_quantity,
+                            "launched_qty": order.launched_quantity,
+                            "sales_order": order.sale_order or "",
+                            "wbs_element": order.wbs_element or "",
+                            "full_description": f"Sale order :{order.sale_order or 'N/A'} Part Desc :{order.part_description or 'N/A'} Tot.No of Oprns :{order.total_operations}",
+                            "project_details": {
+                                "total_operations": order.total_operations,
+                                "project_name": project.name if project else "",
+                                # "delivery_date": project.delivery_date.strftime("%d %b %Y") if project and hasattr(
+                                #     project, "delivery_date") else ""
+                            }
+                        }
+
+                # Get all schedule versions for this operation to find potential later versions
+                all_versions_query = select(sv for sv in ScheduleVersion
+                                            if sv.schedule_item.operation.id == op_id
+                                            and sv.is_active == True)
+
+                all_versions = list(all_versions_query)
+
+                # Add to our collection of all schedule versions for final date verification
+                for version in all_versions:
+                    if hasattr(version, 'planned_end_time') and version.planned_end_time is not None:
+                        all_schedule_versions.append({
+                            "op_id": op_id,
+                            "op_number": op_number,
+                            "planned_end_time": version.planned_end_time,
+                            "version_id": version.id
+                        })
+
+                # Add to our list of operations
+                all_operations.append({
+                    "op_id": op_id,
+                    "op_number": op_number,
+                    "op_description": op_description or "",
+                    "setup_time": float(setup_time) if setup_time else 0,
+                    "cycle_time": float(cycle_time) if cycle_time else 0,
+                    "total_processing_time": float(setup_time) + float(
+                        cycle_time) if setup_time and cycle_time else float(setup_time or cycle_time or 0),
+                    "order_id": order_id,
+                    "production_order": production_order,
+                    "part_number": part_number,
+                    "part_description": part_description or "",
+                    "planned_start_time": planned_start_time,
+                    "planned_end_time": planned_end_time,  # Store original end time for reference
+                    "planned_quantity": planned_quantity,
+                    "completed_quantity": completed_quantity,
+                    "remaining_quantity": remaining_quantity,
+                    "version": current_version
+                })
+
+            except Exception as op_error:
+                print(f"Error processing operation {op_id} in first pass: {str(op_error)}")
+                continue
+
+        # STEP 2: Find the global latest end date from all schedule versions
+        latest_end_time = None
+        if all_schedule_versions:
+            latest_schedule = max(all_schedule_versions, key=lambda x: x["planned_end_time"])
+            latest_end_time = latest_schedule["planned_end_time"]
+            print(
+                f"Latest schedule end time across all operations: {latest_end_time} (Operation {latest_schedule['op_id']} #{latest_schedule['op_number']}, Version {latest_schedule['version_id']})")
+
+        # STEP 3: Sort operations by start time
+        all_operations.sort(key=lambda x: x["planned_start_time"])
+
+        # STEP 4: Now process operations in order and explicitly set end times
+        for i, operation in enumerate(all_operations):
+            op_id = operation["op_id"]
+            op_number = operation["op_number"]
+
+            # Determine end time
+            planned_end_time = None
+
+            # If there's a next operation, use its start time as this operation's end time
+            if i < len(all_operations) - 1:
+                next_op = all_operations[i + 1]
+                planned_end_time = next_op["planned_start_time"]
+                print(
+                    f"Operation {op_id} (#{op_number}) ends at {planned_end_time} (start of operation {next_op['op_id']} #{next_op['op_number']})")
+            else:
+                # This is the last operation, use the global latest end time if it's later than this operation's end time
+                if operation["planned_end_time"] and latest_end_time and latest_end_time > operation[
+                    "planned_end_time"]:
+                    planned_end_time = latest_end_time
+                    print(f"Using global latest end time for last operation {op_id}: {planned_end_time}")
+                else:
+                    # Use this operation's end time
+                    planned_end_time = operation["planned_end_time"]
+                    print(f"Using operation's own end time for last operation {op_id}: {planned_end_time}")
+
+                # If still no end time, calculate one
+                if not planned_end_time:
+                    # Calculate end time
+                    total_hours = operation["setup_time"] + (operation["cycle_time"] * operation["planned_quantity"])
+                    planned_end_time = operation["planned_start_time"] + timedelta(hours=total_hours)
+                    print(f"Calculated end time for last operation {op_id}: {planned_end_time}")
+
+            # Determine status
+            status = "scheduled"  # Default status
+
+            # If no end time, default to scheduled
+            if planned_end_time is None:
+                print(f"Missing end time for operation {op_id}, defaulting to scheduled")
+                status = "scheduled"
+            else:
+                # 1. COMPLETED: Fully completed quantity before current time
+                if operation["planned_quantity"] > 0 and operation["completed_quantity"] >= operation[
+                    "planned_quantity"] and now > operation["planned_start_time"]:
+                    status = "completed"
+                    print(f"Operation {op_id} is COMPLETED (quantity completed)")
+                # 2. IN PROGRESS: Operation is running now (within time window & not completed)
+                elif operation["planned_start_time"] <= now <= planned_end_time and operation["completed_quantity"] < \
+                        operation["planned_quantity"]:
+                    status = "inprogress"
+                    print(f"Operation {op_id} is IN PROGRESS (in time window)")
+                # 3. SCHEDULED: Not yet started (before start time)
+                elif now < operation["planned_start_time"]:
+                    status = "scheduled"
+                    print(f"Operation {op_id} is SCHEDULED (before start time)")
+                # 4. Past end time but not completed
+                elif now > planned_end_time:
+                    status = "completed"
+                    print(f"Operation {op_id} is COMPLETED (past end time)")
+
+            # Create final operation data with the determined end time
+            operation_data = {
+                "operation_id": op_id,
+                "operation_number": op_number,
+                "description": operation["op_description"],
+                "order_id": operation["order_id"],
+                "production_order": operation["production_order"],
+                "part_number": operation["part_number"],
+                "part_description": operation["part_description"],
+                "schedule_info": {
+                    "planned_start_time": operation["planned_start_time"].isoformat(),
+                    "planned_end_time": planned_end_time.isoformat() if planned_end_time else None,
+                    # "planned_quantity": operation["planned_quantity"],
+                    # "completed_quantity": operation["completed_quantity"],
+                    # "remaining_quantity": operation["remaining_quantity"],
+                    # "setup_time": operation["setup_time"],
+                    # "cycle_time": operation["cycle_time"],
+                    # "total_processing_time": operation["total_processing_time"]
+                },
+                # "order_details": order_details_cache.get(operation["order_id"], {})
+            }
+
+            # Add to appropriate category
+            operations_response[status].append(operation_data)
+            print(f"Successfully added operation {op_id} to {status} category")
+
+        # Sort each category by planned start time
+        for status_key in operations_response:
+            try:
+                operations_response[status_key] = sorted(
+                    operations_response[status_key],
+                    key=lambda x: (x.get("schedule_info", {}).get("planned_start_time") or "9999-12-31")
+                )
+                print(f"Successfully sorted {len(operations_response[status_key])} operations in {status_key} category")
+            except Exception as sort_error:
+                print(f"Error sorting operations for status {status_key}: {str(sort_error)}")
+
+        # Build complete response
+        response = {
+            "machine": machine_details,
+            "operations": operations_response,
+            "orders": list(order_details_cache.values()),
+            "totals": {
+                "completed": len(operations_response["completed"]),
+                "inprogress": len(operations_response["inprogress"]),
+                "scheduled": len(operations_response["scheduled"])
+            }
+        }
+
+        print("Response built successfully")
+        return response
+
+    except Exception as e:
+        print(f"ERROR in get_machine_operations at step {debug_step}: {str(e)}")
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error retrieving machine operations at step {debug_step}: {str(e)}"
         )

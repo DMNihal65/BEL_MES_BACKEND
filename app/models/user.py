@@ -35,3 +35,8 @@ class User(db.Entity):
     inventory_requests = Set('InventoryRequest', reverse='requested_by')
     approved_inventory_requests = Set('InventoryRequest', reverse='approved_by')
     inventory_transactions = Set('InventoryTransaction', reverse='performed_by')
+    # New reverse relationships for document management V2
+    doc_folders_v2 = Set('FolderV2', reverse='created_by')
+    documents_v2 = Set('DocumentV2', reverse='created_by')
+    document_versions_v2 = Set('DocumentVersionV2', reverse='created_by')
+    document_access_logs_v2 = Set('DocumentAccessLogV2', reverse='user')
