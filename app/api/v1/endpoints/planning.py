@@ -265,7 +265,6 @@ def extract_oarc_details(pdf_content):
 #     except Exception as e:
 #         raise HTTPException(status_code=500, detail=str(e))
 
-
 @db_session
 def save_to_database(data):
     try:
@@ -274,18 +273,16 @@ def save_to_database(data):
         if existing_order:
             return existing_order
 
-        # Get or create project
-        project = Project.get(name=data["Project Name"])
-        if not project:
-            # Get current max priority
-            max_priority = select(max(p.priority) for p in Project).first() or 0
-            project = Project(
-                name=data["Project Name"],
-                priority=max_priority + 1,  # Auto-increment
-                start_date=datetime.now(),
-                end_date=datetime.now(),
-                delivery_date=datetime.now()
-            )
+        # Always create a new project instead of reusing existing ones
+        # Get current max priority
+        max_priority = select(max(p.priority) for p in Project).first() or 0
+        project = Project(
+            name=data["Project Name"],
+            priority=max_priority + 1,  # Auto-increment
+            start_date=datetime.now(),
+            end_date=datetime.now(),
+            delivery_date=datetime.now()
+        )
 
         # Get or create default inventory status
         default_status = InventoryStatus.get(name="Available")
@@ -295,19 +292,36 @@ def save_to_database(data):
                 description="Material is available for use"
             )
 
-        # Create raw material
-        unit = Unit.get(name=data["Raw Materials"][0]["UoM"])
-        if not unit:
-            unit = Unit(name=data["Raw Materials"][0]["UoM"])
+        # Get or create default unit
+        default_unit = Unit.get(name="EA")
+        if not default_unit:
+            default_unit = Unit(name="EA")  # EA for "Each"
 
-        raw_material = RawMaterial(
-            child_part_number=data["Raw Materials"][0]["Child Part No"],
-            description=data["Raw Materials"][0]["Description"],
-            quantity=float(data["Raw Materials"][0]["Total Qty"]),
-            unit=unit,
-            status=default_status,
-            available_from=datetime(2024, 1, 2, 9, 0)  # Added hardcoded available_from date to match create_order
-        )
+        # Create raw material - Modified part
+        if "Raw Materials" in data and data["Raw Materials"] and len(data["Raw Materials"]) > 0:
+            # Create raw material from provided data
+            unit = Unit.get(name=data["Raw Materials"][0]["UoM"])
+            if not unit:
+                unit = Unit(name=data["Raw Materials"][0]["UoM"])
+
+            raw_material = RawMaterial(
+                child_part_number=data["Raw Materials"][0]["Child Part No"],
+                description=data["Raw Materials"][0]["Description"],
+                quantity=float(data["Raw Materials"][0]["Total Qty"]),
+                unit=unit,
+                status=default_status,
+                available_from=datetime(2024, 1, 2, 9, 0)  # Added hardcoded available_from date to match create_order
+            )
+        else:
+            # Create default raw material since it's required
+            raw_material = RawMaterial(
+                child_part_number="DEFAULT-" + data["Part No"],
+                description="Default raw material for " + data["Part Desc"],
+                quantity=0.0,
+                unit=default_unit,
+                status=default_status,
+                available_from=datetime(2024, 1, 2, 9, 0)
+            )
 
         # Create master order
         master_order = Order(
@@ -1065,4 +1079,57 @@ async def update_order_priority(order_id: int, priority_data: ProjectPriorityUpd
         raise HTTPException(
             status_code=500,
             detail=f"Error updating project priority: {str(e)}"
+        )
+
+
+@router.get("/projects/priority")
+async def get_project_priorities():
+    """
+    Get all projects with their priorities and associated order details.
+
+    Returns a list of projects ordered by priority (ascending) with production order details
+    including Production Order, Part Number, Material Description, Quantity Status,
+    WBS Element, and Sales Order.
+    """
+    try:
+        with db_session:
+            # Get all projects ordered by priority (ascending)
+            projects = select(p for p in Project).order_by(Project.priority)[:]
+
+            response_data = []
+
+            for project in projects:
+                # Get all orders associated with this project
+                orders = select(o for o in Order if o.project == project)[:]
+
+                project_orders = []
+                for order in orders:
+                    # Get status from PartScheduleStatus if it exists
+                    status = select(
+                        ps.status for ps in PartScheduleStatus if ps.part_number == order.part_number).first()
+                    status = status if status else "unknown"
+
+                    project_orders.append({
+                        "production_order": order.production_order,
+                        "part_number": order.part_number,
+                        "material_description": order.part_description,
+                        "quantity": order.required_quantity,
+                        "status": status,
+                        "wbs_element": order.wbs_element,
+                        "sales_order": order.sale_order
+                    })
+
+                response_data.append({
+                    "project_id": project.id,
+                    "project_name": project.name,
+                    "priority": project.priority,
+                    "orders": project_orders
+                })
+
+            return {"projects": response_data}
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error retrieving project priorities: {str(e)}"
         )

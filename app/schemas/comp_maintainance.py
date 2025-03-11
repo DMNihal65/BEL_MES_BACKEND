@@ -102,3 +102,6 @@ class RawMaterialNotificationsResponse(BaseModel):
     notifications: List[RawMaterialNotification]
 
 
+
+
+
