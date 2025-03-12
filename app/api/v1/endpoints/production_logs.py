@@ -1,456 +1,179 @@
-from fastapi import APIRouter, HTTPException, Depends, status, Query
-from pony.orm import db_session, commit, select, desc
+from fastapi import APIRouter, HTTPException, Query, Body
+from typing import List, Optional, Any, Dict
 from datetime import datetime
-from typing import List, Optional
+from pony.orm import db_session, select, commit
 from pydantic import BaseModel
 
-# Import your models
-from app.models.scheduled import ProductionLog, ScheduleVersion, PlannedScheduleItem
-from app.models.user import User
-from app.models.master_order import Order, Operation, Machine
+from app.models import User
+# Import just the ScheduleVersion model
+from app.models.scheduled import ScheduleVersion, ProductionLog
 
-# Create router
 router = APIRouter(
     prefix="/production",
     tags=["Production"]
 )
 
 
-# Pydantic models for request/response
-class ProductionLogBase(BaseModel):
-    schedule_version_id: int
-    operator_id: int
-    start_time: datetime
-    end_time: Optional[datetime] = None
-    quantity_completed: int
-    quantity_rejected: int
-    notes: Optional[str] = None
-
-
-class ProductionLogCreate(ProductionLogBase):
-    pass
-
-
-class ProductionLogUpdate(BaseModel):
-    end_time: Optional[datetime] = None
-    quantity_completed: Optional[int] = None
-    quantity_rejected: Optional[int] = None
-    notes: Optional[str] = None
-
-class ProductionLogCreate(BaseModel):
-    order_id: int
-    operation_id: int
-    machine_id: int
-    operator_id: int
-    start_time: datetime
-    end_time: Optional[datetime] = None
-    quantity_completed: int
-    quantity_rejected: int
-    notes: Optional[str] = None
-
-
-class ProductionLogResponse(BaseModel):
-    id: int
-    schedule_version_id: int
-    operator_id: int
-    order_id: int
-    operation_id: int
-    machine_id: int
-    start_time: datetime
-    end_time: Optional[datetime] = None
-    quantity_completed: int
-    quantity_rejected: int
-    notes: Optional[str] = None
-
-    class Config:
-        orm_mode = True
-
-
-class ScheduleVersionResponse(BaseModel):
-    id: int
-    version_number: int
-    planned_start_time: datetime
-    planned_end_time: datetime
-    planned_quantity: int
-    completed_quantity: int
-    remaining_quantity: int
-    is_active: bool
-
-    class Config:
-        orm_mode = True
-
-
-class MachineResponse(BaseModel):
-    id: int
-    type: str
-    make: str
-    model: str
-
-    class Config:
-        orm_mode = True
-
-
-class OperationResponse(BaseModel):
-    id: int
-    operation_number: int
-    operation_description: Optional[str] = None
-    setup_time: float
-    ideal_cycle_time: float
-
-    class Config:
-        orm_mode = True
-
-
-class OrderResponse(BaseModel):
-    id: int
-    production_order: str
-    part_number: str
-    part_description: Optional[str] = None
-    required_quantity: int
-
-    class Config:
-        orm_mode = True
-
-
-# Get all production logs with pagination
-@router.get("/logs", response_model=List[ProductionLogResponse])
+@router.get("/schedule-versions")
 @db_session
-def get_production_logs(
-        skip: int = Query(0, ge=0),
-        limit: int = Query(100, ge=1, le=500),
-        date_from: Optional[datetime] = None,
-        date_to: Optional[datetime] = None
+def get_schedule_versions(
+        version_id: Optional[int] = None,
+        is_active: Optional[bool] = None
 ):
-    query = select(log for log in ProductionLog)
+    """
+    Get all schedule versions with optional filtering.
+    Only returns data from the ScheduleVersion table.
+    Returns all records without pagination.
 
-    # Apply date filters if provided
-    if date_from:
-        query = query.filter(lambda log: log.start_time >= date_from)
-    if date_to:
-        query = query.filter(lambda log: log.start_time <= date_to)
+    Parameters:
+    - version_id: Filter by specific version ID
+    - is_active: Filter by active status
+    """
 
-    # Apply pagination
-    logs = query.order_by(desc(ProductionLog.start_time)).limit(limit, offset=skip)[:]
+    # Start with a base query
+    query = select(sv for sv in ScheduleVersion)
 
+    # Apply filters if provided
+    if version_id is not None:
+        query = query.filter(lambda sv: sv.id == version_id)
+
+    if is_active is not None:
+        query = query.filter(lambda sv: sv.is_active == is_active)
+
+    # Get all schedule versions without pagination
+    schedule_versions = query.order_by(ScheduleVersion.id.desc())
+
+    # Prepare the response with only ScheduleVersion data
     result = []
-    for log in logs:
-        planned_item = log.schedule_version.schedule_item
-        result.append({
-            "id": log.id,
-            "schedule_version_id": log.schedule_version.id,
-            "operator_id": log.operator.id,
-            "order_id": planned_item.order.id,
-            "operation_id": planned_item.operation.id,
-            "machine_id": planned_item.machine.id,
-            "start_time": log.start_time,
-            "end_time": log.end_time,
-            "quantity_completed": log.quantity_completed,
-            "quantity_rejected": log.quantity_rejected,
-            "notes": log.notes
-        })
+    for sv in schedule_versions:
+        version_data = {
+            "id": sv.id,
+            "version_number": sv.version_number,
+            "planned_start_time": sv.planned_start_time,
+            "planned_end_time": sv.planned_end_time,
+            "planned_quantity": sv.planned_quantity,
+            "completed_quantity": sv.completed_quantity,
+            "remaining_quantity": sv.remaining_quantity,
+            "is_active": sv.is_active,
+            "created_at": sv.created_at,
+            "schedule_item_id": sv.schedule_item.id  # Only include the foreign key ID
+        }
+
+        result.append(version_data)
 
     return result
 
 
-@router.post("/logs", response_model=ProductionLogResponse, status_code=status.HTTP_201_CREATED)
+@router.get("/schedule-versions/{version_id}")
 @db_session
-def create_production_log(log_data: ProductionLogCreate):
-    # Verify that the referenced entities exist
-    order = Order.get(id=log_data.order_id)
-    if not order:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Order with ID {log_data.order_id} not found"
-        )
-
-    operation = Operation.get(id=log_data.operation_id)
-    if not operation:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Operation with ID {log_data.operation_id} not found"
-        )
-
-    machine = Machine.get(id=log_data.machine_id)
-    if not machine:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Machine with ID {log_data.machine_id} not found"
-        )
-
-    operator = User.get(id=log_data.operator_id)
-    if not operator:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"User with ID {log_data.operator_id} not found"
-        )
-
-    # Find the PlannedScheduleItem for this order, operation, and machine
-    planned_item = PlannedScheduleItem.get(
-        order=order,
-        operation=operation,
-        machine=machine
-    )
-
-    if not planned_item:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"No planned schedule found for order {log_data.order_id}, operation {log_data.operation_id}, and machine {log_data.machine_id}"
-        )
-
-    # Find the active schedule version for this planned item
-    schedule_version = ScheduleVersion.get(
-        schedule_item=planned_item,
-        is_active=True
-    )
+def get_schedule_version_by_id(version_id: int):
+    """
+    Get a specific schedule version by ID.
+    Only returns data from the ScheduleVersion table.
+    """
+    schedule_version = ScheduleVersion.get(id=version_id)
 
     if not schedule_version:
-        # If no active version exists, try to get the latest version
-        schedule_versions = list(planned_item.schedule_versions.order_by(lambda v: v.version_number))
-        if not schedule_versions:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"No schedule version found for the planned schedule item"
-            )
-        schedule_version = schedule_versions[-1]  # Get the latest version
+        raise HTTPException(status_code=404, detail="Schedule version not found")
 
-    # Validate quantity against remaining quantity
-    if log_data.quantity_completed > schedule_version.remaining_quantity:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Quantity completed ({log_data.quantity_completed}) exceeds remaining quantity ({schedule_version.remaining_quantity})"
-        )
-
-    # Create new production log
-    new_log = ProductionLog(
-        schedule_version=schedule_version,
-        operator=operator,
-        start_time=log_data.start_time,
-        end_time=log_data.end_time,
-        quantity_completed=log_data.quantity_completed,
-        quantity_rejected=log_data.quantity_rejected,
-        notes=log_data.notes
-    )
-
-    commit()
-
-    # Update completed quantity in schedule version
-    schedule_version.completed_quantity += log_data.quantity_completed
-    schedule_version.remaining_quantity = max(0,
-                                              schedule_version.planned_quantity - schedule_version.completed_quantity)
-
-    # If remaining quantity is 0, mark as completed
-    if schedule_version.remaining_quantity == 0:
-        schedule_version.is_active = False
-
-    # Also update the remaining quantity in the PlannedScheduleItem
-    planned_item.remaining_quantity = max(0, planned_item.remaining_quantity - log_data.quantity_completed)
-
-    # Update PlannedScheduleItem status if needed
-    if planned_item.remaining_quantity == 0:
-        planned_item.status = "Completed"
-
-    commit()
-
+    # Return only the data from the ScheduleVersion table
     return {
-        "id": new_log.id,
-        "schedule_version_id": schedule_version.id,
-        "operator_id": new_log.operator.id,
-        "order_id": planned_item.order.id,
-        "operation_id": planned_item.operation.id,
-        "machine_id": planned_item.machine.id,
-        "start_time": new_log.start_time,
-        "end_time": new_log.end_time,
-        "quantity_completed": new_log.quantity_completed,
-        "quantity_rejected": new_log.quantity_rejected,
-        "notes": new_log.notes
+        "id": schedule_version.id,
+        "version_number": schedule_version.version_number,
+        "planned_start_time": schedule_version.planned_start_time,
+        "planned_end_time": schedule_version.planned_end_time,
+        "planned_quantity": schedule_version.planned_quantity,
+        "completed_quantity": schedule_version.completed_quantity,
+        "remaining_quantity": schedule_version.remaining_quantity,
+        "is_active": schedule_version.is_active,
+        "created_at": schedule_version.created_at,
+        "schedule_item_id": schedule_version.schedule_item.id  # Only include the foreign key ID
     }
 
-# Update production log by ID
-@router.put("/logs/{production_id}", response_model=ProductionLogResponse)
+
+# Model for request body
+class ProductionLogData(BaseModel):
+    start_time: datetime
+    end_time: Optional[datetime] = None
+    quantity_completed: int = 0
+    notes: Optional[str] = None
+
+
+@router.post("/logs", status_code=201)
 @db_session
-def update_production_log(production_id: int, log_update: ProductionLogUpdate):
-    log = ProductionLog.get(id=production_id)
-    if not log:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Production log with ID {production_id} not found"
+def create_production_log(
+        schedule_version_id: int = Query(..., description="ID of the schedule version"),
+        operator_id: int = Query(..., description="ID of the operator"),
+        log_data: ProductionLogData = Body(...)
+):
+    """
+    Create a new production log entry.
+
+    Query Parameters:
+    - schedule_version_id: ID of the ScheduleVersion
+    - operator_id: ID of the operator (User)
+
+    Request Body:
+    - start_time: Start time of the production
+    - end_time: End time of the production (optional)
+    - quantity_completed: Number of items completed
+    - notes: Additional notes (optional)
+
+    Returns:
+    - The created production log data
+    """
+
+    # Check if schedule version exists
+    schedule_version = ScheduleVersion.get(id=schedule_version_id)
+    if not schedule_version:
+        raise HTTPException(status_code=404, detail="Schedule version not found")
+
+    # Check if operator exists
+    operator = User.get(id=operator_id)
+    if not operator:
+        raise HTTPException(status_code=404, detail="Operator not found")
+
+    # Create the production log
+    try:
+        production_log = ProductionLog(
+            schedule_version=schedule_version,
+            operator=operator,
+            start_time=log_data.start_time,
+            end_time=log_data.end_time,
+            quantity_completed=log_data.quantity_completed,
+            quantity_rejected=0,  # Default to 0 as per requirements
+            notes=log_data.notes
         )
 
-    # Calculate the difference in completed quantity for updating the schedule version
-    original_completed = log.quantity_completed
+        # Flush to get the ID
+        commit()
 
-    # Update fields if provided
-    if log_update.end_time is not None:
-        log.end_time = log_update.end_time
-
-    if log_update.quantity_completed is not None:
-        log.quantity_completed = log_update.quantity_completed
-
-    if log_update.quantity_rejected is not None:
-        log.quantity_rejected = log_update.quantity_rejected
-
-    if log_update.notes is not None:
-        log.notes = log_update.notes
-
-    # Update schedule version completed quantity if quantity_completed was updated
-    if log_update.quantity_completed is not None:
-        schedule_version = log.schedule_version
-        quantity_difference = log_update.quantity_completed - original_completed
-
-        schedule_version.completed_quantity += quantity_difference
+        # Update the completed_quantity in the ScheduleVersion
+        schedule_version.completed_quantity += log_data.quantity_completed
         schedule_version.remaining_quantity = max(0,
                                                   schedule_version.planned_quantity - schedule_version.completed_quantity)
 
-        # If remaining quantity is 0, mark as completed
-        if schedule_version.remaining_quantity == 0:
-            schedule_version.is_active = False
+        # Update the remaining_quantity in the PlannedScheduleItem
+        schedule_item = schedule_version.schedule_item
+        schedule_item.remaining_quantity = max(0, schedule_item.total_quantity - schedule_version.completed_quantity)
 
-        # Also update the remaining quantity in the PlannedScheduleItem
-        planned_item = schedule_version.schedule_item
-        planned_item.remaining_quantity = max(0, planned_item.remaining_quantity - quantity_difference)
+        # Return the created log data
+        return {
+            "id": production_log.id,
+            "schedule_version_id": production_log.schedule_version.id,
+            "operator_id": production_log.operator.id,
+            "start_time": production_log.start_time,
+            "end_time": production_log.end_time,
+            "quantity_completed": production_log.quantity_completed,
+            "notes": production_log.notes,
+            "schedule_version_updated": {
+                "completed_quantity": schedule_version.completed_quantity,
+                "remaining_quantity": schedule_version.remaining_quantity
+            },
+            "schedule_item_updated": {
+                "remaining_quantity": schedule_item.remaining_quantity
+            }
+        }
 
-        # Update PlannedScheduleItem status if needed
-        if planned_item.remaining_quantity == 0:
-            planned_item.status = "Completed"
-
-    commit()
-
-    # Get associated PlannedScheduleItem through ScheduleVersion
-    planned_item = log.schedule_version.schedule_item
-
-    return {
-        "id": log.id,
-        "schedule_version_id": log.schedule_version.id,
-        "operator_id": log.operator.id,
-        "order_id": planned_item.order.id,
-        "operation_id": planned_item.operation.id,
-        "machine_id": planned_item.machine.id,
-        "start_time": log.start_time,
-        "end_time": log.end_time,
-        "quantity_completed": log.quantity_completed,
-        "quantity_rejected": log.quantity_rejected,
-        "notes": log.notes
-    }
-
-
-# Get production logs by machine
-@router.get("/machine/{machine_id}/logs", response_model=List[ProductionLogResponse])
-@db_session
-def get_machine_production_logs(
-        machine_id: int,
-        skip: int = Query(0, ge=0),
-        limit: int = Query(100, ge=1, le=500),
-        date_from: Optional[datetime] = None,
-        date_to: Optional[datetime] = None
-):
-    machine = Machine.get(id=machine_id)
-    if not machine:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Machine with ID {machine_id} not found"
-        )
-
-    # Find all PlannedScheduleItems for this machine
-    planned_items = PlannedScheduleItem.select(lambda item: item.machine.id == machine_id)[:]
-
-    # Get all schedule versions for these planned items
-    schedule_version_ids = []
-    for item in planned_items:
-        for version in item.schedule_versions:
-            schedule_version_ids.append(version.id)
-
-    if not schedule_version_ids:
-        return []
-
-    # Create query
-    query = select(log for log in ProductionLog if log.schedule_version.id in schedule_version_ids)
-
-    # Apply date filters if provided
-    if date_from:
-        query = query.filter(lambda log: log.start_time >= date_from)
-    if date_to:
-        query = query.filter(lambda log: log.start_time <= date_to)
-
-    # Apply pagination
-    logs = query.order_by(desc(ProductionLog.start_time)).limit(limit, offset=skip)[:]
-
-    result = []
-    for log in logs:
-        planned_item = log.schedule_version.schedule_item
-        result.append({
-            "id": log.id,
-            "schedule_version_id": log.schedule_version.id,
-            "operator_id": log.operator.id,
-            "order_id": planned_item.order.id,
-            "operation_id": planned_item.operation.id,
-            "machine_id": planned_item.machine.id,
-            "start_time": log.start_time,
-            "end_time": log.end_time,
-            "quantity_completed": log.quantity_completed,
-            "quantity_rejected": log.quantity_rejected,
-            "notes": log.notes
-        })
-
-    return result
-
-
-# Get production logs by operation
-@router.get("/operation/{operation_id}/logs", response_model=List[ProductionLogResponse])
-@db_session
-def get_operation_production_logs(
-        operation_id: int,
-        skip: int = Query(0, ge=0),
-        limit: int = Query(100, ge=1, le=500),
-        date_from: Optional[datetime] = None,
-        date_to: Optional[datetime] = None
-):
-    operation = Operation.get(id=operation_id)
-    if not operation:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Operation with ID {operation_id} not found"
-        )
-
-    # Find all PlannedScheduleItems for this operation
-    planned_items = PlannedScheduleItem.select(lambda item: item.operation.id == operation_id)[:]
-
-    # Get all schedule versions for these planned items
-    schedule_version_ids = []
-    for item in planned_items:
-        for version in item.schedule_versions:
-            schedule_version_ids.append(version.id)
-
-    if not schedule_version_ids:
-        return []
-
-    # Create query
-    query = select(log for log in ProductionLog if log.schedule_version.id in schedule_version_ids)
-
-    # Apply date filters if provided
-    if date_from:
-        query = query.filter(lambda log: log.start_time >= date_from)
-    if date_to:
-        query = query.filter(lambda log: log.start_time <= date_to)
-
-    # Apply pagination
-    logs = query.order_by(desc(ProductionLog.start_time)).limit(limit, offset=skip)[:]
-
-    result = []
-    for log in logs:
-        planned_item = log.schedule_version.schedule_item
-        result.append({
-            "id": log.id,
-            "schedule_version_id": log.schedule_version.id,
-            "operator_id": log.operator.id,
-            "order_id": planned_item.order.id,
-            "operation_id": planned_item.operation.id,
-            "machine_id": planned_item.machine.id,
-            "start_time": log.start_time,
-            "end_time": log.end_time,
-            "quantity_completed": log.quantity_completed,
-            "quantity_rejected": log.quantity_rejected,
-            "notes": log.notes
-        })
-
-    return result
-
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error creating production log: {str(e)}")
