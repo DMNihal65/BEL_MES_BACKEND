@@ -2,11 +2,13 @@ from collections import defaultdict
 
 from fastapi import APIRouter, HTTPException
 from pony.orm import db_session, select
+
+from app.schemas.operations import WorkCenterMachine
 from app.schemas.scheduled import ScheduledOperation, ScheduleResponse, ProductionLogResponse, ProductionLogsResponse, \
     CombinedScheduleProductionResponse, PartProductionResponse, \
     PartProductionTimeline
 from app.models import Order, Operation, Machine, PartScheduleStatus, PlannedScheduleItem, ScheduleVersion, \
-    ProductionLog
+    ProductionLog, WorkCenter
 from app.crud.operation import fetch_operations
 from app.crud.component_quantities import fetch_component_quantities
 from app.crud.leadtime import fetch_lead_times
@@ -221,10 +223,40 @@ def store_schedule(schedule_df, component_status):
 async def schedule():
     """Generate schedule for active parts and store in database"""
     try:
+        # Initialize work_centers_data at the start
+        work_centers_data = []
+
         with db_session:
             ops_count = Operation.select().count()
             orders_count = Order.select().count()
             print(f"Database counts - Operations: {ops_count}, Orders: {orders_count}")
+
+            # Fetch work centers and their machines
+            for work_center in WorkCenter.select():
+                machines_in_wc = []
+                for machine in work_center.machines:
+                    machines_in_wc.append({
+                        "id": str(machine.id),
+                        "name": machine.make,
+                        "model": machine.model,
+                        "type": machine.type
+                    })
+
+                work_centers_data.append(
+                    WorkCenterMachine(
+                        work_center_code=work_center.code,
+                        work_center_name=work_center.work_center_name or "",
+                        machines=machines_in_wc
+                    )
+                )
+
+            # Fetch machine information for scheduling
+            machine_info = {}
+            for machine in Machine.select():
+                machine_info[machine.id] = {
+                    'name': f"{machine.make}",
+                    'work_center': machine.work_center.code
+                }
 
         df = fetch_operations()
         component_quantities = fetch_component_quantities()
@@ -243,10 +275,13 @@ async def schedule():
         scheduled_operations = []
         if not schedule_df.empty:
             with db_session:
-                machine_details = {
-                    machine.id: f"{machine.work_center.code}-{machine.make}"
-                    for machine in Machine.select()
-                }
+                machine_details = {}
+                for machine in Machine.select():
+                    machine_name = f"{machine.work_center.code}-{machine.make}"
+                    machine_details[machine.id] = {
+                        'name': machine_name,
+                        'id': machine.id
+                    }
 
                 orders_map = {
                     order.part_number: order.production_order
@@ -254,33 +289,30 @@ async def schedule():
                 }
 
             for _, row in schedule_df.iterrows():
-                total_qty, current_qty, today_qty = extract_quantity(row['quantity'])
-
-                # Format the quantity string to include today's quantity
-                quantity_str = f"Process({current_qty}/{total_qty}pcs, Today: {today_qty}pcs)"
+                machine_id = row['machine_id']
+                machine_name = machine_details.get(machine_id, {'name': f'Machine-{machine_id}'})['name']
 
                 scheduled_operations.append(
                     ScheduledOperation(
                         component=row['partno'],
                         description=row['operation'],
-                        machine=machine_details.get(row['machine_id'], f"Machine-{row['machine_id']}"),
+                        machine=machine_name,
                         start_time=row['start_time'],
                         end_time=row['end_time'],
-                        quantity=quantity_str,
-                        total_quantity=total_qty,
-                        current_quantity=current_qty,
-                        today_quantity=today_qty,
+                        quantity=row['quantity'],
                         production_order=orders_map.get(row['partno'], '')
                     )
                 )
 
+        # Always return work_centers_data, even if it's empty
         return ScheduleResponse(
             scheduled_operations=scheduled_operations,
             overall_end_time=overall_end_time,
             overall_time=str(overall_time),
             daily_production=daily_production,
             component_status=component_status,
-            partially_completed=partially_completed
+            partially_completed=partially_completed,
+            work_centers=work_centers_data
         )
 
     except Exception as e:
