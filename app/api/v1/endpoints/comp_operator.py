@@ -371,249 +371,8 @@ def get_machine_operations(
         machine_id: int,
 ):
     """
-    Get machine details and operation status information for a specific machine.
-
-    Operations are categorized as:
-    - completed: Operations where planned quantity has been completed before the current time
-    - inprogress: Operations running their quantity in the current time
-    - scheduled: Operations not yet started their quantity in the current time
-    """
-    # Debug variables to track where the error happens
-    debug_step = "start"
-
-    try:
-        print(f"Starting get_machine_operations for machine_id={machine_id}")
-        debug_step = "machine_check"
-
-        # Check if machine exists
-        machine = Machine.get(id=machine_id)
-        if not machine:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Machine with ID {machine_id} not found"
-            )
-
-        print(f"Found machine: ID={machine_id}, Type={machine.type}, Make={machine.make}")
-        debug_step = "machine_details"
-
-        # Get machine details
-        machine_details = {
-            "id": machine.id,
-            "type": machine.type,
-            "make": machine.make,
-            "model": machine.model,
-            "cnc_controller": machine.cnc_controller if machine.cnc_controller else "",
-            "work_center": {
-                "id": machine.work_center.id,
-                "code": machine.work_center.code,
-                "name": machine.work_center.work_center_name if machine.work_center.work_center_name else ""
-            } if machine.work_center else None
-        }
-
-        print("Machine details created successfully")
-        debug_step = "get_operations"
-
-        # Current time for status determination
-        now = datetime.utcnow()
-        print(f"Current time for operation status determination: {now.isoformat()}")
-
-        # First, get all unique operations for this machine
-        operations_query = select((o.id, o.operation_number, o.operation_description, o.setup_time, o.ideal_cycle_time,
-                                   o.order.id, o.order.production_order, o.order.part_number, o.order.part_description)
-                                  for o in Operation if o.machine.id == machine_id)
-
-        operations_data = []
-        try:
-            operations_data = list(operations_query)
-            print(f"Found {len(operations_data)} unique operations for machine")
-        except Exception as op_error:
-            print(f"Error retrieving operations: {str(op_error)}")
-            operations_data = []
-
-        # Initialize response structure
-        operations_response = {
-            "completed": [],
-            "inprogress": [],
-            "scheduled": []
-        }
-
-        debug_step = "process_operations"
-
-        # Process each unique operation
-        for op_data in operations_data:
-            op_id, op_number, op_description, setup_time, cycle_time, order_id, production_order, part_number, part_description = op_data
-
-            try:
-                print(f"Processing operation ID={op_id}, Number={op_number}")
-
-                # Find the active schedule version for this operation
-                # We'll join PlannedScheduleItem to get to ScheduleVersion
-                schedule_version_query = select(sv for sv in ScheduleVersion
-                                                if sv.schedule_item.operation.id == op_id
-                                                and sv.schedule_item.machine.id == machine_id
-                                                and sv.is_active == True)
-
-                schedule_versions = list(schedule_version_query)
-
-                if not schedule_versions:
-                    print(f"No active schedule versions found for operation {op_id}")
-                    continue
-
-                # Use the latest version if multiple exist
-                current_version = max(schedule_versions, key=lambda sv: sv.version_number)
-                print(f"Using schedule version {current_version.id} for operation {op_id}")
-
-                # Get data directly from the schedule version
-                planned_quantity = 0
-                if hasattr(current_version, 'planned_quantity') and current_version.planned_quantity is not None:
-                    planned_quantity = int(current_version.planned_quantity)
-
-                remaining_quantity = 0
-                if hasattr(current_version, 'remaining_quantity') and current_version.remaining_quantity is not None:
-                    remaining_quantity = int(current_version.remaining_quantity)
-
-                # Get start and end times from schedule version
-                planned_start_time = None
-                if hasattr(current_version, 'planned_start_time') and current_version.planned_start_time is not None:
-                    planned_start_time = current_version.planned_start_time
-
-                planned_end_time = None
-                if hasattr(current_version, 'planned_end_time') and current_version.planned_end_time is not None:
-                    planned_end_time = current_version.planned_end_time
-
-                # Get completed quantity from production logs
-                completed_quantity = 0
-                try:
-                    production_logs = list(select(pl for pl in ProductionLog if pl.schedule_version == current_version))
-                    for pl in production_logs:
-                        if hasattr(pl, 'quantity_completed') and pl.quantity_completed is not None:
-                            completed_quantity += int(pl.quantity_completed)
-                except Exception as logs_error:
-                    print(f"Error getting production logs: {str(logs_error)}")
-
-                # If remaining not set properly, calculate it
-                if remaining_quantity == 0 and planned_quantity > 0:
-                    remaining_quantity = max(0, planned_quantity - completed_quantity)
-
-                # Now determine status based on the CORRECT criteria
-                status = "scheduled"  # Default status
-
-                # If no time data available, default to scheduled
-                if planned_start_time is None or planned_end_time is None:
-                    print(f"Missing time data for operation {op_id}, defaulting to scheduled")
-                    status = "scheduled"
-                else:
-                    # 1. COMPLETED: Fully completed quantity before current time
-                    if planned_quantity > 0 and completed_quantity >= planned_quantity and now > planned_start_time:
-                        status = "completed"
-                        print(f"Operation {op_id} is COMPLETED (quantity completed)")
-
-                    # 2. IN PROGRESS: Operation is running now (within time window & not completed)
-                    elif planned_start_time <= now <= planned_end_time and completed_quantity < planned_quantity:
-                        # Check if there's at least one started production log
-                        has_active_production = any(
-                            hasattr(pl, 'start_time') and pl.start_time is not None and
-                            (not hasattr(pl, 'end_time') or pl.end_time is None)
-                            for pl in production_logs
-                        )
-
-                        if has_active_production or (completed_quantity > 0 and remaining_quantity > 0):
-                            status = "inprogress"
-                            print(f"Operation {op_id} is IN PROGRESS (active production)")
-                        else:
-                            # Time-wise we're in the window but no actual production has started
-                            if now < planned_start_time:
-                                status = "scheduled"
-                                print(f"Operation {op_id} is SCHEDULED (not yet started)")
-                            else:
-                                status = "inprogress"  # Default to inprogress if in time window
-                                print(f"Operation {op_id} is IN PROGRESS (in time window)")
-
-                    # 3. SCHEDULED: Not yet started (before start time)
-                    elif now < planned_start_time:
-                        status = "scheduled"
-                        print(f"Operation {op_id} is SCHEDULED (before start time)")
-
-                    # 4. Past end time but not completed
-                    elif now > planned_end_time:
-                        status = "completed"
-                        print(f"Operation {op_id} is COMPLETED (past end time)")
-
-                # Create operation data object
-                operation_data = {
-                    "operation_id": op_id,
-                    "operation_number": op_number,
-                    "description": op_description or "",
-                    "order_id": order_id,
-                    "production_order": production_order,
-                    "part_number": part_number,
-                    "part_description": part_description or "",
-                    "schedule_info": {
-                        "planned_start_time": planned_start_time.isoformat() if planned_start_time else None,
-                        "planned_end_time": planned_end_time.isoformat() if planned_end_time else None,
-                        "planned_quantity": planned_quantity,
-                        "completed_quantity": completed_quantity,
-                        "remaining_quantity": remaining_quantity,
-                        "setup_time": float(setup_time) if setup_time else 0,
-                        "cycle_time": float(cycle_time) if cycle_time else 0
-                    }
-                }
-
-                # Add to appropriate category in response
-                operations_response[status].append(operation_data)
-                print(f"Successfully added operation {op_id} to {status} category")
-
-            except Exception as op_process_error:
-                print(f"Error processing operation {op_id}: {str(op_process_error)}")
-                print(traceback.format_exc())
-                continue
-
-        debug_step = "sort_operations"
-
-        # Sort each category by planned start time
-        for status_key in operations_response:
-            try:
-                operations_response[status_key] = sorted(
-                    operations_response[status_key],
-                    key=lambda x: (x.get("schedule_info", {}).get("planned_start_time") or "9999-12-31")
-                )
-                print(f"Successfully sorted {len(operations_response[status_key])} operations in {status_key} category")
-            except Exception as sort_error:
-                print(f"Error sorting operations for status {status_key}: {str(sort_error)}")
-
-        debug_step = "build_response"
-
-        # Build complete response
-        response = {
-            "machine": machine_details,
-            "operations": operations_response,
-            "totals": {
-                "completed": len(operations_response["completed"]),
-                "inprogress": len(operations_response["inprogress"]),
-                "scheduled": len(operations_response["scheduled"])
-            }
-        }
-
-        print("Response built successfully")
-        return response
-
-    except Exception as e:
-        print(f"ERROR in get_machine_operations at step {debug_step}: {str(e)}")
-        traceback.print_exc()
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error retrieving machine operations at step {debug_step}: {str(e)}"
-        )
-
-
-@router.get("/machines123/{machine_id}/operations", response_model=Dict[str, Any])
-
-@db_session
-def get_machine_operations(
-        machine_id: int,
-):
-    """
     Get machine details, operation status information, and order details for a specific machine.
+    This endpoint only returns information for part numbers that have operations in progress.
 
     Operations are categorized as:
     - completed: Operations where planned quantity has been completed before the current time
@@ -926,19 +685,72 @@ def get_machine_operations(
             except Exception as sort_error:
                 print(f"Error sorting operations for status {status_key}: {str(sort_error)}")
 
-        # Build complete response
+        # Check if there are operations in progress
+        if not operations_response["inprogress"]:
+            # If no operations in progress, return all operations (don't filter)
+            response = {
+                "machine": machine_details,
+                "operations": operations_response,
+                "orders": list(order_details_cache.values()),
+                "totals": {
+                    "completed": len(operations_response["completed"]),
+                    "inprogress": len(operations_response["inprogress"]),
+                    "scheduled": len(operations_response["scheduled"])
+                }
+            }
+            print("No operations in progress - returning all operations")
+            return response
+
+        # Get all unique part numbers
+        all_part_numbers = set()
+        for status in operations_response:
+            for op in operations_response[status]:
+                all_part_numbers.add(op["part_number"])
+
+        # Only filter if there are multiple part numbers AND at least one has in-progress operations
+        if len(all_part_numbers) > 1 and operations_response["inprogress"]:
+            print(
+                f"Multiple part numbers found ({len(all_part_numbers)}), filtering to only show in-progress part numbers")
+
+            # Get the part numbers in progress
+            part_numbers_in_progress = set([op["part_number"] for op in operations_response["inprogress"]])
+
+            # Filter all operations to only include those with part numbers that are in progress
+            filtered_operations = {
+                "completed": [],
+                "inprogress": [],
+                "scheduled": []
+            }
+
+            # Filter operations to only keep those with in-progress part numbers
+            for status in operations_response:
+                for op in operations_response[status]:
+                    if op["part_number"] in part_numbers_in_progress:
+                        filtered_operations[status].append(op)
+        else:
+            # If only one part number or no in-progress operations, don't filter
+            filtered_operations = operations_response
+            print("Not filtering operations - only one part number or no in-progress operations")
+
+        # Filter orders to only include those with in-progress part numbers
+        filtered_orders = [
+            order for order in order_details_cache.values()
+            if order["part_number"] in part_numbers_in_progress
+        ]
+
+        # Build complete response with only the in-progress part numbers
         response = {
             "machine": machine_details,
-            "operations": operations_response,
-            "orders": list(order_details_cache.values()),
+            "operations": filtered_operations,
+            "orders": filtered_orders,
             "totals": {
-                "completed": len(operations_response["completed"]),
-                "inprogress": len(operations_response["inprogress"]),
-                "scheduled": len(operations_response["scheduled"])
+                "completed": len(filtered_operations["completed"]),
+                "inprogress": len(filtered_operations["inprogress"]),
+                "scheduled": len(filtered_operations["scheduled"])
             }
         }
 
-        print("Response built successfully")
+        print("Response built successfully - filtered to only include in-progress part numbers")
         return response
 
     except Exception as e:
