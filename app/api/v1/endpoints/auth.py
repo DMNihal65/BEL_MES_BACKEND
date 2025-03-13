@@ -4,7 +4,8 @@ from datetime import timedelta
 from typing import Any, List
 from ....config.settings import settings
 from ....core.security import create_access_token
-from ....schemas.user import UserCreate, Token, UserLogin, UserResponse, UserRoleCreate, UserRoleResponse, UserRoleUpdate
+from ....schemas.user import UserCreate, Token, UserLogin, UserResponse, UserRoleCreate, UserRoleResponse, \
+    UserRoleUpdate, UserRoleResponseNew
 from ....crud.user import create_user, authenticate_user, get_user_by_email
 from ....models.user import UserRole, User
 from pony.orm import db_session, select,commit,flush, desc
@@ -204,4 +205,35 @@ def update_user_role(user_id: int, role_id: int):
         )
     
     user.role = role
-    return {"message": "User role updated successfully"} 
+    return {"message": "User role updated successfully"}
+
+
+
+
+@router.get("/users/{username}/role", response_model=UserRoleResponseNew)
+@db_session
+def get_user_role(username: str):
+    """Get the role of a specific user by their username"""
+    try:
+        user = User.get(username=username)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        if not user.is_active:
+            raise HTTPException(status_code=404, detail="User is not active")
+
+        # Convert the access_list string to a list
+        try:
+            access_list = json.loads(user.role.access_list)
+        except json.JSONDecodeError:
+            # Fallback if the string is comma-separated
+            access_list = [x.strip() for x in user.role.access_list.split(',')]
+
+        return UserRoleResponseNew(
+            id=user.id,  # Changed from user.role.id to user.id
+            role_name=user.role.role_name,
+            access_list=access_list,
+            created_at=user.role.created_at
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
