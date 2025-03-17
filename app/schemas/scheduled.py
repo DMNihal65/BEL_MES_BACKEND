@@ -1,6 +1,6 @@
 from pydantic import BaseModel
-from datetime import datetime
-from typing import List, Dict, Optional
+from datetime import datetime, date
+from typing import List, Dict, Optional, Any
 
 class PartStatusUpdate(BaseModel):
     status: str
@@ -216,3 +216,162 @@ class ProductionSummary(BaseModel):
     total_production: int
     machine_summaries: List[MachineSummary]
     overall_status_distribution: Dict[str, float] 
+
+class OrderProductionAnalysis(BaseModel):
+    production_order: str
+    part_number: str
+    part_description: str
+    total_completed: int
+    total_rejected: int
+    quality_rate: float
+    daily_production: Dict[date, int]
+    machine_wise_production: Dict[str, Dict[str, float]]
+    average_setup_time: float
+    average_production_time: float
+    planned_vs_actual: List[Dict[str, Any]]
+
+class ShiftPerformanceAnalysis(BaseModel):
+    shift_date: date
+    shift_start: datetime
+    shift_end: datetime
+    total_production: int
+    total_rejected: int
+    quality_rate: float
+    operator_performance: Dict[str, Dict[str, int]]
+    machine_utilization: Dict[str, float]
+
+class ProductionKPIDashboard(BaseModel):
+    period_start: datetime
+    period_end: datetime
+    overall_metrics: Dict[str, float]
+    machine_kpis: List[Dict[str, Any]]
+    top_bottlenecks: List[Dict[str, Any]] 
+
+class OEETrend(BaseModel):
+    date: date
+    availability: float
+    performance: float
+    quality: float
+    oee: float
+
+class OEELosses(BaseModel):
+    availability_loss: float
+    performance_loss: float
+    quality_loss: float
+
+class MachineOEEAnalysis(BaseModel):
+    machine_id: int
+    machine_name: str
+    average_oee: float
+    average_availability: float
+    average_performance: float
+    average_quality: float
+    oee_trends: List[OEETrend]
+    losses: OEELosses
+
+class OEEMetrics(BaseModel):
+    availability: float
+    performance: float
+    quality: float
+    oee: float
+
+class LossAnalysis(BaseModel):
+    availability_loss: float
+    performance_loss: float
+    quality_loss: float
+
+class DetailedShiftSummary(BaseModel):
+    date: date
+    shift: int
+    machine_id: int
+    machine_name: str
+    production_time: Optional[str]
+    idle_time: Optional[str]
+    off_time: Optional[str]
+    total_parts: int
+    good_parts: int
+    bad_parts: int
+    oee_metrics: OEEMetrics
+    loss_analysis: LossAnalysis
+
+class StatusChange(BaseModel):
+    timestamp: datetime
+    status: str
+    duration: float
+
+class MachineStatusTimeline(BaseModel):
+    machine_id: int
+    machine_name: str
+    status_changes: List[StatusChange]
+    status_distribution: Dict[str, float]
+    hourly_distribution: Dict[datetime, Dict[str, int]]
+
+class DailyComparison(BaseModel):
+    date: date
+    planned: int
+    actual: int
+    variance: int
+
+class MachineComparison(BaseModel):
+    machine_id: int
+    machine_name: str
+    total_planned: int
+    total_actual: int
+    achievement_rate: float
+    daily_comparison: List[DailyComparison]
+
+class ProductionComparison(BaseModel):
+    period_start: datetime
+    period_end: datetime
+    overall_metrics: Dict[str, float]
+    machine_comparisons: List[MachineComparison] 
+
+class DailyProductionComparison(BaseModel):
+    date: date
+    planned_production: int
+    actual_production: int
+    achievement_percentage: float
+
+    class Config:
+        from_attributes = True 
+
+class DailyMachineProduction(BaseModel):
+    machine_id: int
+    machine_name: str
+    planned_production: int
+    actual_production: int
+    achievement_percentage: float
+
+class DailyProductionData(BaseModel):
+    date: date
+    planned_total: int
+    actual_total: int
+    achievement_percentage: float
+    machine_breakdown: List[DailyMachineProduction]
+
+class ProductionDateRange(BaseModel):
+    start_date: date
+    end_date: date
+    daily_production: List[DailyProductionData]
+    total_planned: int
+    total_actual: int
+    overall_achievement: float 
+
+class OverallOEEAnalysis(BaseModel):
+    """Factory-wide OEE analysis across all machines"""
+    period_start: datetime
+    period_end: datetime
+    overall_oee: float
+    overall_availability: float
+    overall_performance: float
+    overall_quality: float
+    shift_breakdown: Optional[List[Dict[str, Any]]] = None
+    daily_trends: List[OEETrend]
+    losses: OEELosses
+    total_production: int
+    total_good_parts: int
+    total_bad_parts: int
+    machine_count: int
+    
+    class Config:
+        from_attributes = True 

@@ -58,7 +58,6 @@ class MachineSimulator:
             (self.schedule_df['machine'] == machine_id) &
             (self.schedule_df['operation'] == operation)
             ].sort_values(by='initial_end_time', ascending=False)
-        # print(last_job.iloc[0]['remaining_quantity'])
         if len(last_job) > 1:
             return last_job.iloc[1]['remaining_quantity'] if not last_job.empty else None
 
@@ -72,7 +71,6 @@ class MachineSimulator:
                 lambda x: x.order == corresponding_order and x.operation == corresponding_operation
                           and x.total_quantity != 1).first()
             schedule_version_id = ScheduleVersion.select(lambda x: x.schedule_item == planned_schedule_item).first()
-            # print('$$$ ', schedule_version_id)
             return schedule_version_id.id
 
     @db_session
@@ -177,7 +175,7 @@ class MachineSimulator:
 
             live_entry = MachineRawLive.get(machine_id=int(machine))
             if live_entry:
-                live_entry.time_stamp = current_time
+                live_entry.timestamp = current_time
                 live_entry.status = machine_state
                 live_entry.job_in_progress = jip
                 if not part_count == 0:
@@ -185,7 +183,7 @@ class MachineSimulator:
             else:
                 MachineRawLive(
                     machine_id=int(machine),
-                    time_stamp=current_time,
+                    timestamp=current_time,
                     status=machine_state,
                     active_program=active_program,
                     part_count=part_count,
