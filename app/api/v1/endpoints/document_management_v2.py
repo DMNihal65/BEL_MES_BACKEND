@@ -1224,6 +1224,7 @@ async def bulk_create_document_types(
             detail=f"An error occurred: {str(e)}"
         )
 
+
 @router.post("/documents/upload-by-type", response_model=DocumentResponse)
 async def upload_document_by_type(
         file: UploadFile = File(...),
@@ -1379,6 +1380,7 @@ async def upload_document_by_type(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"An error occurred: {str(e)}"
         )
+
 
 @router.get("/documents/download-latest/{part_number}/{doc_type}")
 async def download_latest_document_by_type(
