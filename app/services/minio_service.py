@@ -10,12 +10,12 @@ class MinioService:
     def __init__(self):
         # Replace these values with your direct MinIO connection settings
         self.client = Minio(
-            endpoint=os.getenv("MINIO_ENDPOINT", "172.18.7.89:9000"),
-            access_key=os.getenv("MINIO_ACCESS_KEY", "SkSfn28fOBig7L7nraY4"),
-            secret_key=os.getenv("MINIO_SECRET_KEY", "4oSBg8nSsabb3kF0ZwG0IBz3Sfhkyb4EHLeTZKHn"),
+            endpoint=os.getenv("MINIO_ENDPOINT", "172.18.7.155:9000"),
+            access_key=os.getenv("MINIO_ACCESS_KEY", "MrKxgiZXGyBArDz8bEnl"),
+            secret_key=os.getenv("MINIO_SECRET_KEY", "DJnTcMpypd6x75DlQfCM2MocFIjRON0jU06OgKnn"),
             secure=False  # Set to True if using HTTPS
         )
-        self.bucket_name = os.getenv("MINIO_BUCKET_NAME", "documents3")
+        self.bucket_name = os.getenv("MINIO_BUCKET_NAME", "documents")
         self._ensure_bucket_exists()
 
     def _ensure_bucket_exists(self):

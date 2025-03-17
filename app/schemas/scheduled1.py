@@ -2,6 +2,9 @@ from pydantic import BaseModel
 from datetime import datetime
 from typing import List, Dict, Optional
 
+from app.schemas.operations import WorkCenterMachine
+
+
 class PartStatusUpdate(BaseModel):
     status: str
 
@@ -44,6 +47,7 @@ class ScheduleResponse(BaseModel):
     daily_production: Dict
     component_status: Dict
     partially_completed: List[str]
+    work_centers: List[WorkCenterMachine]  # Add this line
 
 
 class ProductionLogResponse(BaseModel):
