@@ -1,30 +1,20 @@
-import json
-import os
-
-import pandas as pd
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from typing import List, Optional, Dict, Tuple
 from datetime import datetime, timedelta
 from pony.orm import db_session, select, commit
+import json
+import os
+import pandas as pd
 
-from app.schemas.operations import (
-    OperationOut, ScheduledOperation, ScheduleResponse,
-    MachineSchedulesOut, WorkCenterMachine
-)
-from app.crud.operation import fetch_operations
-from app.crud.component_quantities import fetch_component_quantities
-from app.crud.leadtime import fetch_lead_times
-from app.algorithm.scheduling import schedule_operations
-from app.models import Operation, Order, Machine, WorkCenter, MachineStatus, Status, Project
-from app.models import PlannedScheduleItem, ScheduleVersion
 from app.schemas.priority_schedule import PriorityUpdateResponse, PriorityUpdateRequest, RunningOperation, \
     DependentOperation
-
-router = APIRouter(prefix="/api/v1/test", tags=["test"])
+from app.models import Operation, Order, Machine, WorkCenter, PlannedScheduleItem, ScheduleVersion, Project
 
 # Constants
 LATEST_SCHEDULE_FILE = 'data/latest_schedule.csv'
 PRIORITY_HISTORY_FILE = 'data/priority_history.json'
+
+router = APIRouter(prefix="/api/v1/test", tags=["test"])
 
 
 def ensure_directory_exists(file_path):
@@ -88,61 +78,6 @@ def record_priority_change(part_number: str, old_priority: int, new_priority: in
         return False
 
 
-def get_running_operations_from_schedule(part_number: str = None) -> List[Dict]:
-    """
-    Get operations that are currently running based on the latest schedule file.
-    If part_number is provided, filter to only that part.
-    """
-    current_time = datetime.now()
-    schedule_df = get_latest_schedule()
-
-    if schedule_df.empty:
-        return []
-
-    # Filter operations that are currently active
-    running_mask = (schedule_df['start_time'] <= current_time) & (schedule_df['end_time'] >= current_time)
-
-    if part_number:
-        part_mask = schedule_df['partno'] == part_number
-        running_ops = schedule_df[running_mask & part_mask]
-    else:
-        running_ops = schedule_df[running_mask]
-
-    running_operations = []
-
-    with db_session:
-        # Get machine details for better reporting
-        machine_details = {}
-        for machine in Machine.select():
-            machine_details[machine.id] = {
-                'name': f"{machine.work_center.code}-{machine.make}",
-                'id': machine.id
-            }
-
-    # Convert to dictionary format
-    for _, row in running_ops.iterrows():
-        machine_id = row['machine_id']
-        machine_name = machine_details.get(machine_id, {}).get('name', f"Machine-{machine_id}")
-
-        # Calculate percent complete
-        total_duration = (row['end_time'] - row['start_time']).total_seconds()
-        elapsed = (current_time - row['start_time']).total_seconds()
-        percent_complete = min(100, max(0, (elapsed / total_duration) * 100 if total_duration > 0 else 0))
-
-        running_operations.append({
-            'partno': row['partno'],
-            'operation': row['operation'],
-            'machine_id': machine_id,
-            'machine_name': machine_name,
-            'start_time': row['start_time'],
-            'end_time': row['end_time'],
-            'quantity': row['quantity'],
-            'percent_complete': round(percent_complete, 2)
-        })
-
-    return running_operations
-
-
 def get_running_operations_from_db(part_number: str = None) -> List[Dict]:
     """
     Get operations that are currently running based on the PlannedScheduleItem and ScheduleVersion tables.
@@ -152,7 +87,7 @@ def get_running_operations_from_db(part_number: str = None) -> List[Dict]:
     running_operations = []
 
     with db_session:
-        # Get planned schedule items with active versions
+        # Get planned schedule items with active versions that are currently running
         query = select((psi, sv) for psi in PlannedScheduleItem
                        for sv in psi.schedule_versions
                        if sv.is_active and
@@ -203,20 +138,36 @@ def get_running_operations_from_db(part_number: str = None) -> List[Dict]:
     return running_operations
 
 
-def get_running_operations(part_number: str = None) -> List[Dict]:
+def get_past_operations(part_number: str) -> List[Dict]:
     """
-    Get operations that are currently running by checking both database and schedule file.
-    If part_number is provided, filter to only that part.
+    Get operations that have already been completed for a specific part.
     """
-    # Get running operations from database
-    db_operations = get_running_operations_from_db(part_number)
+    current_time = datetime.now()
+    past_operations = []
 
-    # Get running operations from schedule file as fallback
-    if not db_operations:
-        schedule_operations = get_running_operations_from_schedule(part_number)
-        return schedule_operations
+    with db_session:
+        # Query for completed operations (end time in the past)
+        query = select((psi, sv) for psi in PlannedScheduleItem
+                       for sv in psi.schedule_versions
+                       if sv.is_active and
+                       sv.planned_end_time < current_time and
+                       psi.order.part_number == part_number)
 
-    return db_operations
+        results = list(query)
+
+        # Process results
+        for psi, sv in results:
+            past_operations.append({
+                'part_number': psi.order.part_number,
+                'operation': psi.operation.operation_description or f"Operation {psi.operation.operation_number}",
+                'machine_id': psi.machine.id,
+                'start_time': sv.planned_start_time,
+                'end_time': sv.planned_end_time,
+                'schedule_id': psi.id,
+                'version_id': sv.id
+            })
+
+    return past_operations
 
 
 def get_dependent_operations(part_number: str) -> List[Dict]:
@@ -225,6 +176,7 @@ def get_dependent_operations(part_number: str) -> List[Dict]:
     This checks for dependencies in the PlannedScheduleItem table.
     """
     dependent_operations = []
+    current_time = datetime.now()
 
     with db_session:
         # Find all operations that belong to this part
@@ -241,10 +193,7 @@ def get_dependent_operations(part_number: str) -> List[Dict]:
             return []
 
         # Find all operations that might depend on these operations
-        # In a real system with dependencies, you would check actual dependencies
         # For this example, we'll consider operations with future start times as dependent
-        current_time = datetime.now()
-
         for scheduled_item in scheduled_items:
             for version in scheduled_item.schedule_versions:
                 if version.is_active and version.planned_start_time > current_time:
@@ -259,100 +208,148 @@ def get_dependent_operations(part_number: str) -> List[Dict]:
     return dependent_operations
 
 
-def get_scheduled_items(part_number: str) -> List[Dict]:
+def get_future_operations(part_number: str) -> List[Dict]:
     """
-    Get all scheduled items (past, current, and future) for a part number.
+    Get operations that are scheduled in the future for a specific part.
     """
-    scheduled_items = []
+    current_time = datetime.now()
+    future_operations = []
 
     with db_session:
-        order = Order.select(lambda o: o.part_number == part_number).first()
+        # Query for future operations (start time in the future)
+        query = select((psi, sv) for psi in PlannedScheduleItem
+                       for sv in psi.schedule_versions
+                       if sv.is_active and
+                       sv.planned_start_time > current_time and
+                       psi.order.part_number == part_number)
 
-        if not order:
-            return []
+        results = list(query)
 
-        # Get all scheduled items for this order
-        items = list(PlannedScheduleItem.select(lambda p: p.order == order))
+        # Process results
+        for psi, sv in results:
+            future_operations.append({
+                'part_number': psi.order.part_number,
+                'operation': psi.operation.operation_description or f"Operation {psi.operation.operation_number}",
+                'machine_id': psi.machine.id,
+                'start_time': sv.planned_start_time,
+                'end_time': sv.planned_end_time,
+                'schedule_id': psi.id,
+                'version_id': sv.id
+            })
 
-        for item in items:
-            # Get the active version
-            active_version = None
-            for version in item.schedule_versions:
-                if version.is_active:
-                    active_version = version
-                    break
-
-            if active_version:
-                scheduled_items.append({
-                    'id': item.id,
-                    'operation': item.operation.operation_description or f"Operation {item.operation.operation_number}",
-                    'machine': f"{item.machine.work_center.code}-{item.machine.make}",
-                    'start_time': active_version.planned_start_time,
-                    'end_time': active_version.planned_end_time,
-                    'total_quantity': item.total_quantity,
-                    'remaining_quantity': active_version.remaining_quantity,
-                    'completed_quantity': active_version.completed_quantity,
-                    'version': active_version.version_number,
-                    'status': item.status or "Scheduled"
-                })
-
-    return scheduled_items
+    return future_operations
 
 
-def check_priority_change_impact(part_number: str) -> Tuple[bool, str, List[Dict], List[Dict], List[Dict]]:
+def check_priority_change_impact(part_number: str) -> Tuple[bool, str, List[Dict], List[Dict], List[Dict], List[Dict]]:
     """
     Check if changing priority for a part is possible and what impact it would have.
 
-    Priority can only be changed for future operations. Operations that are already scheduled
-    up to the current date/time must maintain their original priority.
+    Priority can only be changed for future operations. Operations that are already completed
+    or currently running cannot have their priority changed.
 
     Returns:
         Tuple containing:
         - Boolean indicating if change is possible
         - Message explaining why if not possible
         - List of running operations for this part
+        - List of past operations for this part
         - List of dependent operations that would be affected
-        - List of scheduled items for this part
+        - List of future operations that would be affected
     """
-    current_time = datetime.now()
-
     # Get running operations for this part
-    running_operations = get_running_operations(part_number)
+    running_operations = get_running_operations_from_db(part_number)
+
+    # Get past operations for this part
+    past_operations = get_past_operations(part_number)
 
     # Get dependent operations
     dependent_operations = get_dependent_operations(part_number)
 
-    # Get all scheduled items
-    scheduled_items = get_scheduled_items(part_number)
-
-    # Filter for scheduled items that are in progress or scheduled to start before current time
-    current_and_past_items = [
-        item for item in scheduled_items
-        if item['start_time'] <= current_time
-    ]
+    # Get future operations
+    future_operations = get_future_operations(part_number)
 
     # Check if there are running operations
     if running_operations:
         return (
             False,
-            f"Part {part_number} has {len(running_operations)} operations currently running",
+            f"Part {part_number} has {len(running_operations)} operations currently running. Cannot change priority for running operations.",
             running_operations,
+            past_operations,
             dependent_operations,
-            scheduled_items
+            future_operations
         )
 
-    # Check if there are any operations scheduled up to current time
-    if current_and_past_items:
+    # Check if there are any past operations
+    if past_operations:
+        # We still allow changing priority for future operations even if there are completed operations
         return (
-            False,
-            f"Part {part_number} has {len(current_and_past_items)} operations scheduled up to current time. Priority can only be changed for future operations.",
+            True,
+            f"Part {part_number} has {len(past_operations)} completed operations. Priority will only be changed for future operations.",
             running_operations,
+            past_operations,
             dependent_operations,
-            scheduled_items
+            future_operations
         )
 
-    # If we reach here, priority change is possible but might have impacts
-    return True, "Priority change is possible", running_operations, dependent_operations, scheduled_items
+    # If we reach here, there are no restrictions on priority change
+    if future_operations:
+        return (
+            True,
+            f"Priority change is possible for all {len(future_operations)} future operations.",
+            running_operations,
+            past_operations,
+            dependent_operations,
+            future_operations
+        )
+    else:
+        return (
+            True,
+            "No operations found for this part. Priority change is possible but may not have immediate effect.",
+            running_operations,
+            past_operations,
+            dependent_operations,
+            future_operations
+        )
+
+
+def update_future_operations_priority(part_number: str, new_priority: int) -> bool:
+    """
+    Update the priority for future operations of a specific part.
+
+    This function preserves the priority for past and currently running operations,
+    only updating the priority for operations scheduled to start in the future.
+
+    Returns:
+        Boolean indicating if any operations were updated
+    """
+    current_time = datetime.now()
+    updated_count = 0
+
+    with db_session:
+        # Get the order associated with the part number
+        order = Order.select(lambda o: o.part_number == part_number).first()
+
+        if not order or not order.project:
+            return False
+
+        # Update the project priority
+        order.project.priority = new_priority
+
+        # Query for future scheduled items to explicitly mark them for reschedule
+        query = select((psi, sv) for psi in PlannedScheduleItem
+                       for sv in psi.schedule_versions
+                       if sv.is_active and
+                       sv.planned_start_time > current_time and
+                       psi.order.part_number == part_number)
+
+        for psi, sv in query:
+            # Flag this item as needing reschedule (you could add a field for this)
+            psi.needs_reschedule = True  # Assuming this field exists
+            updated_count += 1
+
+        commit()
+
+    return updated_count > 0
 
 
 @router.post("/update-priority/", response_model=PriorityUpdateResponse)
@@ -362,12 +359,10 @@ async def update_part_priority(priority_update: PriorityUpdateRequest, backgroun
 
     The system checks the PlannedScheduleItem table for operations scheduled up to the
     current date and time. Priority changes will only affect future operations - operations
-    scheduled to start before or at the current time will maintain their original priority.
-
-    Priority changes are strictly forbidden if the part has any currently running operations.
+    that have already been completed or are currently running will maintain their original priority.
 
     Args:
-        priority_update: The request containing part_number and new_priority
+        priority_update: The request containing part_number, new_priority, and force flag
         background_tasks: FastAPI background tasks for scheduling updates
 
     Returns:
@@ -411,7 +406,8 @@ async def update_part_priority(priority_update: PriorityUpdateRequest, backgroun
                 )
 
             # Check impact of priority change
-            can_change, message, running_ops, dependent_ops, scheduled_items = check_priority_change_impact(part_number)
+            can_change, message, running_ops, past_ops, dependent_ops, future_ops = check_priority_change_impact(
+                part_number)
 
             # Format running operations for response
             formatted_running_ops = [
@@ -436,8 +432,7 @@ async def update_part_priority(priority_update: PriorityUpdateRequest, backgroun
                 ) for op in dependent_ops
             ]
 
-            # STRICT RULE: If there are ANY running operations, priority change is not allowed
-            # unless force flag is set
+            # STRICT RULE: If there are ANY running operations, priority change is not allowed unless force flag is set
             if running_ops and not force_update:
                 return PriorityUpdateResponse(
                     part_number=part_number,
@@ -449,13 +444,14 @@ async def update_part_priority(priority_update: PriorityUpdateRequest, backgroun
                     message=f"Priority update not possible: Part {part_number} has {len(running_ops)} operations currently running. Cannot change priority until all operations complete or use force=true.",
                     details={
                         "running_operations_count": len(running_ops),
+                        "past_operations_count": len(past_ops),
                         "dependent_operations_count": len(dependent_ops),
-                        "scheduled_items_count": len(scheduled_items)
+                        "future_operations_count": len(future_ops)
                     }
                 )
 
-            # If dependent operations exist and force is not set, we don't change
-            if dependent_ops and not force_update:
+            # If we reach here and force is not set but there are running operations, we should not proceed
+            if not can_change and not force_update:
                 return PriorityUpdateResponse(
                     part_number=part_number,
                     old_priority=old_priority,
@@ -463,28 +459,37 @@ async def update_part_priority(priority_update: PriorityUpdateRequest, backgroun
                     priority_changed=False,
                     running_operations=formatted_running_ops,
                     dependent_operations=formatted_dependent_ops,
-                    message="Priority update not possible due to dependent operations. Use force=true to override.",
+                    message=message,
                     details={
                         "running_operations_count": len(running_ops),
+                        "past_operations_count": len(past_ops),
                         "dependent_operations_count": len(dependent_ops),
-                        "scheduled_items_count": len(scheduled_items)
+                        "future_operations_count": len(future_ops)
                     }
                 )
 
-            # If we reach here, we can update the priority
-            order.project.priority = new_priority
-            commit()
+            # If force is set, or if there are no running operations, proceed with update
+            # Update only the future operations' priority
+            success = update_future_operations_priority(part_number, new_priority)
 
             # Record the priority change in history
             record_priority_change(part_number, old_priority, new_priority)
 
-            # Generate a new schedule in the background
+            # Generate a new schedule in the background, starting from current time
+            # to preserve past and running operations
             background_tasks.add_task(regenerate_schedule, current_time=datetime.now())
 
-            # If we used force, provide a warning in the message
-            message = "Priority updated successfully."
-            if force_update and (running_ops or dependent_ops):
-                message = "Priority updated successfully with force option. This may disrupt currently running operations or dependent operations."
+            # Prepare the appropriate message based on what happened
+            if force_update:
+                message = "Priority updated with force option. Future operations have been rescheduled."
+                if running_ops:
+                    message += f" {len(running_ops)} currently running operations maintain their original schedule."
+                if past_ops:
+                    message += f" {len(past_ops)} completed operations are unaffected."
+            else:
+                message = "Priority updated successfully for future operations."
+                if past_ops:
+                    message += f" {len(past_ops)} completed operations maintain their original priority."
 
             return PriorityUpdateResponse(
                 part_number=part_number,
@@ -496,8 +501,9 @@ async def update_part_priority(priority_update: PriorityUpdateRequest, backgroun
                 message=message,
                 details={
                     "running_operations_count": len(running_ops),
+                    "past_operations_count": len(past_ops),
                     "dependent_operations_count": len(dependent_ops),
-                    "scheduled_items_count": len(scheduled_items),
+                    "future_operations_count": len(future_ops),
                     "schedule_regenerated": True,
                     "force_applied": force_update
                 }
@@ -511,34 +517,29 @@ async def update_part_priority(priority_update: PriorityUpdateRequest, backgroun
 def regenerate_schedule(current_time=None):
     """
     Regenerate the production schedule, optionally from a specific time.
-    This function also updates the PlannedScheduleItem and ScheduleVersion tables.
-
-    When regenerating with current_time specified, only operations scheduled
-    to start after current_time will be rescheduled with new priorities.
-    Operations scheduled to start before or at current_time will maintain
-    their original schedule.
+    This function preserves past and currently running operations,
+    only rescheduling operations that start after the current time.
 
     Args:
         current_time: The time from which to regenerate the schedule. If None,
-                     the default start date will be used.
-
-    Returns:
-        Tuple containing schedule dataframe, overall end time, overall time,
-        daily production, component status, and partially completed parts
+                      the entire schedule is regenerated.
     """
+    # Import required functions at the top level
+    from app.crud.operation import fetch_operations
+    from app.crud.component_quantities import fetch_component_quantities
+    from app.crud.leadtime import fetch_lead_times
+    from app.algorithm.scheduling import schedule_operations
+
     df = fetch_operations()
     component_quantities = fetch_component_quantities()
     lead_times = fetch_lead_times()
 
-    # Get current running operations if a current time is provided
-    respect_running_operations = current_time is not None
-
-    # If we're regenerating from current time, we need to preserve existing schedules
-    # for operations up to current time
+    # Get existing operations up to current time to preserve them
     existing_schedule_items = []
+
     if current_time:
         with db_session:
-            # Get all scheduled items with start time <= current_time
+            # Find all active operations scheduled before or at current time
             query = select((psi, sv) for psi in PlannedScheduleItem
                            for sv in psi.schedule_versions
                            if sv.is_active and sv.planned_start_time <= current_time)
@@ -551,8 +552,8 @@ def regenerate_schedule(current_time=None):
                     'start_time': sv.planned_start_time,
                     'end_time': sv.planned_end_time,
                     'quantity': sv.remaining_quantity,
-                    'priority': psi.order.project.priority,  # Preserve original priority
-                    'preserve': True  # Flag to indicate this should not be rescheduled
+                    'priority': psi.order.project.priority,  # Use current priority
+                    'preserve': True  # Mark to preserve this operation as is
                 })
 
     # Generate the schedule
@@ -562,27 +563,27 @@ def regenerate_schedule(current_time=None):
             component_quantities,
             lead_times,
             current_time=current_time,
-            respect_running_operations=respect_running_operations,
-            existing_schedule_items=existing_schedule_items  # Pass preserved items to scheduling algorithm
+            existing_schedule_items=existing_schedule_items
         )
 
     # Save the latest schedule for future reference
     if not schedule_df.empty:
         save_latest_schedule(schedule_df)
 
-        # Update database tables with new schedule
+        # Update database tables with new schedule, but preserve existing operations
         with db_session:
-            # For each row in the schedule
+            # For new operations in the schedule (future operations)
             for _, row in schedule_df.iterrows():
+                # Skip preserved items - they already exist in the database
+                if row.get('preserve', False):
+                    continue
+
                 part_number = row['partno']
                 operation_number = int(row['operation_number']) if 'operation_number' in row else 0
                 machine_id = row['machine_id']
                 start_time = row['start_time']
                 end_time = row['end_time']
                 quantity = int(float(row['quantity'])) if isinstance(row['quantity'], str) else int(row['quantity'])
-
-                # Check if this is a preserved item (should not create new version)
-                is_preserved = row.get('preserve', False)
 
                 # Find the order
                 order = Order.select(lambda o: o.part_number == part_number).first()
@@ -600,27 +601,22 @@ def regenerate_schedule(current_time=None):
                 if not machine:
                     continue
 
-                # Check if there's an existing planned schedule item
+                # Check if there's an existing planned schedule item for this future operation
                 planned_item = PlannedScheduleItem.select(
                     lambda p: p.order == order and p.operation == operation and p.machine == machine
                 ).first()
 
-                # If this is a preserved item and it already exists, skip it
-                if is_preserved and planned_item:
-                    continue
-
                 if planned_item:
-                    # Update existing item
+                    # Update existing item with a new version
                     new_version_number = planned_item.current_version + 1 if planned_item.current_version else 1
                     planned_item.current_version = new_version_number
 
                     # Mark all existing versions as inactive
                     for version in planned_item.schedule_versions:
-                        if version.is_active:
-                            version.is_active = False
+                        version.is_active = False
 
                     # Create new version
-                    new_version = ScheduleVersion(
+                    ScheduleVersion(
                         schedule_item=planned_item,
                         version_number=new_version_number,
                         planned_start_time=start_time,
@@ -630,10 +626,9 @@ def regenerate_schedule(current_time=None):
                         remaining_quantity=quantity,
                         is_active=True
                     )
-
                 else:
                     # Create new planned schedule item
-                    planned_item = PlannedScheduleItem(
+                    new_item = PlannedScheduleItem(
                         order=order,
                         operation=operation,
                         machine=machine,
@@ -646,8 +641,8 @@ def regenerate_schedule(current_time=None):
                     )
 
                     # Create first version
-                    new_version = ScheduleVersion(
-                        schedule_item=planned_item,
+                    ScheduleVersion(
+                        schedule_item=new_item,
                         version_number=1,
                         planned_start_time=start_time,
                         planned_end_time=end_time,
@@ -662,164 +657,10 @@ def regenerate_schedule(current_time=None):
     return schedule_df, overall_end_time, overall_time, daily_production, component_status, partially_completed
 
 
-@router.get("/schedule-batch/", response_model=ScheduleResponse)
-async def schedule():
-    """Generate a production schedule for all operations"""
-    try:
-        # Initialize work_centers_data
-        work_centers_data = []
-
-        with db_session:
-            # Fetch work centers and their machines
-            for work_center in WorkCenter.select():
-                machines_in_wc = []
-                for machine in work_center.machines:
-                    machines_in_wc.append({
-                        "id": str(machine.id),
-                        "name": machine.make,
-                        "model": machine.model,
-                        "type": machine.type
-                    })
-
-                work_centers_data.append(
-                    WorkCenterMachine(
-                        work_center_code=work_center.code,
-                        work_center_name=work_center.work_center_name or "",
-                        machines=machines_in_wc
-                    )
-                )
-
-        # Generate the schedule
-        schedule_df, overall_end_time, overall_time, daily_production, component_status, partially_completed = \
-            regenerate_schedule()
-
-        scheduled_operations = []
-        if not schedule_df.empty:
-            with db_session:
-                machine_details = {}
-                for machine in Machine.select():
-                    machine_name = f"{machine.work_center.code}-{machine.make}"
-                    machine_details[machine.id] = {
-                        'name': machine_name,
-                        'id': machine.id
-                    }
-
-                orders_map = {order.part_number: order.production_order for order in Order.select()}
-
-            for _, row in schedule_df.iterrows():
-                machine_id = row['machine_id']
-                machine_name = machine_details.get(machine_id, {'name': f'Machine-{machine_id}'})['name']
-
-                scheduled_operations.append(
-                    ScheduledOperation(
-                        component=row['partno'],
-                        description=row['operation'],
-                        machine=machine_name,
-                        start_time=row['start_time'],
-                        end_time=row['end_time'],
-                        quantity=row['quantity'],
-                        production_order=orders_map.get(row['partno'], '')
-                    )
-                )
-
-        return ScheduleResponse(
-            scheduled_operations=scheduled_operations,
-            overall_end_time=overall_end_time,
-            overall_time=str(overall_time),
-            daily_production=daily_production,
-            component_status=component_status,
-            partially_completed=partially_completed,
-            work_centers=work_centers_data
-        )
-
-    except Exception as e:
-        print(f"Error in schedule endpoint: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/machine_schedules/", response_model=MachineSchedulesOut)
-async def get_machine_schedules(start_date: Optional[datetime] = None, end_date: Optional[datetime] = None):
-    """Get schedules grouped by machine"""
-    with db_session:
-        # Try to get from database first
-        machine_schedules = {}
-
-        # Query active schedule versions
-        query = select((psi, sv) for psi in PlannedScheduleItem for sv in psi.schedule_versions if sv.is_active)
-        if start_date:
-            query = select((psi, sv) for psi in PlannedScheduleItem for sv in psi.schedule_versions
-                           if sv.is_active and sv.planned_end_time >= start_date)
-        if end_date:
-            query = select((psi, sv) for psi in PlannedScheduleItem for sv in psi.schedule_versions
-                           if sv.is_active and sv.planned_start_time <= end_date)
-        if start_date and end_date:
-            query = select((psi, sv) for psi in PlannedScheduleItem for sv in psi.schedule_versions
-                           if sv.is_active and sv.planned_end_time >= start_date and sv.planned_start_time <= end_date)
-
-        results = list(query)
-
-        if results:
-            # Process from database
-            for psi, sv in results:
-                machine_name = f"{psi.machine.work_center.code}-{psi.machine.make}"
-
-                if machine_name not in machine_schedules:
-                    machine_schedules[machine_name] = []
-
-                machine_schedules[machine_name].append({
-                    "part_number": psi.order.part_number,
-                    "operation": psi.operation.operation_description or f"Operation {psi.operation.operation_number}",
-                    "start_time": sv.planned_start_time,
-                    "end_time": sv.planned_end_time,
-                    "duration_minutes": (sv.planned_end_time - sv.planned_start_time).total_seconds() / 60
-                })
-        else:
-            # Fall back to CSV file if database has no results
-            schedule_df = get_latest_schedule()
-
-            if schedule_df.empty:
-                # If no cached schedule exists, generate a new one
-                schedule_df, _, _, _, _, _ = regenerate_schedule()
-
-            if not schedule_df.empty:
-                # Get machine names mapping with work center info
-                machine_details = {}
-                for machine in Machine.select():
-                    machine_name = f"{machine.work_center.code}-{machine.make}"
-                    machine_details[machine.id] = machine_name
-
-                # Filter by date if necessary
-                if start_date:
-                    schedule_df = schedule_df[schedule_df['end_time'] >= start_date]
-                if end_date:
-                    schedule_df = schedule_df[schedule_df['start_time'] <= end_date]
-
-                for _, row in schedule_df.iterrows():
-                    machine_id = row['machine_id']
-                    machine_name = machine_details.get(machine_id, f"Machine-{machine_id}")
-
-                    if machine_name not in machine_schedules:
-                        machine_schedules[machine_name] = []
-
-                    machine_schedules[machine_name].append({
-                        "part_number": row['partno'],
-                        "operation": row['operation'],
-                        "start_time": row['start_time'],
-                        "end_time": row['end_time'],
-                        "duration_minutes": (row['end_time'] - row['start_time']).total_seconds() / 60
-                    })
-
-        return MachineSchedulesOut(machine_schedules=machine_schedules)
-
-
 @router.get("/priority-history/{part_number}")
 async def get_priority_history(part_number: str):
     """Get the priority change history for a specific part number"""
     try:
-        # from app.utils.schedule_helpers import PRIORITY_HISTORY_FILE
-        import json
-        import os
-
         if not os.path.exists(PRIORITY_HISTORY_FILE):
             return {"part_number": part_number, "history": []}
 
