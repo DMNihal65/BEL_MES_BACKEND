@@ -1599,8 +1599,8 @@ async def upload_ipid_document(
             if not ipid_folder:
                 raise HTTPException(status_code=404, detail="IPID folder not found")
 
-            # Create document with initial MinIO path
-            temp_object_name = f"{production_order}/IPID/temp"
+            # Generate MinIO path with IPID folder structure
+            minio_path = f"IPID/{production_order}/OP{operation_number}/{document_name}_v{version_number}.{file_ext}"
 
             # Create document record
             document = Document(
@@ -1610,35 +1610,30 @@ async def upload_ipid_document(
                 document_name=document_name,
                 description=description,
                 created_by=user,
-                minio_path=temp_object_name,
+                minio_path=minio_path,
                 is_active=True
             )
             flush()
 
-            # Generate final MinIO path
-            object_name = minio.generate_object_path(
-                str(order.production_order),
-                "IPID",
-                document.id,
-                1
-            )
-
-            # Upload to MinIO
-            file_object = io.BytesIO(file_contents)
-            minio_result = minio.upload_file(
-                file=file_object,
-                object_name=object_name,
-                content_type=file.content_type or "application/octet-stream"
-            )
-
-            # Update document with final path
-            document.minio_path = object_name
+            try:
+                # Upload to MinIO with the new path structure
+                file_object = io.BytesIO(file_contents)
+                minio_result = minio.upload_file(
+                    file=file_object,
+                    object_name=minio_path,
+                    content_type=file.content_type or "application/octet-stream"
+                )
+            except Exception as e:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to upload file: {str(e)}"
+                )
 
             # Create version with operation metadata
             version = DocumentVersion(
                 document=document,
                 version_number=version_number,
-                minio_object_id=object_name,
+                minio_object_id=minio_path,
                 file_size=file_size,
                 checksum=checksum,
                 metadata={
@@ -1661,34 +1656,33 @@ async def upload_ipid_document(
                 action_type="create"
             )
 
+            commit()
+
             # Format response according to DocumentResponse model
-            response_data = {
+            return {
                 "id": document.id,
-                "name": document.document_name,  # Changed from document_name to name
+                "name": document.document_name,
                 "folder_id": document.folder.id,
                 "doc_type_id": document.doc_type.id,
                 "description": document.description,
                 "part_number": order.production_order,
-                "production_order_id": order.id,  # Added production_order_id
+                "production_order_id": order.id,
                 "created_at": document.created_at,
-                "created_by_id": document.created_by.id,  # Changed from created_by to created_by_id
+                "created_by_id": document.created_by.id,
                 "is_active": document.is_active,
                 "latest_version": {
                     "id": version.id,
-                    "document_id": document.id,  # Added document_id
+                    "document_id": document.id,
                     "version_number": version.version_number,
-                    "minio_path": version.minio_object_id,  # Changed from minio_object_id to minio_path
+                    "minio_path": version.minio_object_id,
                     "file_size": version.file_size,
                     "checksum": version.checksum,
                     "created_at": version.created_at,
-                    "created_by_id": version.created_by.id,  # Changed from created_by to created_by_id
-                    "is_active": True,  # Added is_active
+                    "created_by_id": version.created_by.id,
+                    "is_active": version.status == 'active',
                     "metadata": version.metadata
                 }
             }
-
-            commit()
-            return response_data
 
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Invalid metadata JSON format")
