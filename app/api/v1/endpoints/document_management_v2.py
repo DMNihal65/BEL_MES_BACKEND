@@ -1,5 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query, Path, status, Form
 from typing import List, Union, Annotated, Optional, Dict, Any
+import io
+from ....models import DocType, Operation, DocFolder, Document, DocumentAccessLog, DocumentVersion
 from ....schemas.document_management_v2 import *
 from ....models.document_management_v2 import *
 from ....models.user import User
@@ -8,6 +10,7 @@ from ....services.minio_service import MinioService
 from pony.orm import db_session, commit, TransactionError, select, desc, count
 import hashlib
 import json
+from typing import Optional
 from datetime import datetime
 from fastapi.responses import StreamingResponse
 from enum import Enum
@@ -1533,3 +1536,472 @@ async def get_all_documents_by_part_number(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"An error occurred: {str(e)}"
         )
+
+
+@router.post("/ipid/upload/", response_model=DocumentResponse)
+async def upload_ipid_document(
+        file: UploadFile = File(...),
+        production_order: str = Form(...),
+        operation_number: int = Form(...),
+        document_name: str = Form(...),
+        description: Optional[str] = Form(None),
+        version_number: str = Form(...),
+        metadata: Optional[str] = Form("{}"),
+        current_user: User = Depends(get_current_user)
+):
+    """Upload an in-process document for a specific production order and operation"""
+    try:
+        # Process data outside db session
+        metadata_dict = json.loads(metadata) if metadata else {}
+        file_contents = await file.read()
+        checksum = hashlib.sha256(file_contents).hexdigest()
+        file_size = len(file_contents)
+        file_ext = file.filename.split('.')[-1].lower()
+        user_id = current_user.id
+
+        with db_session:
+            # Re-fetch user within session
+            user = User[user_id]
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+
+            # Get the order
+            order = Order.get(production_order=production_order)
+            if not order:
+                raise HTTPException(status_code=404, detail="Production order not found")
+
+            # Get the operation
+            operation = Operation.get(order=order, operation_number=operation_number)
+            if not operation:
+                raise HTTPException(status_code=404, detail="Operation not found")
+
+            # Get or create IPID document type
+            doc_type = DocType.get(type_name="IPID")
+            if not doc_type:
+                doc_type = DocType(
+                    type_name="IPID",
+                    description="In-Process Inspection Document",
+                    file_extensions=[".pdf", ".doc", ".docx"],
+                    is_active=True
+                )
+                flush()
+
+            # Validate file extension
+            if file_ext not in [ext.lower().strip('.') for ext in doc_type.file_extensions]:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"File type .{file_ext} not allowed for IPID documents"
+                )
+
+            # Get default IPID folder
+            ipid_folder = DocFolder.get(folder_name="IPID")
+            if not ipid_folder:
+                raise HTTPException(status_code=404, detail="IPID folder not found")
+
+            # Create document with initial MinIO path
+            temp_object_name = f"{production_order}/IPID/temp"
+
+            # Create document record
+            document = Document(
+                folder=ipid_folder,
+                part_number_id=order,
+                doc_type=doc_type,
+                document_name=document_name,
+                description=description,
+                created_by=user,
+                minio_path=temp_object_name,
+                is_active=True
+            )
+            flush()
+
+            # Generate final MinIO path
+            object_name = minio.generate_object_path(
+                str(order.production_order),
+                "IPID",
+                document.id,
+                1
+            )
+
+            # Upload to MinIO
+            file_object = io.BytesIO(file_contents)
+            minio_result = minio.upload_file(
+                file=file_object,
+                object_name=object_name,
+                content_type=file.content_type or "application/octet-stream"
+            )
+
+            # Update document with final path
+            document.minio_path = object_name
+
+            # Create version with operation metadata
+            version = DocumentVersion(
+                document=document,
+                version_number=version_number,
+                minio_object_id=object_name,
+                file_size=file_size,
+                checksum=checksum,
+                metadata={
+                    **metadata_dict,
+                    "operation_id": operation.id,
+                    "operation_number": operation_number
+                },
+                created_by=user,
+                status="active"
+            )
+            flush()
+
+            document.latest_version = version
+
+            # Log the action
+            DocumentAccessLog(
+                document=document,
+                version=version,
+                user=user,
+                action_type="create"
+            )
+
+            # Prepare response data
+            response_data = {
+                "id": document.id,
+                "folder_id": ipid_folder.id,
+                "part_number_id": order.id,
+                "part_number": order.production_order,
+                "doc_type_id": doc_type.id,
+                "document_name": document_name,
+                "description": description,
+                "created_at": document.created_at,
+                "created_by": user_id,
+                "is_active": True,
+                "latest_version": {
+                    "id": version.id,
+                    "version_number": version_number,
+                    "file_size": file_size,
+                    "checksum": checksum,
+                    "metadata": version.metadata,
+                    "created_at": version.created_at,
+                    "created_by": user_id,
+                    "status": "active"
+                },
+                "versions": [{
+                    "id": version.id,
+                    "version_number": version_number,
+                    "file_size": file_size,
+                    "checksum": checksum,
+                    "metadata": version.metadata,
+                    "created_at": version.created_at,
+                    "created_by": user_id,
+                    "status": "active"
+                }]
+            }
+
+            commit()
+            return response_data
+
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid metadata JSON format")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/ipid/{production_order}", response_model=List[DocumentResponse])
+def get_ipid_documents(
+        production_order: str,
+        operation_number: Optional[int] = None,
+        current_user: User = Depends(get_current_user)
+):
+    """Get all IPID documents for a production order, optionally filtered by operation number"""
+    try:
+        with db_session:
+            user = User[current_user.id]
+
+            # Get the order
+            order = Order.get(production_order=production_order)
+            if not order:
+                raise HTTPException(status_code=404, detail="Production order not found")
+
+            # Get IPID document type
+            doc_type = DocType.get(type_name="IPID")
+            if not doc_type:
+                return []
+
+            # Build query for IPID documents
+            documents = select(d for d in Document
+                               if d.is_active and
+                               d.part_number_id == order and
+                               d.doc_type == doc_type
+                               )[:]
+
+            # Filter by operation number if provided
+            if operation_number is not None:
+                documents = [
+                    d for d in documents
+                    if d.latest_version and
+                       d.latest_version.metadata.get("operation_number") == operation_number
+                ]
+
+            # Log access and prepare response
+            response_data = []
+            for doc in documents:
+                DocumentAccessLog(
+                    document=doc,
+                    version=doc.latest_version,
+                    user=user,
+                    action_type="view"
+                )
+
+                response_data.append({
+                    "id": doc.id,
+                    "folder_id": doc.folder.id,
+                    "part_number_id": order.id,
+                    "part_number": order.production_order,
+                    "doc_type_id": doc_type.id,
+                    "document_name": doc.document_name,
+                    "description": doc.description,
+                    "created_at": doc.created_at,
+                    "created_by": doc.created_by.id,
+                    "is_active": doc.is_active,
+                    "latest_version": {
+                        "id": doc.latest_version.id,
+                        "version_number": doc.latest_version.version_number,
+                        "file_size": doc.latest_version.file_size,
+                        "checksum": doc.latest_version.checksum,
+                        "metadata": doc.latest_version.metadata,
+                        "created_at": doc.latest_version.created_at,
+                        "created_by": doc.latest_version.created_by.id,
+                        "status": doc.latest_version.status
+                    } if doc.latest_version else None,
+                    "versions": [{
+                        "id": v.id,
+                        "version_number": v.version_number,
+                        "file_size": v.file_size,
+                        "checksum": v.checksum,
+                        "metadata": v.metadata,
+                        "created_at": v.created_at,
+                        "created_by": v.created_by.id,
+                        "status": v.status
+                    } for v in doc.versions]
+                })
+
+            commit()
+            return response_data
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# Add a helper function to get documents by operation
+@router.get("/by-operation/{production_order}/{operation_number}", response_model=List[DocumentResponse])
+def get_documents_by_operation(
+        production_order: str,
+        operation_number: int,
+        current_user: User = Depends(get_current_user)
+):
+    """Get all documents (including IPID) for a specific operation of a production order"""
+    try:
+        with db_session:
+            # Re-fetch user within session
+            user = User[current_user.id]
+
+            # Get the order and operation
+            order = Order.get(production_order=production_order)
+            if not order:
+                raise HTTPException(status_code=404, detail="Production order not found")
+
+            operation = Operation.get(order=order, operation_number=operation_number)
+            if not operation:
+                raise HTTPException(status_code=404, detail="Operation not found")
+
+            # Get all documents for this operation
+            documents = select(d for d in Document
+                               if d.is_active and
+                               d.part_number_id == order and
+                               d.latest_version
+                               )[:]
+
+            # Prepare response data
+            response_data = []
+            for doc in documents:
+                metadata = doc.latest_version.metadata
+                if isinstance(metadata, dict) and metadata.get("operation_number") == operation_number:
+                    # Log access
+                    DocumentAccessLog(
+                        document=doc,
+                        version=doc.latest_version,
+                        user=user,
+                        action_type="view"
+                    )
+
+                    # Create response dictionary
+                    response_data.append({
+                        "id": doc.id,
+                        "folder_id": doc.folder.id,
+                        "part_number_id": order.id,
+                        "part_number": order.production_order,
+                        "doc_type_id": doc.doc_type.id,
+                        "document_name": doc.document_name,
+                        "description": doc.description,
+                        "created_at": doc.created_at,
+                        "created_by": doc.created_by.id,
+                        "is_active": doc.is_active,
+                        "latest_version": {
+                            "id": doc.latest_version.id,
+                            "version_number": doc.latest_version.version_number,
+                            "file_size": doc.latest_version.file_size,
+                            "checksum": doc.latest_version.checksum,
+                            "metadata": doc.latest_version.metadata,
+                            "created_at": doc.latest_version.created_at,
+                            "created_by": doc.latest_version.created_by.id,
+                            "status": doc.latest_version.status
+                        } if doc.latest_version else None,
+                        "versions": [{
+                            "id": v.id,
+                            "version_number": v.version_number,
+                            "file_size": v.file_size,
+                            "checksum": v.checksum,
+                            "metadata": v.metadata,
+                            "created_at": v.created_at,
+                            "created_by": v.created_by.id,
+                            "status": v.status
+                        } for v in doc.versions]
+                    })
+
+            commit()
+            return response_data
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/ipid/download/{production_order}/{operation_number}")
+def download_ipid_document(
+        production_order: str,
+        operation_number: int,
+        current_user: User = Depends(get_current_user)
+):
+    """Download the latest IPID document for a specific production order and operation"""
+    try:
+        with db_session:
+            # Re-fetch user within session
+            user = User[current_user.id]
+
+            # Get the order
+            order = Order.get(production_order=production_order)
+            if not order:
+                raise HTTPException(status_code=404, detail="Production order not found")
+
+            # Get IPID document type
+            doc_type = DocType.get(type_name="IPID")
+            if not doc_type:
+                raise HTTPException(status_code=404, detail="IPID document type not found")
+
+            # Get all active documents
+            documents = select(d for d in Document
+                               if d.is_active and
+                               d.part_number_id == order and
+                               d.doc_type == doc_type and
+                               d.latest_version
+                               ).order_by(lambda d: desc(d.created_at))[:]
+
+            # Filter for matching operation number
+            matching_docs = []
+            for doc in documents:
+                metadata = doc.latest_version.metadata
+                if isinstance(metadata, dict) and metadata.get("operation_number") == operation_number:
+                    matching_docs.append(doc)
+
+            if not matching_docs:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"No IPID document found for production order {production_order} and operation {operation_number}"
+                )
+
+            # Get the most recent document
+            document = matching_docs[0]
+            latest_version = document.latest_version
+
+            try:
+                # Get file from MinIO
+                file_stream = minio.get_file(latest_version.minio_object_id)
+
+                # Log the download access
+                DocumentAccessLog(
+                    document=document,
+                    version=latest_version,
+                    user=user,
+                    action_type="download"
+                )
+
+                # Determine file extension and content type
+                file_extension = document.document_name.split('.')[-1] if '.' in document.document_name else ''
+                content_type = file_stream.headers.get("content-type", "application/octet-stream")
+
+                # Generate filename
+                download_filename = f"{production_order}_OP{operation_number}_IPID.{file_extension}"
+
+                commit()
+
+                return StreamingResponse(
+                    file_stream,
+                    media_type=content_type,
+                    headers={
+                        "Content-Disposition": f'attachment; filename="{download_filename}"',
+                        "Content-Length": str(latest_version.file_size)
+                    }
+                )
+
+            except Exception as e:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Error retrieving file from storage: {str(e)}"
+                )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# Optional: Add an endpoint to list available documents before downloading
+@router.get("/ipid/available/{production_order}/{operation_number}")
+def list_available_ipid_documents(
+        production_order: str,
+        operation_number: int,
+        current_user: User = Depends(get_current_user)
+):
+    """List all available IPID documents for a specific production order and operation"""
+    try:
+        with db_session:
+            # Get the order
+            order = Order.get(production_order=production_order)
+            if not order:
+                raise HTTPException(status_code=404, detail="Production order not found")
+
+            # Get IPID document type
+            doc_type = DocType.get(type_name="IPID")
+            if not doc_type:
+                return []
+
+            # Get all documents
+            documents = select(d for d in Document
+                               if d.is_active and
+                               d.part_number_id == order and
+                               d.doc_type == doc_type and
+                               d.latest_version
+                               ).order_by(lambda d: desc(d.created_at))[:]
+
+            # Filter and prepare response
+            response_data = []
+            for doc in documents:
+                metadata = doc.latest_version.metadata
+                if isinstance(metadata, dict) and metadata.get("operation_number") == operation_number:
+                    response_data.append({
+                        "id": doc.id,
+                        "document_name": doc.document_name,
+                        "created_at": doc.created_at,
+                        "version": doc.latest_version.version_number,
+                        "file_size": doc.latest_version.file_size,
+                        "created_by": doc.created_by.id
+                    })
+
+            return response_data
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

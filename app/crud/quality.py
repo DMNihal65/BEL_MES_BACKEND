@@ -14,8 +14,6 @@ from app.schemas.quality import MasterBocCreate, MasterBocResponse, StageInspect
 router = APIRouter()
 
 
-# In quality_crud.py
-
 class MasterBocCRUD:
     @staticmethod
     @db_session
@@ -127,21 +125,27 @@ class StageInspectionCRUD:
         """Create a new Stage Inspection entry"""
         try:
             # Create new instance
-            stage_inspection = StageInspection(
-                op_id=data.op_id,
-                nominal_value=data.nominal_value,
-                uppertol=data.uppertol,
-                lowertol=data.lowertol,
-                zone=data.zone,
-                dimension_type=data.dimension_type,
-                measured_1=data.measured_1,
-                measured_2=data.measured_2,
-                measured_3=data.measured_3,
-                measured_mean=data.measured_mean,
-                measured_instrument=data.measured_instrument,
-                op_no=data.op_no,
-                order_id=data.order_id
-            )
+            stage_inspection_data = {
+                'op_id': data.op_id,
+                'nominal_value': data.nominal_value,
+                'uppertol': data.uppertol,
+                'lowertol': data.lowertol,
+                'zone': data.zone,
+                'dimension_type': data.dimension_type,
+                'measured_1': data.measured_1,
+                'measured_2': data.measured_2,
+                'measured_3': data.measured_3,
+                'measured_mean': data.measured_mean,
+                'measured_instrument': data.measured_instrument,
+                'op_no': data.op_no,
+                'order_id': data.order_id,
+            }
+
+            # Only add quantity_no if it's provided
+            if data.quantity_no is not None:
+                stage_inspection_data['quantity_no'] = data.quantity_no
+
+            stage_inspection = StageInspection(**stage_inspection_data)
             commit()
 
             return StageInspectionResponse.from_orm(stage_inspection)

@@ -1,6 +1,6 @@
 from datetime import datetime
 from pydantic import BaseModel, Field, model_validator
-from typing import List
+from typing import List, Optional
 import json
 
 # In quality_schema.py - Update MasterBocBase
@@ -66,6 +66,7 @@ class StageInspectionBase(BaseModel):
     measured_instrument: str = Field(..., description="Measuring instrument used")
     op_no: int = Field(..., description="Operation number", gt=0)
     order_id: int = Field(..., description="Order ID", gt=0)
+    quantity_no: Optional[int] = Field(None, description="Quantity number")
 
 class StageInspectionCreate(StageInspectionBase):
     pass
@@ -99,6 +100,7 @@ class StageInspectionDetail(BaseModel):
     measured_instrument: str
     op_no: int
     order_id: int
+    quantity_no: Optional[int] = None
     created_at: datetime
 
 class QualityInspectionResponse(BaseModel):
@@ -123,6 +125,7 @@ class StageInspectionWithOperator(BaseModel):
     measured_3: float
     measured_mean: float
     measured_instrument: str
+    quantity_no: Optional[int] = None
     created_at: datetime
     operator: OperatorInfo
 
