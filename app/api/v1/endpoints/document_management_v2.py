@@ -14,6 +14,7 @@ from typing import Optional
 from datetime import datetime
 from fastapi.responses import StreamingResponse
 from enum import Enum
+from fastapi.logger import logger
 
 router = APIRouter()
 minio = MinioService()
@@ -1660,38 +1661,30 @@ async def upload_ipid_document(
                 action_type="create"
             )
 
-            # Prepare response data
+            # Format response according to DocumentResponse model
             response_data = {
                 "id": document.id,
-                "folder_id": ipid_folder.id,
-                "part_number_id": order.id,
+                "name": document.document_name,  # Changed from document_name to name
+                "folder_id": document.folder.id,
+                "doc_type_id": document.doc_type.id,
+                "description": document.description,
                 "part_number": order.production_order,
-                "doc_type_id": doc_type.id,
-                "document_name": document_name,
-                "description": description,
+                "production_order_id": order.id,  # Added production_order_id
                 "created_at": document.created_at,
-                "created_by": user_id,
-                "is_active": True,
+                "created_by_id": document.created_by.id,  # Changed from created_by to created_by_id
+                "is_active": document.is_active,
                 "latest_version": {
                     "id": version.id,
-                    "version_number": version_number,
-                    "file_size": file_size,
-                    "checksum": checksum,
-                    "metadata": version.metadata,
+                    "document_id": document.id,  # Added document_id
+                    "version_number": version.version_number,
+                    "minio_path": version.minio_object_id,  # Changed from minio_object_id to minio_path
+                    "file_size": version.file_size,
+                    "checksum": version.checksum,
                     "created_at": version.created_at,
-                    "created_by": user_id,
-                    "status": "active"
-                },
-                "versions": [{
-                    "id": version.id,
-                    "version_number": version_number,
-                    "file_size": file_size,
-                    "checksum": checksum,
-                    "metadata": version.metadata,
-                    "created_at": version.created_at,
-                    "created_by": user_id,
-                    "status": "active"
-                }]
+                    "created_by_id": version.created_by.id,  # Changed from created_by to created_by_id
+                    "is_active": True,  # Added is_active
+                    "metadata": version.metadata
+                }
             }
 
             commit()
@@ -1703,90 +1696,66 @@ async def upload_ipid_document(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/ipid/{production_order}", response_model=List[DocumentResponse])
-def get_ipid_documents(
-        production_order: str,
-        operation_number: Optional[int] = None,
-        current_user: User = Depends(get_current_user)
+@router.get("/ipid/{part_number}", response_model=List[DocumentResponse])
+async def get_ipid_documents(
+    part_number: str,
+    current_user: User = Depends(get_current_user)
 ):
-    """Get all IPID documents for a production order, optionally filtered by operation number"""
+    """Get all IPID documents for a specific part number"""
     try:
         with db_session:
-            user = User[current_user.id]
-
-            # Get the order
-            order = Order.get(production_order=production_order)
-            if not order:
-                raise HTTPException(status_code=404, detail="Production order not found")
-
             # Get IPID document type
             doc_type = DocType.get(type_name="IPID")
             if not doc_type:
-                return []
+                raise HTTPException(status_code=404, detail="IPID document type not found")
 
-            # Build query for IPID documents
-            documents = select(d for d in Document
-                               if d.is_active and
-                               d.part_number_id == order and
-                               d.doc_type == doc_type
-                               )[:]
-
-            # Filter by operation number if provided
-            if operation_number is not None:
-                documents = [
-                    d for d in documents
-                    if d.latest_version and
-                       d.latest_version.metadata.get("operation_number") == operation_number
-                ]
-
-            # Log access and prepare response
-            response_data = []
+            # Query documents using part_number_id.production_order instead of part_number
+            documents = select(d for d in Document 
+                            if d.part_number_id.production_order == part_number 
+                            and d.doc_type == doc_type
+                            and d.is_active == True)[:]
+            
+            # Format response according to DocumentResponse model
+            response = []
             for doc in documents:
-                DocumentAccessLog(
-                    document=doc,
-                    version=doc.latest_version,
-                    user=user,
-                    action_type="view"
-                )
-
-                response_data.append({
+                latest_version = max(doc.versions, key=lambda v: v.created_at) if doc.versions else None
+                if not latest_version:
+                    continue
+                
+                doc_response = {
                     "id": doc.id,
+                    "name": doc.document_name,
                     "folder_id": doc.folder.id,
-                    "part_number_id": order.id,
-                    "part_number": order.production_order,
-                    "doc_type_id": doc_type.id,
-                    "document_name": doc.document_name,
+                    "doc_type_id": doc.doc_type.id,
                     "description": doc.description,
+                    "part_number": doc.part_number_id.production_order,  # Use production_order as part_number
+                    "production_order_id": doc.part_number_id.id,
                     "created_at": doc.created_at,
-                    "created_by": doc.created_by.id,
+                    "created_by_id": doc.created_by.id,
                     "is_active": doc.is_active,
                     "latest_version": {
-                        "id": doc.latest_version.id,
-                        "version_number": doc.latest_version.version_number,
-                        "file_size": doc.latest_version.file_size,
-                        "checksum": doc.latest_version.checksum,
-                        "metadata": doc.latest_version.metadata,
-                        "created_at": doc.latest_version.created_at,
-                        "created_by": doc.latest_version.created_by.id,
-                        "status": doc.latest_version.status
-                    } if doc.latest_version else None,
-                    "versions": [{
-                        "id": v.id,
-                        "version_number": v.version_number,
-                        "file_size": v.file_size,
-                        "checksum": v.checksum,
-                        "metadata": v.metadata,
-                        "created_at": v.created_at,
-                        "created_by": v.created_by.id,
-                        "status": v.status
-                    } for v in doc.versions]
-                })
-
-            commit()
-            return response_data
+                        "id": latest_version.id,
+                        "document_id": doc.id,
+                        "version_number": latest_version.version_number,
+                        "minio_path": latest_version.minio_object_id,
+                        "file_size": latest_version.file_size,
+                        "checksum": latest_version.checksum,
+                        "created_at": latest_version.created_at,
+                        "created_by_id": latest_version.created_by.id,
+                        "is_active": latest_version.status == 'active',
+                        "metadata": latest_version.metadata
+                    }
+                }
+                response.append(doc_response)
+            
+            return response
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error retrieving IPID documents: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error retrieving IPID documents: {str(e)}"
+        )
 
 
 # Add a helper function to get documents by operation
@@ -1831,38 +1800,30 @@ def get_documents_by_operation(
                         action_type="view"
                     )
 
-                    # Create response dictionary
+                    # Create response dictionary matching DocumentResponse model
                     response_data.append({
                         "id": doc.id,
+                        "name": doc.document_name,  # Changed from document_name to name
                         "folder_id": doc.folder.id,
-                        "part_number_id": order.id,
-                        "part_number": order.production_order,
                         "doc_type_id": doc.doc_type.id,
-                        "document_name": doc.document_name,
                         "description": doc.description,
+                        "part_number": order.production_order,  # Use production_order as part_number
+                        "production_order_id": order.id,
                         "created_at": doc.created_at,
-                        "created_by": doc.created_by.id,
+                        "created_by_id": doc.created_by.id,
                         "is_active": doc.is_active,
                         "latest_version": {
                             "id": doc.latest_version.id,
+                            "document_id": doc.id,
                             "version_number": doc.latest_version.version_number,
+                            "minio_path": doc.latest_version.minio_object_id,
                             "file_size": doc.latest_version.file_size,
                             "checksum": doc.latest_version.checksum,
-                            "metadata": doc.latest_version.metadata,
                             "created_at": doc.latest_version.created_at,
-                            "created_by": doc.latest_version.created_by.id,
-                            "status": doc.latest_version.status
-                        } if doc.latest_version else None,
-                        "versions": [{
-                            "id": v.id,
-                            "version_number": v.version_number,
-                            "file_size": v.file_size,
-                            "checksum": v.checksum,
-                            "metadata": v.metadata,
-                            "created_at": v.created_at,
-                            "created_by": v.created_by.id,
-                            "status": v.status
-                        } for v in doc.versions]
+                            "created_by_id": doc.latest_version.created_by.id,
+                            "is_active": doc.latest_version.status == 'active',
+                            "metadata": doc.latest_version.metadata
+                        } if doc.latest_version else None
                     })
 
             commit()

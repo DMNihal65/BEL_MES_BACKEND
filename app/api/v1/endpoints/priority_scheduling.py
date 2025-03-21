@@ -253,7 +253,9 @@ def get_single_part_priority(part_number: str):
 @db_session
 def update_part_priority(update_request: PriorityUpdateRequest):
     """
-    Update part priority with comprehensive scheduling checks
+    Update part priority based on schedule version's planned start/end times
+    - Only prevents changes for currently scheduled or past scheduled parts
+    - Allows changes for parts scheduled in the future
     """
     try:
         current_time = datetime.now()
@@ -274,15 +276,45 @@ def update_part_priority(update_request: PriorityUpdateRequest):
                 detail="Part is not active for priority update"
             )
 
-        # Get scheduling status using helper function
-        earliest_start, latest_end, project_start, project_end, project_delivery, scheduling_status, is_changeable, reason = determine_scheduling_status(
-            order, current_time)
+        # Check schedule versions directly to determine if priority can be changed
+        schedule_items = select(psi for psi in PlannedScheduleItem if psi.order == order)
 
-        # If not changeable, raise an exception
-        if not is_changeable:
+        # Initialize flags to track schedule status
+        is_currently_scheduled = False
+        is_past_scheduled = False
+        earliest_future_start = None
+
+        for item in schedule_items:
+            versions = select(sv for sv in ScheduleVersion
+                              if sv.schedule_item == item and sv.is_active)
+
+            for version in versions:
+                # If we have start and end times, check scheduling status
+                if version.planned_start_time and version.planned_end_time:
+                    # Part is currently scheduled
+                    if version.planned_start_time <= current_time <= version.planned_end_time:
+                        is_currently_scheduled = True
+
+                    # Part was scheduled in the past
+                    elif version.planned_end_time < current_time:
+                        is_past_scheduled = True
+
+                    # Part is scheduled for the future
+                    elif version.planned_start_time > current_time:
+                        if earliest_future_start is None or version.planned_start_time < earliest_future_start:
+                            earliest_future_start = version.planned_start_time
+
+        # Check if priority change is allowed based on schedule
+        if is_currently_scheduled:
             raise HTTPException(
                 status_code=400,
-                detail=f"Cannot change priority. {reason}"
+                detail="Cannot change priority for a part that is currently scheduled"
+            )
+
+        if is_past_scheduled:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot change priority for a part that was scheduled in the past"
             )
 
         # Get current priority
@@ -301,6 +333,7 @@ def update_part_priority(update_request: PriorityUpdateRequest):
                 )
                 order.project = project
             else:
+                # Update priority
                 order.project.priority = update_request.new_priority
 
             # Commit changes
@@ -308,15 +341,56 @@ def update_part_priority(update_request: PriorityUpdateRequest):
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Error updating priority: {str(e)}")
 
+        # Get scheduling information after update for response
+        # Note: We're no longer using determine_scheduling_status here since
+        # we've already performed our custom scheduling checks
+        earliest_start = None
+        latest_end = None
+        project_start = None
+        project_end = None
+        project_delivery = None
+
+        # Get project dates
+        if order.project:
+            project_start = order.project.start_date
+            project_end = order.project.end_date
+            project_delivery = order.project.delivery_date
+
+        # Get earliest start and latest end from schedule versions
+        for item in schedule_items:
+            versions = select(sv for sv in ScheduleVersion
+                              if sv.schedule_item == item and sv.is_active)
+
+            for version in versions:
+                if version.planned_start_time and (earliest_start is None or
+                                                   version.planned_start_time < earliest_start):
+                    earliest_start = version.planned_start_time
+
+                if version.planned_end_time and (latest_end is None or
+                                                 version.planned_end_time > latest_end):
+                    latest_end = version.planned_end_time
+
+        # Determine scheduling status based on our calculations
+        if earliest_future_start:
+            scheduling_status = "Scheduled Future"
+            days_until_start = (earliest_future_start - current_time).days
+            reason = f"Part is scheduled to start in the future ({days_until_start} days)"
+        elif not schedule_items.count():
+            scheduling_status = "Not Scheduled"
+            reason = "Part is not scheduled yet"
+        else:
+            scheduling_status = "Scheduling Checked"
+            reason = "No scheduling conflicts found"
+
         return PriorityDetails(
             part_number=update_request.part_number,
             current_priority=update_request.new_priority,
             current_status=part_status.status,
             scheduled_start=earliest_start,
             scheduled_end=latest_end,
-            project_start=project_start if order.project else None,
-            project_end=project_end if order.project else None,
-            project_delivery=project_delivery if order.project else None,
+            project_start=project_start,
+            project_end=project_end,
+            project_delivery=project_delivery,
             is_changeable=True,
             scheduling_status=scheduling_status,
             reason=f"Priority successfully updated from {old_priority} to {update_request.new_priority}"
