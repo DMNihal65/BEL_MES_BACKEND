@@ -1594,51 +1594,68 @@ async def upload_ipid_document(
                     detail=f"File type .{file_ext} not allowed for IPID documents"
                 )
 
-            # Get default IPID folder
-            ipid_folder = DocFolder.get(folder_name="IPID")
+            # Get or create IPID folder
+            ipid_folder = DocFolder.get(lambda f: f.folder_name == "IPID" and f.is_active == True)
             if not ipid_folder:
-                raise HTTPException(status_code=404, detail="IPID folder not found")
+                # Create IPID folder if it doesn't exist
+                ipid_folder = DocFolder(
+                    folder_name="IPID",
+                    description="In-Process Inspection Documents",
+                    created_by=user,
+                    is_active=True,
+                    parent_folder=None  # Root folder
+                )
+                flush()
+                logger.info(f"Created new IPID folder with ID: {ipid_folder.id}")
 
-            # Create document with initial MinIO path
-            temp_object_name = f"{production_order}/IPID/temp"
+            # Create subfolder structure for better organization
+            po_folder_name = f"PO_{production_order}"
+            po_folder = DocFolder.get(lambda f: f.folder_name == po_folder_name and f.parent_folder == ipid_folder)
+            if not po_folder:
+                po_folder = DocFolder(
+                    folder_name=po_folder_name,
+                    description=f"IPID documents for PO {production_order}",
+                    created_by=user,
+                    is_active=True,
+                    parent_folder=ipid_folder
+                )
+                flush()
+
+            # Generate MinIO path with IPID folder structure
+            minio_path = f"IPID/{production_order}/OP{operation_number}/{document_name}_v{version_number}.{file_ext}"
 
             # Create document record
             document = Document(
-                folder=ipid_folder,
+                folder=po_folder,  # Use the production order subfolder
                 part_number_id=order,
                 doc_type=doc_type,
                 document_name=document_name,
                 description=description,
                 created_by=user,
-                minio_path=temp_object_name,
+                minio_path=minio_path,
                 is_active=True
             )
             flush()
 
-            # Generate final MinIO path
-            object_name = minio.generate_object_path(
-                str(order.production_order),
-                "IPID",
-                document.id,
-                1
-            )
-
-            # Upload to MinIO
-            file_object = io.BytesIO(file_contents)
-            minio_result = minio.upload_file(
-                file=file_object,
-                object_name=object_name,
-                content_type=file.content_type or "application/octet-stream"
-            )
-
-            # Update document with final path
-            document.minio_path = object_name
+            try:
+                # Upload to MinIO with the new path structure
+                file_object = io.BytesIO(file_contents)
+                minio_result = minio.upload_file(
+                    file=file_object,
+                    object_name=minio_path,
+                    content_type=file.content_type or "application/octet-stream"
+                )
+            except Exception as e:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to upload file: {str(e)}"
+                )
 
             # Create version with operation metadata
             version = DocumentVersion(
                 document=document,
                 version_number=version_number,
-                minio_object_id=object_name,
+                minio_object_id=minio_path,
                 file_size=file_size,
                 checksum=checksum,
                 metadata={
@@ -1661,34 +1678,33 @@ async def upload_ipid_document(
                 action_type="create"
             )
 
+            commit()
+
             # Format response according to DocumentResponse model
-            response_data = {
+            return {
                 "id": document.id,
-                "name": document.document_name,  # Changed from document_name to name
+                "name": document.document_name,
                 "folder_id": document.folder.id,
                 "doc_type_id": document.doc_type.id,
                 "description": document.description,
                 "part_number": order.production_order,
-                "production_order_id": order.id,  # Added production_order_id
+                "production_order_id": order.id,
                 "created_at": document.created_at,
-                "created_by_id": document.created_by.id,  # Changed from created_by to created_by_id
+                "created_by_id": document.created_by.id,
                 "is_active": document.is_active,
                 "latest_version": {
                     "id": version.id,
-                    "document_id": document.id,  # Added document_id
+                    "document_id": document.id,
                     "version_number": version.version_number,
-                    "minio_path": version.minio_object_id,  # Changed from minio_object_id to minio_path
+                    "minio_path": version.minio_object_id,
                     "file_size": version.file_size,
                     "checksum": version.checksum,
                     "created_at": version.created_at,
-                    "created_by_id": version.created_by.id,  # Changed from created_by to created_by_id
-                    "is_active": True,  # Added is_active
+                    "created_by_id": version.created_by.id,
+                    "is_active": version.status == 'active',
                     "metadata": version.metadata
                 }
             }
-
-            commit()
-            return response_data
 
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Invalid metadata JSON format")
@@ -1698,8 +1714,8 @@ async def upload_ipid_document(
 
 @router.get("/ipid/{part_number}", response_model=List[DocumentResponse])
 async def get_ipid_documents(
-    part_number: str,
-    current_user: User = Depends(get_current_user)
+        part_number: str,
+        current_user: User = Depends(get_current_user)
 ):
     """Get all IPID documents for a specific part number"""
     try:
@@ -1710,18 +1726,18 @@ async def get_ipid_documents(
                 raise HTTPException(status_code=404, detail="IPID document type not found")
 
             # Query documents using part_number_id.production_order instead of part_number
-            documents = select(d for d in Document 
-                            if d.part_number_id.production_order == part_number 
-                            and d.doc_type == doc_type
-                            and d.is_active == True)[:]
-            
+            documents = select(d for d in Document
+                               if d.part_number_id.production_order == part_number
+                               and d.doc_type == doc_type
+                               and d.is_active == True)[:]
+
             # Format response according to DocumentResponse model
             response = []
             for doc in documents:
                 latest_version = max(doc.versions, key=lambda v: v.created_at) if doc.versions else None
                 if not latest_version:
                     continue
-                
+
                 doc_response = {
                     "id": doc.id,
                     "name": doc.document_name,
@@ -1747,7 +1763,7 @@ async def get_ipid_documents(
                     }
                 }
                 response.append(doc_response)
-            
+
             return response
 
     except Exception as e:

@@ -1,4 +1,4 @@
-#####
+# Modified scheduling.py
 from datetime import datetime, timedelta, date
 import pandas as pd
 from typing import Dict, Tuple, List
@@ -9,7 +9,11 @@ from app.models import Operation, Order, Machine, Status, RawMaterial, Project, 
 
 
 def adjust_to_shift_hours(time: datetime) -> datetime:
-    """Adjust time to fit within shift hours (9 AM to 5 PM)"""
+    """
+    Adjust time to fit within shift hours (9 AM to 5 PM) in IST
+    Ensures the time is treated as IST
+    """
+    # First, ensure the time is treated as IST (it should already be in IST)
     if time.hour < 9:
         return time.replace(hour=9, minute=0, second=0, microsecond=0)
     elif time.hour >= 17:
@@ -28,8 +32,17 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
 
     # Gather all order and part status information upfront
     part_status_map = {}
+    part_activation_times = {}
+
     for part_status in PartScheduleStatus.select():
         part_status_map[part_status.part_number] = part_status.status
+        # Get activation timestamp for each part
+        if part_status.status == 'active':
+            # Store the activation time (updated_at) which will be used as the scheduling start time
+            # Convert UTC time from database to IST for scheduling
+            ist_offset = timedelta(hours=5, minutes=30)
+            activation_time_ist = part_status.updated_at + ist_offset
+            part_activation_times[part_status.part_number] = activation_time_ist
 
     # Filter quantities to only include active parts
     active_parts = {
@@ -38,10 +51,15 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
         if part_status_map.get(partno, 'inactive') == 'active'
     }
 
-    # Debug print the active parts
+    # Debug print the active parts with full datetime information
     print("\n--- Active Parts ---")
     for partno, qty in active_parts.items():
-        print(f"Part: {partno}, Quantity: {qty}")
+        activation_time = part_activation_times.get(partno)
+        if activation_time:
+            activation_time_str = activation_time.strftime("%Y-%m-%d %H:%M:%S")
+        else:
+            activation_time_str = "None"
+        print(f"Part: {partno}, Quantity: {qty}, Activation Time (IST): {activation_time_str}")
 
     # Track skipped parts
     skipped_parts = [
@@ -118,11 +136,29 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
         for partno, group in df_sorted.groupby('partno')
     }
 
-    start_date = datetime(2024, 12, 20, 9, 0)
-    start_date = adjust_to_shift_hours(start_date)
+    # Get current time in IST as default start date
+    ist_offset = timedelta(hours=5, minutes=30)
+    default_start_date = datetime.now() + ist_offset
+    default_start_date = adjust_to_shift_hours(default_start_date)
+
+    # Find the earliest activation time across all active parts to use as the global start
+    earliest_activation_time = None
+    for partno in active_parts.keys():
+        if partno in part_activation_times:
+            if earliest_activation_time is None or part_activation_times[partno] < earliest_activation_time:
+                earliest_activation_time = part_activation_times[partno]
+
+    # Use the earliest activation time or default to current time in IST
+    global_start_date = adjust_to_shift_hours(
+        earliest_activation_time) if earliest_activation_time else default_start_date
+
+    # Log the global start date used for scheduling
+    print(f"Global start date (IST): {global_start_date.strftime('%Y-%m-%d %H:%M:%S')}")
+
+    # Initialize machine end times with the earliest start date
+    machine_end_times = {machine: global_start_date for machine in df_sorted["machine_id"].unique()}
 
     schedule = []
-    machine_end_times = {machine: start_date for machine in df_sorted["machine_id"].unique()}
     daily_production = {}
     part_status = {}
     partially_completed = []
@@ -143,9 +179,12 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
             return False, None
 
         available_from = machine_status.get('available_from')
-        if available_from and time < available_from:
-            print(f"Machine {machine_id} not available before {available_from}")
-            return False, available_from
+        if available_from:
+            # Convert available_from to IST if it's from database (UTC)
+            available_from_ist = available_from + ist_offset
+            if time < available_from_ist:
+                print(f"Machine {machine_id} not available before {available_from_ist}")
+                return False, available_from_ist
 
         return True, time
 
@@ -192,8 +231,11 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
         if not raw_available:
             return [], 0, {}
 
-        if raw_available_time and operation_time < raw_available_time:
-            operation_time = raw_available_time
+        if raw_available_time:
+            # Convert available_time to IST if it's from database (UTC)
+            raw_available_time_ist = raw_available_time + ist_offset
+            if operation_time < raw_available_time_ist:
+                operation_time = raw_available_time_ist
 
         last_available_idx = find_last_available_operation(operations, operation_time)
         if last_available_idx < 0:
@@ -359,8 +401,18 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
         priority = part_priorities.get(partno, float('inf'))
         lead_time = part_lead_times.get(partno)  # Get lead time for reference
 
+        # Use part-specific activation time if available, otherwise use global start date
+        part_start_time = part_activation_times.get(partno, global_start_date)
+        # Apply shift hour adjustment after ensuring full timestamp (date + time) is captured
+        part_start_time = adjust_to_shift_hours(part_start_time)
+
+        # Log the start time being used for this part with full details (date + time)
+        print(
+            f"Scheduling {partno} with activation time (IST): {part_start_time.strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+
         batch_schedule, completed_ops, unit_completion_times = schedule_batch_operations(
-            partno, operations, quantity, start_date
+            partno, operations, quantity, part_start_time
         )
 
         if batch_schedule:
@@ -374,7 +426,8 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
                 'lead_time': lead_time,  # Include lead time in status for reference
                 'completed_quantity': len(unit_completion_times),
                 'total_quantity': quantity,
-                'lead_time_provided': lead_time is not None  # Track if lead time was provided
+                'lead_time_provided': lead_time is not None,  # Track if lead time was provided
+                'start_time': part_start_time  # Include the start time used for reference
             }
 
             # Calculate lead time difference for monitoring (but don't use for scheduling)
@@ -401,9 +454,9 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
     )
 
     if schedule_df.empty:
-        return schedule_df, start_date, 0.0, daily_production, {}, partially_completed
+        return schedule_df, global_start_date, 0.0, daily_production, {}, partially_completed
 
     overall_end_time = max(schedule_df['end_time'])
-    overall_time = (overall_end_time - start_date).total_seconds() / 60
+    overall_time = (overall_end_time - global_start_date).total_seconds() / 60
 
     return schedule_df, overall_end_time, overall_time, daily_production, part_status, partially_completed

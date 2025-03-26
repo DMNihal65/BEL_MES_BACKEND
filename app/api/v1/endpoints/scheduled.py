@@ -1,4 +1,5 @@
 from collections import defaultdict
+from datetime import datetime
 
 from fastapi import APIRouter, HTTPException
 from pony.orm import db_session, select
@@ -13,14 +14,35 @@ import re
 
 from app.schemas.operations import WorkCenterMachine
 from app.schemas.scheduled1 import ScheduleResponse, ProductionLogsResponse, ProductionLogResponse, ScheduledOperation, \
-    CombinedScheduleProductionResponse, PartProductionResponse, PartProductionTimeline
+    CombinedScheduleProductionResponse, PartProductionResponse, PartProductionTimeline, PartStatusUpdate
 
 router = APIRouter(prefix="/api/v1/scheduling", tags=["scheduling"])
 
+from datetime import datetime, timezone, timedelta
+
+
 @router.post("/set-part-status/{part_number}")
-async def set_part_status(part_number: str, status: str):
-    """Set whether a part number should be included in scheduling"""
-    if status not in ['active', 'inactive']:
+async def set_part_status(part_number: str, status_update: PartStatusUpdate = None, status: str = None):
+    """
+    Set whether a part number should be included in scheduling
+    When setting to 'active', captures the current timestamp for scheduling
+
+    Can accept status either as a query parameter or in the request body
+    """
+    # Decide which status to use (prefer body over query param)
+    final_status = None
+
+    if status_update:
+        final_status = status_update.status
+    elif status:
+        final_status = status
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="Status must be provided either in body or as query parameter"
+        )
+
+    if final_status not in ['active', 'inactive']:
         raise HTTPException(
             status_code=400,
             detail="Status must be 'active' or 'inactive'"
@@ -38,20 +60,36 @@ async def set_part_status(part_number: str, status: str):
 
             # Find or create status record
             status_record = PartScheduleStatus.get(part_number=part_number)
+            # Create full timestamp with both date and time in UTC
+            current_time_utc = datetime.utcnow()
+
+            # Convert UTC to IST (UTC+5:30)
+            ist_offset = timedelta(hours=5, minutes=30)
+            current_time_ist = current_time_utc + ist_offset
 
             if not status_record:
-                # Create new status record
+                # Create new status record (still store UTC in database)
                 status_record = PartScheduleStatus(
                     part_number=part_number,
-                    status=status
+                    status=final_status,
+                    created_at=current_time_utc,
+                    updated_at=current_time_utc
                 )
             else:
-                # Update existing record
-                status_record.status = status
+                # Only update the timestamp if changing from inactive to active
+                if status_record.status == 'inactive' and final_status == 'active':
+                    status_record.updated_at = current_time_utc
+
+                # Always update the status
+                status_record.status = final_status
+
+            # Format the activation timestamp to include both date and time in IST
+            activation_time_str = current_time_ist.strftime("%Y-%m-%d %H:%M:%S") if final_status == 'active' else None
 
             return {
-                "message": f"Part number {part_number} status set to {status}",
-                "will_be_scheduled": status == 'active'
+                "message": f"Part number {part_number} status set to {final_status}",
+                "will_be_scheduled": final_status == 'active',
+                "activation_time": activation_time_str
             }
 
     except Exception as e:
@@ -66,18 +104,24 @@ async def get_active_parts():
             active_items = select((
                                       p.part_number,
                                       p.status,
+                                      p.updated_at,
                                       o.production_order
                                   ) for p in PartScheduleStatus
                                   for o in Order if o.part_number == p.part_number)[:]
+
+            # Convert UTC to IST (UTC+5:30)
+            ist_offset = timedelta(hours=5, minutes=30)
 
             return {
                 "active_parts": [
                     {
                         "part_number": part_number,
                         "status": status,
+                        "activation_time": (updated_at + ist_offset).strftime(
+                            "%Y-%m-%d %H:%M:%S") if status == 'active' and updated_at else None,
                         "production_order": prod_order
                     }
-                    for part_number, status, prod_order in active_items
+                    for part_number, status, updated_at, prod_order in active_items
                 ]
             }
 
@@ -231,6 +275,29 @@ async def schedule():
             orders_count = Order.select().count()
             print(f"Database counts - Operations: {ops_count}, Orders: {orders_count}")
 
+            # Fetch all active parts with their activation times
+            active_parts_info = select((
+                                           p.part_number,
+                                           p.status,
+                                           p.updated_at
+                                       ) for p in PartScheduleStatus if p.status == 'active')[:]
+
+            # Convert to IST for display purposes
+            ist_offset = timedelta(hours=5, minutes=30)
+            active_parts_with_times = {
+                part_number: {
+                    "status": status,
+                    "activation_time_utc": updated_at,
+                    "activation_time_ist": (updated_at + ist_offset).strftime(
+                        "%Y-%m-%d %H:%M:%S") if updated_at else None
+                }
+                for part_number, status, updated_at in active_parts_info
+            }
+
+            # Log active parts with their activation times
+            for part_number, info in active_parts_with_times.items():
+                print(f"Active part {part_number}: Activation time (IST): {info['activation_time_ist']}")
+
             # Fetch work centers and their machines
             for work_center in WorkCenter.select():
                 machines_in_wc = []
@@ -258,9 +325,32 @@ async def schedule():
                     'work_center': machine.work_center.code
                 }
 
+        # Fetch operations for active parts only
         df = fetch_operations()
+
+        # Filter operations to include only active parts based on activation time
+        if not df.empty:
+            # Keep only rows with part numbers in active_parts_with_times
+            df = df[df['partno'].isin(active_parts_with_times.keys())]
+
+        # If no operations for active parts, return empty schedule
+        if df.empty:
+            return ScheduleResponse(
+                scheduled_operations=[],
+                overall_end_time=None,
+                overall_time="0",
+                daily_production=[],
+                component_status={},
+                partially_completed=[],
+                work_centers=work_centers_data
+            )
+
         component_quantities = fetch_component_quantities()
         lead_times = fetch_lead_times()
+
+        # Pass lead times and component quantities filtered for active parts
+        component_quantities = {k: v for k, v in component_quantities.items() if k in active_parts_with_times}
+        lead_times = {k: v for k, v in lead_times.items() if k in active_parts_with_times}
 
         schedule_df, overall_end_time, overall_time, daily_production, \
             component_status, partially_completed = schedule_operations(
@@ -318,7 +408,6 @@ async def schedule():
     except Exception as e:
         print(f"Error in schedule endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @router.get("/actual-production/", response_model=ProductionLogsResponse)
 async def get_production_logs():

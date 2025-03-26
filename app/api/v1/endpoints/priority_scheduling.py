@@ -13,11 +13,8 @@ class PriorityDetails(BaseModel):
     part_number: str
     current_priority: int
     current_status: str
-    scheduled_start: Optional[datetime] = None
-    scheduled_end: Optional[datetime] = None
-    project_start: Optional[datetime] = None
-    project_end: Optional[datetime] = None
-    project_delivery: Optional[datetime] = None
+    planned_start_time: Optional[datetime] = None
+    planned_end_time: Optional[datetime] = None
     is_changeable: bool
     scheduling_status: str
     reason: Optional[str] = None
@@ -28,54 +25,66 @@ class PriorityUpdateRequest(BaseModel):
     new_priority: int
 
 
+class ProjectPriorityUpdateRequest(BaseModel):
+    priority: int
+
+
 @db_session
 def determine_scheduling_status(order, current_time):
     """
     Helper function to determine scheduling status and changeability
-    Uses both schedule versions and project dates for more accurate status
-    Returns a tuple of (earliest_start, latest_end, project_start, project_end, project_delivery,
-                        scheduling_status, is_changeable, reason)
-
-    Updated to allow priority changes for parts in production
+    Uses schedule versions' planned start and end times
+    Returns a tuple of (planned_start_time, planned_end_time, scheduling_status, is_changeable, reason)
     """
     try:
         # Default scheduling details
-        earliest_start = None
-        latest_end = None
-        project_start = None
-        project_end = None
-        project_delivery = None
+        planned_start_time = None
+        planned_end_time = None
         scheduling_status = "Not Scheduled"
         is_changeable = True
         reason = "No scheduling constraints"
 
         if not order:
-            return earliest_start, latest_end, project_start, project_end, project_delivery, scheduling_status, is_changeable, reason
-
-        # Get project dates if available
-        if order.project:
-            project_start = order.project.start_date
-            project_end = order.project.end_date
-            project_delivery = order.project.delivery_date
+            return planned_start_time, planned_end_time, scheduling_status, is_changeable, reason
 
         # Try to get scheduling information from PlannedScheduleItem
         schedule_items = select(psi for psi in PlannedScheduleItem if psi.order == order)
 
         if schedule_items.count() > 0:
-            # Find earliest scheduled start and latest scheduled end
+            # Find earliest planned start and latest planned end
+            earliest_start = None
+            latest_end = None
+
             for item in schedule_items:
+                # Get active schedule versions for this item
                 versions = select(sv for sv in ScheduleVersion
                                   if sv.schedule_item == item and sv.is_active)
 
                 for version in versions:
-                    if version.planned_start_time and (
-                            earliest_start is None or version.planned_start_time < earliest_start):
-                        earliest_start = version.planned_start_time
+                    # Verify datetime fields are valid before comparison
+                    if version.planned_start_time:
+                        # Make sure we have a valid datetime object
+                        if isinstance(version.planned_start_time, datetime):
+                            if earliest_start is None or version.planned_start_time < earliest_start:
+                                earliest_start = version.planned_start_time
+                        else:
+                            # Log error or handle invalid date format
+                            pass
 
-                    if version.planned_end_time and (latest_end is None or version.planned_end_time > latest_end):
-                        latest_end = version.planned_end_time
+                    if version.planned_end_time:
+                        # Make sure we have a valid datetime object
+                        if isinstance(version.planned_end_time, datetime):
+                            if latest_end is None or version.planned_end_time > latest_end:
+                                latest_end = version.planned_end_time
+                        else:
+                            # Log error or handle invalid date format
+                            pass
 
-            # Determine completion status
+            # Update with validated dates
+            planned_start_time = earliest_start
+            planned_end_time = latest_end
+
+            # Determine completion status based on all scheduled items being completed
             completed_count = 0
             total_versions = 0
 
@@ -85,7 +94,7 @@ def determine_scheduling_status(order, current_time):
 
                 for version in versions:
                     total_versions += 1
-                    if version.completed_quantity >= version.planned_quantity:
+                    if version.completed_quantity and version.completed_quantity >= version.planned_quantity:
                         completed_count += 1
 
             # Determine schedule status based on dates and completion
@@ -93,54 +102,34 @@ def determine_scheduling_status(order, current_time):
                 scheduling_status = "Completed"
                 is_changeable = False
                 reason = "Part is already completed"
-            elif earliest_start and latest_end and earliest_start <= current_time and latest_end > current_time:
-                scheduling_status = "In Progress"
-                # Changed to allow priority updates for parts in production
-                is_changeable = True
-                reason = "Part is currently in production"
-            elif earliest_start and earliest_start > current_time:
-                days_until_start = (earliest_start - current_time).days
-                scheduling_status = "Scheduled Future"
-                is_changeable = True
-                reason = f"Part is scheduled to start in the future ({days_until_start} days)"
-            elif project_start and project_end:
-                # Use project dates as fallback if no schedule items found
-                if project_start <= current_time and project_end > current_time:
-                    scheduling_status = "Project Active"
-                    is_changeable = True
-                    reason = "Part belongs to an active project"
-                elif project_start > current_time:
-                    scheduling_status = "Project Future"
-                    is_changeable = True
-                    reason = "Part belongs to a future project"
-                else:
-                    scheduling_status = "Project Ended"
+            elif planned_start_time and planned_end_time:
+                if planned_end_time < current_time:
+                    scheduling_status = "Past Due"
                     is_changeable = False
-                    reason = "Project end date has passed"
+                    reason = "Part production window has passed"
+                elif planned_start_time <= current_time and planned_end_time > current_time:
+                    scheduling_status = "In Progress"
+                    is_changeable = True
+                    reason = "Part is currently in production"
+                elif planned_start_time > current_time:
+                    days_until_start = (planned_start_time - current_time).days
+                    scheduling_status = "Scheduled Future"
+                    is_changeable = True
+                    reason = f"Part is scheduled to start in the future ({days_until_start} days)"
+                else:
+                    scheduling_status = "Scheduled Today/Soon"
+                    is_changeable = True
+                    reason = "Part is scheduled to start soon"
             else:
-                scheduling_status = "Scheduled Today/Soon"
+                scheduling_status = "Not Scheduled"
                 is_changeable = True
-                reason = "Part is scheduled to start soon"
-        elif project_start and project_end:
-            # Use project dates if no schedule items found
-            if project_start <= current_time and project_end > current_time:
-                scheduling_status = "Project Active"
-                is_changeable = True
-                reason = "Part belongs to an active project"
-            elif project_start > current_time:
-                scheduling_status = "Project Future"
-                is_changeable = True
-                reason = "Part belongs to a future project"
-            else:
-                scheduling_status = "Project Ended"
-                is_changeable = False
-                reason = "Project end date has passed"
+                reason = "Part is not yet scheduled"
 
-        return earliest_start, latest_end, project_start, project_end, project_delivery, scheduling_status, is_changeable, reason
+        return planned_start_time, planned_end_time, scheduling_status, is_changeable, reason
 
     except Exception as e:
         # If any error occurs, return default values with error information
-        return None, None, None, None, None, "Error", True, f"Error determining status: {str(e)}"
+        return None, None, "Error", True, f"Error determining status: {str(e)}"
 
 
 @router.get("/details", response_model=List[PriorityDetails])
@@ -148,7 +137,7 @@ def determine_scheduling_status(order, current_time):
 def get_priority_details():
     """
     Get comprehensive priority details for all active parts
-    Includes scheduling information and priority changeability
+    Includes scheduling information from planned times
     """
     try:
         current_time = datetime.now()
@@ -169,22 +158,26 @@ def get_priority_details():
                 if not order:
                     continue
 
-                # Get current project priority
-                current_priority = order.project.priority if order and order.project else 999
+                # Get current project priority directly from the order's project
+                current_priority = order.project.priority if order and order.project else 0
 
                 # Get scheduling status using helper function
-                earliest_start, latest_end, project_start, project_end, project_delivery, scheduling_status, is_changeable, reason = determine_scheduling_status(
+                planned_start_time, planned_end_time, scheduling_status, is_changeable, reason = determine_scheduling_status(
                     order, current_time)
+
+                # Double-check that dates are valid before including in response
+                if planned_start_time and not isinstance(planned_start_time, datetime):
+                    planned_start_time = None
+
+                if planned_end_time and not isinstance(planned_end_time, datetime):
+                    planned_end_time = None
 
                 priority_details.append(PriorityDetails(
                     part_number=part_number,
                     current_priority=current_priority,
                     current_status=part_status.status,
-                    scheduled_start=earliest_start,
-                    scheduled_end=latest_end,
-                    project_start=project_start,
-                    project_end=project_end,
-                    project_delivery=project_delivery,
+                    planned_start_time=planned_start_time,
+                    planned_end_time=planned_end_time,
                     is_changeable=is_changeable,
                     scheduling_status=scheduling_status,
                     reason=reason
@@ -223,22 +216,26 @@ def get_single_part_priority(part_number: str):
         if not part_status:
             raise HTTPException(status_code=404, detail=f"Part status for {part_number} not found")
 
-        # Get current project priority
-        current_priority = order.project.priority if order.project else 999
+        # Get current project priority directly from the order's project
+        current_priority = order.project.priority if order.project else 0
 
         # Get scheduling status using helper function
-        earliest_start, latest_end, project_start, project_end, project_delivery, scheduling_status, is_changeable, reason = determine_scheduling_status(
+        planned_start_time, planned_end_time, scheduling_status, is_changeable, reason = determine_scheduling_status(
             order, current_time)
+
+        # Validate datetime objects before returning
+        if planned_start_time and not isinstance(planned_start_time, datetime):
+            planned_start_time = None
+
+        if planned_end_time and not isinstance(planned_end_time, datetime):
+            planned_end_time = None
 
         return PriorityDetails(
             part_number=part_number,
             current_priority=current_priority,
             current_status=part_status.status,
-            scheduled_start=earliest_start,
-            scheduled_end=latest_end,
-            project_start=project_start,
-            project_end=project_end,
-            project_delivery=project_delivery,
+            planned_start_time=planned_start_time,
+            planned_end_time=planned_end_time,
             is_changeable=is_changeable,
             scheduling_status=scheduling_status,
             reason=reason
@@ -253,21 +250,132 @@ def get_single_part_priority(part_number: str):
 @db_session
 def update_part_priority(update_request: PriorityUpdateRequest):
     """
-    Update part priority based on schedule version's planned start/end times
-    - Only prevents changes for currently scheduled or past scheduled parts
-    - Allows changes for parts scheduled in the future
+    Update priority for a specific part by part number
+    Only allows changes for parts that are not completed or past due
     """
     try:
         current_time = datetime.now()
+        part_number = update_request.part_number
+        new_priority = update_request.new_priority
 
         # Find the order
-        order = Order.select(lambda o: o.part_number == update_request.part_number).first()
+        order = Order.select(lambda o: o.part_number == part_number).first()
         if not order:
-            raise HTTPException(status_code=404, detail=f"Part {update_request.part_number} not found")
+            raise HTTPException(status_code=404, detail=f"Part {part_number} not found")
+
+        # Get scheduling status
+        planned_start_time, planned_end_time, scheduling_status, is_changeable, reason = determine_scheduling_status(
+            order, current_time)
+
+        # Check if part can have its priority changed
+        if not is_changeable:
+            raise HTTPException(status_code=400,
+                                detail=f"Cannot change priority for this part: {reason}")
+
+        # Get current part status
+        part_status = PartScheduleStatus.select(lambda p: p.part_number == part_number).first()
+        if not part_status or part_status.status != 'active':
+            raise HTTPException(status_code=400, detail="Part is not active for priority update")
+
+        # Get the old priority before updating
+        old_priority = 0
+        if order.project:
+            old_priority = order.project.priority
+
+            # Only update if the priority is actually changing
+            if old_priority == new_priority:
+                return PriorityDetails(
+                    part_number=part_number,
+                    current_priority=old_priority,
+                    current_status=part_status.status,
+                    planned_start_time=planned_start_time,
+                    planned_end_time=planned_end_time,
+                    is_changeable=is_changeable,
+                    scheduling_status=scheduling_status,
+                    reason="Priority unchanged (same as current)"
+                )
+
+            # Get all projects ordered by priority for reordering
+            all_projects = select(p for p in Project).order_by(Project.priority)[:]
+
+            # If moving to a higher priority (lower number)
+            if new_priority < old_priority:
+                # Shift down projects that are between new and old priority
+                for project in all_projects:
+                    if project.id != order.project.id and new_priority <= project.priority < old_priority:
+                        project.priority += 1
+
+            # If moving to a lower priority (higher number)
+            elif new_priority > old_priority:
+                # Shift up projects that are between old and new priority
+                for project in all_projects:
+                    if project.id != order.project.id and old_priority < project.priority <= new_priority:
+                        project.priority -= 1
+
+            # Set the new priority for the current project
+            order.project.priority = new_priority
+        else:
+            # Create a new project if none exists
+            order.project = Project(
+                name=f"Project {order.part_number}",
+                priority=new_priority,
+                start_date=current_time,
+                end_date=current_time + timedelta(days=30),
+                delivery_date=current_time + timedelta(days=30)
+            )
+
+        commit()
+
+        # Get the actual new priority (in case it was adjusted)
+        current_priority = order.project.priority if order.project else new_priority
+
+        # Get up-to-date scheduling information for response
+        updated_start, updated_end, updated_status, updated_changeable, updated_reason = determine_scheduling_status(
+            order, current_time)
+
+        # Validate datetime objects
+        if updated_start and not isinstance(updated_start, datetime):
+            updated_start = None
+
+        if updated_end and not isinstance(updated_end, datetime):
+            updated_end = None
+
+        return PriorityDetails(
+            part_number=part_number,
+            current_priority=current_priority,
+            current_status=part_status.status,
+            planned_start_time=updated_start,
+            planned_end_time=updated_end,
+            is_changeable=updated_changeable,
+            scheduling_status=updated_status,
+            reason=f"Priority updated from {old_priority} to {current_priority}"
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error updating priority: {str(e)}")
+
+
+@router.put("/order/{order_id}/priority", response_model=PriorityDetails)
+@db_session
+def update_order_priority(order_id: int, priority_data: ProjectPriorityUpdateRequest):
+    """
+    Update priority for an order by ID, with completion status checks
+    Only allowing changes for parts that are not completed or past due
+    """
+    try:
+        current_time = datetime.now()
+        new_priority = priority_data.priority
+
+        # Find the order by ID
+        order = Order.get(id=order_id)
+        if not order:
+            raise HTTPException(status_code=404, detail=f"Order with ID {order_id} not found")
 
         # Check part status
         part_status = PartScheduleStatus.select(
-            lambda p: p.part_number == update_request.part_number
+            lambda p: p.part_number == order.part_number
         ).first()
 
         if not part_status or part_status.status != 'active':
@@ -276,124 +384,92 @@ def update_part_priority(update_request: PriorityUpdateRequest):
                 detail="Part is not active for priority update"
             )
 
-        # Check schedule versions directly to determine if priority can be changed
-        schedule_items = select(psi for psi in PlannedScheduleItem if psi.order == order)
+        # Get scheduling status using helper function
+        planned_start_time, planned_end_time, scheduling_status, is_changeable, reason = determine_scheduling_status(
+            order, current_time)
 
-        # Initialize flags to track schedule status
-        is_currently_scheduled = False
-        is_past_scheduled = False
-        earliest_future_start = None
+        # Check if part can have its priority changed
+        if not is_changeable:
+            raise HTTPException(status_code=400,
+                                detail=f"Cannot change priority for this part: {reason}")
 
-        for item in schedule_items:
-            versions = select(sv for sv in ScheduleVersion
-                              if sv.schedule_item == item and sv.is_active)
+        # Get the old priority before updating
+        old_priority = 0
 
-            for version in versions:
-                # If we have start and end times, check scheduling status
-                if version.planned_start_time and version.planned_end_time:
-                    # Part is currently scheduled
-                    if version.planned_start_time <= current_time <= version.planned_end_time:
-                        is_currently_scheduled = True
-
-                    # Part was scheduled in the past
-                    elif version.planned_end_time < current_time:
-                        is_past_scheduled = True
-
-                    # Part is scheduled for the future
-                    elif version.planned_start_time > current_time:
-                        if earliest_future_start is None or version.planned_start_time < earliest_future_start:
-                            earliest_future_start = version.planned_start_time
-
-        # Check if priority change is allowed based on schedule
-        if is_currently_scheduled:
-            raise HTTPException(
-                status_code=400,
-                detail="Cannot change priority for a part that is currently scheduled"
+        # Check if order has an associated project
+        if not order.project:
+            # Create a new project if none exists
+            project = Project(
+                name=f"Project for {order.part_number}",
+                priority=new_priority,
+                start_date=current_time,
+                end_date=current_time + timedelta(days=30),
+                delivery_date=current_time + timedelta(days=30)
             )
-
-        if is_past_scheduled:
-            raise HTTPException(
-                status_code=400,
-                detail="Cannot change priority for a part that was scheduled in the past"
-            )
-
-        # Get current priority
-        old_priority = order.project.priority if order.project else 999
-
-        # Update priority
-        try:
-            if not order.project:
-                # Create a new project if none exists
-                project = Project(
-                    name=f"Project for {update_request.part_number}",
-                    priority=update_request.new_priority,
-                    start_date=current_time,
-                    end_date=current_time + timedelta(days=30),
-                    delivery_date=current_time + timedelta(days=30)
-                )
-                order.project = project
-            else:
-                # Update priority
-                order.project.priority = update_request.new_priority
-
-            # Commit changes
-            commit()
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Error updating priority: {str(e)}")
-
-        # Get scheduling information after update for response
-        # Note: We're no longer using determine_scheduling_status here since
-        # we've already performed our custom scheduling checks
-        earliest_start = None
-        latest_end = None
-        project_start = None
-        project_end = None
-        project_delivery = None
-
-        # Get project dates
-        if order.project:
-            project_start = order.project.start_date
-            project_end = order.project.end_date
-            project_delivery = order.project.delivery_date
-
-        # Get earliest start and latest end from schedule versions
-        for item in schedule_items:
-            versions = select(sv for sv in ScheduleVersion
-                              if sv.schedule_item == item and sv.is_active)
-
-            for version in versions:
-                if version.planned_start_time and (earliest_start is None or
-                                                   version.planned_start_time < earliest_start):
-                    earliest_start = version.planned_start_time
-
-                if version.planned_end_time and (latest_end is None or
-                                                 version.planned_end_time > latest_end):
-                    latest_end = version.planned_end_time
-
-        # Determine scheduling status based on our calculations
-        if earliest_future_start:
-            scheduling_status = "Scheduled Future"
-            days_until_start = (earliest_future_start - current_time).days
-            reason = f"Part is scheduled to start in the future ({days_until_start} days)"
-        elif not schedule_items.count():
-            scheduling_status = "Not Scheduled"
-            reason = "Part is not scheduled yet"
+            order.project = project
         else:
-            scheduling_status = "Scheduling Checked"
-            reason = "No scheduling conflicts found"
+            current_project = order.project
+            old_priority = current_project.priority
+
+            # If the priority is the same, no change needed
+            if old_priority == new_priority:
+                return PriorityDetails(
+                    part_number=order.part_number,
+                    current_priority=old_priority,
+                    current_status=part_status.status if part_status else "unknown",
+                    planned_start_time=planned_start_time,
+                    planned_end_time=planned_end_time,
+                    is_changeable=is_changeable,
+                    scheduling_status=scheduling_status,
+                    reason="Priority unchanged (same as current)"
+                )
+
+            # Get all projects ordered by priority
+            all_projects = select(p for p in Project).order_by(Project.priority)[:]
+
+            # Moving to a higher priority (lower number)
+            if new_priority < old_priority:
+                # Shift down projects that are between new and old priority
+                for project in all_projects:
+                    if project.id != current_project.id and new_priority <= project.priority < old_priority:
+                        project.priority += 1
+
+            # Moving to a lower priority (higher number)
+            elif new_priority > old_priority:
+                # Shift up projects that are between old and new priority
+                for project in all_projects:
+                    if project.id != current_project.id and old_priority < project.priority <= new_priority:
+                        project.priority -= 1
+
+            # Set the new priority for the current project
+            current_project.priority = new_priority
+
+        # Commit changes
+        commit()
+
+        # Get the actual new priority (in case it was adjusted during reordering)
+        current_priority = order.project.priority if order.project else new_priority
+
+        # Get up-to-date scheduling information for response
+        updated_start, updated_end, updated_status, updated_changeable, updated_reason = determine_scheduling_status(
+            order, current_time)
+
+        # Validate datetime objects
+        if updated_start and not isinstance(updated_start, datetime):
+            updated_start = None
+
+        if updated_end and not isinstance(updated_end, datetime):
+            updated_end = None
 
         return PriorityDetails(
-            part_number=update_request.part_number,
-            current_priority=update_request.new_priority,
-            current_status=part_status.status,
-            scheduled_start=earliest_start,
-            scheduled_end=latest_end,
-            project_start=project_start,
-            project_end=project_end,
-            project_delivery=project_delivery,
-            is_changeable=True,
-            scheduling_status=scheduling_status,
-            reason=f"Priority successfully updated from {old_priority} to {update_request.new_priority}"
+            part_number=order.part_number,
+            current_priority=current_priority,
+            current_status=part_status.status if part_status else "unknown",
+            planned_start_time=updated_start,
+            planned_end_time=updated_end,
+            is_changeable=updated_changeable,
+            scheduling_status=updated_status,
+            reason=f"Priority successfully updated from {old_priority} to {current_priority}"
         )
 
     except HTTPException:
@@ -424,12 +500,19 @@ def get_changeable_parts():
                 if not order:
                     continue
 
-                # Get current project priority
-                current_priority = order.project.priority if order.project else 999
+                # Get current project priority directly from order's project
+                current_priority = order.project.priority if order.project else 0
 
                 # Get scheduling status using helper function
-                earliest_start, latest_end, project_start, project_end, project_delivery, scheduling_status, is_changeable, reason = determine_scheduling_status(
+                planned_start_time, planned_end_time, scheduling_status, is_changeable, reason = determine_scheduling_status(
                     order, current_time)
+
+                # Validate datetime objects
+                if planned_start_time and not isinstance(planned_start_time, datetime):
+                    planned_start_time = None
+
+                if planned_end_time and not isinstance(planned_end_time, datetime):
+                    planned_end_time = None
 
                 # Only include changeable parts
                 if is_changeable:
@@ -437,11 +520,8 @@ def get_changeable_parts():
                         part_number=part_number,
                         current_priority=current_priority,
                         current_status=part_status.status,
-                        scheduled_start=earliest_start,
-                        scheduled_end=latest_end,
-                        project_start=project_start,
-                        project_end=project_end,
-                        project_delivery=project_delivery,
+                        planned_start_time=planned_start_time,
+                        planned_end_time=planned_end_time,
                         is_changeable=is_changeable,
                         scheduling_status=scheduling_status,
                         reason=reason
@@ -456,6 +536,3 @@ def get_changeable_parts():
         return priority_details
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error retrieving changeable parts: {str(e)}")
-
-# Include this router in your main FastAPI app
-# app.include_router(router)
