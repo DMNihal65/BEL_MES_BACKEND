@@ -862,9 +862,10 @@ async def get_work_centers():
             detail=f"Error retrieving work centers: {str(e)}"
         )
 
+
 @router.get("/search_order2")
 async def search_order(
-    production_order: Optional[str] = Query(None, min_length=1)
+        production_order: Optional[str] = Query(None, min_length=1)
 ):
     """Get order details by production order number"""
     try:
@@ -878,60 +879,81 @@ async def search_order(
                 return {"orders": []}
 
             response_data = {
-                "orders": [
-                    {
-                        "id": order.id,
-                        "production_order": order.production_order,
-                        "sale_order": order.sale_order,
-                        "wbs_element": order.wbs_element,
-                        "part_number": order.part_number,
-                        "part_description": order.part_description,
-                        "total_operations": order.total_operations,
-                        "required_quantity": order.required_quantity,
-                        "launched_quantity": order.launched_quantity,
-                        "plant_id": order.plant_id,
-                        "project": {
-                            "id": order.project.id,
-                            "name": order.project.name,
-                            "priority": order.project.priority,
-                            "start_date": order.project.start_date,
-                            "end_date": order.project.end_date
-                        } if order.project else None,
-                        "operations": [
-                            {
-                                "id": op.id,
-                                "operation_number": op.operation_number,
-                                "operation_description": op.operation_description,
-                                "setup_time": op.setup_time,
-                                "ideal_cycle_time": op.ideal_cycle_time,
-                                "work_center": op.work_center.code if op.work_center else None,
-                                "primary_machine": {
-                                    "id": op.machine.id,
-                                    "name": f"{op.machine.make} {op.machine.model}"
-                                } if op.machine else None,
-                                "work_center_machines": [
-                                    {
-                                        "id": machine.id,
-                                        "make": machine.make,
-                                        "model": machine.model,
-                                        "type": machine.type
-                                    }
-                                    for machine in op.work_center.machines
-                                ] if op.work_center else []
-                            }
-                            for op in order.operations
-                        ]
-                    }
-                    for order in orders
-                ]
+                "orders": []
             }
+
+            for order in orders:
+                # Get raw materials associated with this order
+                raw_materials = select(rm for rm in RawMaterial if order in rm.orders)[:]
+
+                order_data = {
+                    "id": order.id,
+                    "production_order": order.production_order,
+                    "sale_order": order.sale_order,
+                    "wbs_element": order.wbs_element,
+                    "part_number": order.part_number,
+                    "part_description": order.part_description,
+                    "total_operations": order.total_operations,
+                    "required_quantity": order.required_quantity,
+                    "launched_quantity": order.launched_quantity,
+                    "plant_id": order.plant_id,
+                    "project": {
+                        "id": order.project.id,
+                        "name": order.project.name,
+                        "priority": order.project.priority,
+                        "start_date": order.project.start_date,
+                        "end_date": order.project.end_date
+                    } if order.project else None,
+                    "raw_materials": [
+                        {
+                            "id": raw_material.id,
+                            "child_part_number": raw_material.child_part_number,
+                            "description": raw_material.description,
+                            "quantity": float(raw_material.quantity),
+                            "unit": {
+                                "id": raw_material.unit.id,
+                                "name": raw_material.unit.name
+                            },
+                            "status": {
+                                "id": raw_material.status.id,
+                                "name": raw_material.status.name
+                            },
+                            "available_from": raw_material.available_from.isoformat() if raw_material.available_from else None
+                        }
+                        for raw_material in raw_materials
+                    ],
+                    "operations": [
+                        {
+                            "id": op.id,
+                            "operation_number": op.operation_number,
+                            "operation_description": op.operation_description,
+                            "setup_time": op.setup_time,
+                            "ideal_cycle_time": op.ideal_cycle_time,
+                            "work_center": op.work_center.code if op.work_center else None,
+                            "primary_machine": {
+                                "id": op.machine.id,
+                                "name": f"{op.machine.make} {op.machine.model}"
+                            } if op.machine else None,
+                            "work_center_machines": [
+                                {
+                                    "id": machine.id,
+                                    "make": machine.make,
+                                    "model": machine.model,
+                                    "type": machine.type
+                                }
+                                for machine in op.work_center.machines
+                            ] if op.work_center else []
+                        }
+                        for op in order.operations
+                    ]
+                }
+
+                response_data["orders"].append(order_data)
 
             return response_data
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
-
-
 
 
 

@@ -120,11 +120,11 @@ async def shutdown_event():
     logger.info("----------------------------")
 
 # uvicorn app.main:app --reload
-# uvicorn app.main:app --host 172.18.7.88 --port 1537 --reload
+# uvicorn app.main:app --host 172.18.7.88 --port 6454 --reload
 
 # uvicorn app.main:app --host 172.18.7.88 --port 3282 --reload
 
 
-# uvicorn app.main:app --host 172.18.7.88 --port 4660 --reload
+# uvicorn app.main:app --host 172.18.7.88 --port 6767 --reload
 
 # uvicorn app.main:app --host 172.18.7.89 --port 4470 --reload

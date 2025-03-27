@@ -21,10 +21,10 @@ router = APIRouter(prefix="/api/v1/scheduling", tags=["scheduling"])
 from datetime import datetime, timezone, timedelta
 
 
-@router.post("/set-part-status/{part_number}")
-async def set_part_status(part_number: str, status_update: PartStatusUpdate = None, status: str = None):
+@router.post("/set-part-status/{production_order}")
+async def set_part_status(production_order: str, status_update: PartStatusUpdate = None, status: str = None):
     """
-    Set whether a part number should be included in scheduling
+    Set whether a production order should be included in scheduling
     When setting to 'active', captures the current timestamp for scheduling
 
     Can accept status either as a query parameter or in the request body
@@ -50,16 +50,16 @@ async def set_part_status(part_number: str, status_update: PartStatusUpdate = No
 
     try:
         with db_session:
-            # First verify part number exists in master_order
-            order = Order.get(part_number=part_number)
+            # First verify production order exists in master_order
+            order = Order.get(production_order=production_order)
             if not order:
                 raise HTTPException(
                     status_code=404,
-                    detail=f"Part number {part_number} not found in master_order"
+                    detail=f"Production order {production_order} not found in master_order"
                 )
 
             # Find or create status record
-            status_record = PartScheduleStatus.get(part_number=part_number)
+            status_record = PartScheduleStatus.get(production_order=production_order)
             # Create full timestamp with both date and time in UTC
             current_time_utc = datetime.utcnow()
 
@@ -70,7 +70,8 @@ async def set_part_status(part_number: str, status_update: PartStatusUpdate = No
             if not status_record:
                 # Create new status record (still store UTC in database)
                 status_record = PartScheduleStatus(
-                    part_number=part_number,
+                    production_order=production_order,
+                    part_number=order.part_number,
                     status=final_status,
                     created_at=current_time_utc,
                     updated_at=current_time_utc
@@ -87,9 +88,10 @@ async def set_part_status(part_number: str, status_update: PartStatusUpdate = No
             activation_time_str = current_time_ist.strftime("%Y-%m-%d %H:%M:%S") if final_status == 'active' else None
 
             return {
-                "message": f"Part number {part_number} status set to {final_status}",
+                "message": f"Production order {production_order} status set to {final_status}",
                 "will_be_scheduled": final_status == 'active',
-                "activation_time": activation_time_str
+                "activation_time": activation_time_str,
+                "part_number": order.part_number
             }
 
     except Exception as e:
@@ -102,12 +104,11 @@ async def get_active_parts():
     try:
         with db_session:
             active_items = select((
+                                      p.production_order,
                                       p.part_number,
                                       p.status,
-                                      p.updated_at,
-                                      o.production_order
-                                  ) for p in PartScheduleStatus
-                                  for o in Order if o.part_number == p.part_number)[:]
+                                      p.updated_at
+                                  ) for p in PartScheduleStatus)[:]
 
             # Convert UTC to IST (UTC+5:30)
             ist_offset = timedelta(hours=5, minutes=30)
@@ -115,13 +116,13 @@ async def get_active_parts():
             return {
                 "active_parts": [
                     {
+                        "production_order": production_order,
                         "part_number": part_number,
                         "status": status,
                         "activation_time": (updated_at + ist_offset).strftime(
-                            "%Y-%m-%d %H:%M:%S") if status == 'active' and updated_at else None,
-                        "production_order": prod_order
+                            "%Y-%m-%d %H:%M:%S") if status == 'active' and updated_at else None
                     }
-                    for part_number, status, updated_at, prod_order in active_items
+                    for production_order, part_number, status, updated_at in active_items
                 ]
             }
 
@@ -337,9 +338,9 @@ async def schedule():
         if df.empty:
             return ScheduleResponse(
                 scheduled_operations=[],
-                overall_end_time=None,
+                overall_end_time=datetime.utcnow(),  # Provide a default datetime
                 overall_time="0",
-                daily_production=[],
+                daily_production={},  # Use an empty dictionary instead of an empty list
                 component_status={},
                 partially_completed=[],
                 work_centers=work_centers_data
@@ -393,6 +394,14 @@ async def schedule():
                         production_order=orders_map.get(row['partno'], '')
                     )
                 )
+
+        # Ensure correct types for overall_end_time and daily_production
+        if overall_end_time is None:
+            overall_end_time = datetime.utcnow()
+
+        # Convert daily_production from list to dict if needed
+        if isinstance(daily_production, list):
+            daily_production = {}
 
         # Always return work_centers_data, even if it's empty
         return ScheduleResponse(

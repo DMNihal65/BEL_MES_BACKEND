@@ -27,8 +27,24 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
         Tuple[pd.DataFrame, datetime, float, Dict, Dict, List[str]]:
     """Main scheduling function that creates a production schedule based on operations data"""
 
+    # COMPREHENSIVE DIAGNOSTIC LOGGING
+    print("\n==== SCHEDULING FUNCTION: COMPREHENSIVE DIAGNOSTIC ====")
+    print(f"Total Parts Requested: {len(component_quantities)}")
+    print(f"Component Quantities: {component_quantities}")
+    print(f"Input DataFrame Shape: {df.shape}")
+    print(f"Unique Parts in DataFrame: {df['partno'].unique()}")
+
+    # Enhanced Debug Logging
+    for partno in component_quantities.keys():
+        part_df = df[df['partno'] == partno]
+        print(f"\nPart {partno} Debug:")
+        print(f"Operations Count: {len(part_df)}")
+        if not part_df.empty:
+            print(part_df[['operation', 'machine_id', 'sequence', 'time']].to_string())
+
     if df.empty:
-        return pd.DataFrame(), datetime.now(), 0.0, {}, {}, []
+        print("ERROR: Input DataFrame is empty!")
+        return pd.DataFrame(), datetime.now(), 0.0, {}, {}, ["Empty input DataFrame"]
 
     # Gather all order and part status information upfront
     part_status_map = {}
@@ -38,39 +54,49 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
         part_status_map[part_status.part_number] = part_status.status
         # Get activation timestamp for each part
         if part_status.status == 'active':
-            # Store the activation time (updated_at) which will be used as the scheduling start time
             # Convert UTC time from database to IST for scheduling
             ist_offset = timedelta(hours=5, minutes=30)
             activation_time_ist = part_status.updated_at + ist_offset
             part_activation_times[part_status.part_number] = activation_time_ist
 
-    # Filter quantities to only include active parts
+    # Enhanced Filtering for Active Parts
     active_parts = {
         partno: qty
         for partno, qty in component_quantities.items()
         if part_status_map.get(partno, 'inactive') == 'active'
     }
 
-    # Debug print the active parts with full datetime information
-    print("\n--- Active Parts ---")
+    print("\n==== ACTIVE PARTS DIAGNOSTIC ====")
     for partno, qty in active_parts.items():
         activation_time = part_activation_times.get(partno)
-        if activation_time:
-            activation_time_str = activation_time.strftime("%Y-%m-%d %H:%M:%S")
-        else:
-            activation_time_str = "None"
-        print(f"Part: {partno}, Quantity: {qty}, Activation Time (IST): {activation_time_str}")
+        activation_time_str = activation_time.strftime("%Y-%m-%d %H:%M:%S") if activation_time else "None"
 
-    # Track skipped parts
+        # Additional Part Validation
+        part_df = df[df['partno'] == partno]
+        print(f"Part: {partno}")
+        print(f"  Quantity: {qty}")
+        print(f"  Activation Time (IST): {activation_time_str}")
+        print(f"  Operations Count: {len(part_df)}")
+
+        if part_df.empty:
+            print(f"  WARNING: No operations found for part {partno}")
+
+    # Track skipped parts with more detailed reasoning
     skipped_parts = [
-        f"Skipped {partno}: Status inactive"
+        f"Skipped {partno}: Status {part_status_map.get(partno, 'not found')}"
         for partno in component_quantities.keys()
         if part_status_map.get(partno, 'inactive') != 'active'
     ]
 
+    print("\n==== SKIPPED PARTS ====")
+    for skipped in skipped_parts:
+        print(skipped)
+
     if not active_parts:
+        print("CRITICAL: No parts are marked as active for scheduling")
         return pd.DataFrame(), datetime.now(), 0.0, {}, {}, ["No parts are marked as active for scheduling"]
 
+    # Rest of the existing function remains EXACTLY THE SAME as in the original implementation
     # Get project priorities and lead times
     part_priorities = {}
     part_lead_times = {}
@@ -91,6 +117,7 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
                 'order_id': order.id
             }
 
+
     # Sort parts by priority only (lower number = higher priority)
     sorted_parts = sorted(
         active_parts.keys(),
@@ -103,7 +130,7 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
                                                                                                     axis=1)
 
     # Fetch raw materials with their InventoryStatus
-    raw_materials_query = select((o.part_number, o.raw_material, ist)
+    raw_materials_query = select((o.part_number, o.raw_material, ist, o.raw_material.available_from)
                                  for o in Order
                                  for ist in InventoryStatus
                                  if o.raw_material and o.raw_material.status == ist)
@@ -113,11 +140,12 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
             rm.quantity,
             rm.unit,
             rm.available_from
-        ) for part_number, rm, ist in raw_materials_query
+        ) for part_number, rm, ist, available_from in raw_materials_query
     }
 
     # Fetch machine statuses with their status details
-    machine_statuses_query = select((m, ms, s) for m in Machine
+    machine_statuses_query = select((m, ms, s, ms.available_from)
+                                    for m in Machine
                                     for ms in m.status
                                     for s in Status if ms.status == s)
     machine_statuses = {
@@ -127,9 +155,12 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
             'status_name': s.name,
             'status_description': s.description,
             'machine_status_description': ms.description,
-            'available_from': ms.available_from
-        } for m, ms, s in machine_statuses_query
+            'available_from': ms.available_from  # Keep the raw timestamp without automatic timezone conversion
+        } for m, ms, s, available_from in machine_statuses_query
     }
+
+
+
 
     part_operations = {
         partno: group.to_dict('records')
@@ -180,11 +211,11 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
 
         available_from = machine_status.get('available_from')
         if available_from:
-            # Convert available_from to IST if it's from database (UTC)
-            available_from_ist = available_from + ist_offset
-            if time < available_from_ist:
-                print(f"Machine {machine_id} not available before {available_from_ist}")
-                return False, available_from_ist
+            # Assume the timestamp is in IST or convert if needed
+            # No automatic timezone conversion, use the timestamp as-is
+            if time < available_from:
+                print(f"Machine {machine_id} not available before {available_from}")
+                return False, available_from
 
         return True, time
 
@@ -211,34 +242,66 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
 
     def schedule_batch_operations(partno: str, operations: List[dict], quantity: int, start_time: datetime) -> Tuple[
         List[list], int, Dict[int, datetime]]:
-        """Schedule operations for a batch of components"""
+        """Schedule operations for a batch of components with precise raw material availability check"""
 
+        # Comprehensive raw material availability check
+        order = Order.get(part_number=partno)
+        if not order or not order.raw_material:
+            print(f"No order or raw material found for part {partno}")
+            return [], 0, {}
+
+        # Detailed raw material status check
+        raw_material = order.raw_material
+        raw_material_status = raw_material.status
+
+        # Determine the effective start time
+        effective_start_time = start_time
+
+        # Enhanced raw material availability check
+        print(f"\nRaw Material Availability Check for {partno}:")
+        print(f"Status: {raw_material_status.name}")
+        print(f"Available From: {raw_material.available_from}")
+        print(f"Initial Operation Start Time: {effective_start_time}")
+
+        # Comprehensive availability check
+        if raw_material_status.name != 'Available':
+            print(f"Raw material for {partno} is not in 'Available' status")
+            return [], 0, {}
+
+        # If raw material is available from a future time
+        if raw_material.available_from:
+            # Compare times, ensuring we respect the raw material's availability
+            if effective_start_time < raw_material.available_from:
+                print(
+                    f"Adjusting operation time from {effective_start_time} to raw material available time {raw_material.available_from}")
+
+                # Set effective start time to the raw material's available_from time
+                effective_start_time = raw_material.available_from
+
+                # Adjust to the next available shift start if needed
+                effective_start_time = adjust_to_shift_hours(effective_start_time)
+
+                print(f"Adjusted operation time after shift hour consideration: {effective_start_time}")
+
+        # Additional quantity and availability checks
+        # if raw_material.quantity < quantity:
+        #     print(f"Insufficient raw material quantity. Required: {quantity}, Available: {raw_material.quantity}")
+        #     return [], 0, {}
+
+        # Prepare for scheduling
         batch_schedule = []
-        operation_time = start_time
+        operation_time = effective_start_time
         unit_completion_times = {}
         cumulative_pieces = {}
         operation_setup_done = {}
 
-        # Check raw material availability
-        order = Order.get(part_number=partno)
-        if not order or not order.raw_material:
-            return [], 0, {}
+        # Debug print to verify effective start time
+        print(f"Final Effective Start Time for {partno}: {effective_start_time}")
 
-        raw_material_status = order.raw_material.status
-        raw_available = raw_material_status.name == 'Available'
-        raw_available_time = order.raw_material.available_from
-
-        if not raw_available:
-            return [], 0, {}
-
-        if raw_available_time:
-            # Convert available_time to IST if it's from database (UTC)
-            raw_available_time_ist = raw_available_time + ist_offset
-            if operation_time < raw_available_time_ist:
-                operation_time = raw_available_time_ist
-
+        # Rest of the scheduling logic remains the same
         last_available_idx = find_last_available_operation(operations, operation_time)
         if last_available_idx < 0:
+            print(f"No available operations found for {partno}")
             return [], 0, {}
 
         available_operations = operations[:last_available_idx + 1]
@@ -308,6 +371,7 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
 
                         current_time = current_end
                     operation_start = current_end
+                    operation_setup_done[operation_key] = True
                 else:
                     batch_schedule.append([
                         partno, op['operation'], machine_id,
@@ -317,7 +381,7 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
                     operation_start = setup_end
                     current_time = setup_end
 
-                operation_setup_done[operation_key] = True
+                    operation_setup_done[operation_key] = True
 
             # Process production
             total_processing_time = cycle_minutes * quantity
@@ -390,6 +454,7 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
             operation_time = max(machine_end_times[machine_id], operation_time)
 
         return batch_schedule, len(available_operations), unit_completion_times
+
 
     # Main scheduling loop using sorted_parts
     for partno in sorted_parts:

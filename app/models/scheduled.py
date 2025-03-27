@@ -7,7 +7,8 @@ class PartScheduleStatus(db.Entity):
     """Controls which parts are active for scheduling"""
     _table_ = ("scheduling", "part_schedule_status")
     id = PrimaryKey(int, auto=True)
-    part_number = Required(str, unique=True)
+    part_number = Required(str)
+    production_order = Required(str, unique=True)  # Add this line
     status = Required(str, default='inactive')  # 'active' or 'inactive'
     created_at = Required(datetime, default=datetime.utcnow)
     updated_at = Required(datetime, default=datetime.utcnow)

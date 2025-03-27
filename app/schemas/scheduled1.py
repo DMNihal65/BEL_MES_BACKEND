@@ -112,3 +112,4 @@ class PartProductionTimeline(BaseModel):
 class PartProductionResponse(BaseModel):
     items: List[PartProductionTimeline]
     total_parts: int
+
