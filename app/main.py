@@ -9,7 +9,7 @@ from .api.v1.endpoints import auth, planning, mpp, operations, scheduled, dynami
 # from .api.v1.endpoints import document_management  # Comment out v1 endpoint
 from .api.v1.endpoints import inventoryv1
 from .api.v1.endpoints import component_status, programs, daily_production
-from .api.v1.endpoints import auth, planning, mpp, operations, scheduled, document_management_v2, production_monitoring
+from .api.v1.endpoints import auth, planning, mpp, operations, scheduled, document_management_v2, production_monitoring, pdc
 import logging
 import os
 from datetime import datetime
@@ -83,6 +83,7 @@ app.include_router(comp_maintainance.router)
 app.include_router(comp_operator.router)
 app.include_router(component_status.router)
 app.include_router(scheduled.router)
+app.include_router(pdc.router)
 app.include_router(production_logs.router)
 app.include_router(priority_scheduling.router)
 app.include_router(dynamic_rescheduling.router)
