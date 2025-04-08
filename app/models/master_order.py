@@ -29,13 +29,13 @@ class Machine(db.Entity):
     cnc_controller_series = Optional(str)
     remarks = Optional(str)
     calibration_date = Optional(datetime)
+    calibration_due_date = Optional(datetime)  # Added this field
     last_maintenance_date = Optional(datetime)
     shifts = Set('MachineShift')
     downtimes = Set('MachineDowntime')
     status = Set('MachineStatus')
     operations = Set('Operation')  # Reverse relationship
     planned_schedule_items = Set('PlannedScheduleItem', reverse='machine')
-
 
 class MachineShift(db.Entity):
     _table_ = ("master_order", "machine_shifts")
@@ -105,6 +105,7 @@ class Order(db.Entity):
     planned_schedule_items = Set('PlannedScheduleItem', reverse='order')
     inventory_requests = Set("InventoryRequest")
     documents_v2 = Set('DocumentV2', reverse='production_order')
+    order_tools = Set("OrderTool", reverse="order")  # Updated relationship name
 
 
 class Operation(db.Entity):
@@ -123,6 +124,8 @@ class Operation(db.Entity):
     programs = Set('Program')
     mpps = Set('MPP', reverse='operation')
     planned_schedule_items = Set('PlannedScheduleItem', reverse='operation')
+    order_tools = Set('OrderTool', reverse='operation')
+
 
     inventory_requests = Set("InventoryRequest")
 
@@ -134,18 +137,37 @@ class ProcessPlan(db.Entity):
     instructions = Optional(str)
     images = Optional(str)
     remarks = Optional(str)
-    program = Optional('Program', reverse='process_plan')
+    # program = Optional('Program', reverse='process_plan')
 
 
 class Program(db.Entity):
     _table_ = ("master_order", "programs")
     id = PrimaryKey(int, auto=True)
     operation = Required(Operation)
-    process_plan = Optional(ProcessPlan)
     program_name = Required(str)
     program_number = Required(str)
     version = Required(str)
     update_date = Required(datetime)
+
+
+class OrderTool(db.Entity):
+    """
+    Table for storing tools used in orders.
+    """
+    _table_ = ("master_order", "order_tools")  # Changed table name to force new creation
+    id = PrimaryKey(int, auto=True)
+    order = Required("Order", reverse="order_tools")
+    operation = Optional("Operation", reverse="order_tools")
+    tool_name = Required(str)
+    tool_number = Required(str)
+    bel_partnumber = Optional(str)
+    description = Optional(str)
+    quantity = Required(int, default=1)
+    created_at = Required(datetime, default=datetime.now)
+    updated_at = Required(datetime, default=datetime.now)
+
+    def before_update(self):
+        self.updated_at = datetime.now()
 
 
 # class Document(db.Entity):

@@ -66,10 +66,12 @@ class ProductionLog(db.Entity):
     """Tracks production progress"""
     _table_ = ("scheduling", "production_logs")
     id = PrimaryKey(int, auto=True)
-    schedule_version = Required(ScheduleVersion)
-    operator = Required(User)
-    start_time = Required(datetime)
+    machine_id = Optional(int)
+    schedule_version = Optional(ScheduleVersion)
+    operator = Optional(User)
+    start_time = Optional(datetime)
     end_time = Optional(datetime)
-    quantity_completed = Required(int)
-    quantity_rejected = Required(int)
+    quantity_completed = Optional(int)
+    quantity_rejected = Optional(int)
     notes = Optional(str)
+

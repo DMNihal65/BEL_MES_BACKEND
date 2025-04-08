@@ -78,3 +78,12 @@ class UserRoleResponse(UserRoleBase):
     id: int
     role_name: str
     access_list: List[str]
+
+class UserRoleResponseNew(BaseModel):
+    id: int
+    role_name: str
+    access_list: List[str]
+    created_at: datetime
+
+    class Config:
+        from_attributes = True

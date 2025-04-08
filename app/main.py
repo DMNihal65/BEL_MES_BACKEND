@@ -3,8 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from .database.connection import connect_to_db
 from .routes import hr_routes, finance_routes, master_order_routes
 from .api.v1.endpoints import document_management, inventoryv1, priority_scheduling
-from .api.v1.endpoints import component_status, programs, daily_production, operator_login
-from .api.v1.endpoints import auth, planning, mpp, operations, scheduled, dynamic_rescheduling, comp_maintainance, comp_operator, document_management_v2, production_monitoring, production
+from .api.v1.endpoints import component_status, programs, daily_production, operator_login, toolsprograms
+from .api.v1.endpoints import auth, planning, mpp, operations, scheduled, dynamic_rescheduling, comp_maintainance, comp_operator, document_management_v2, production_monitoring, production_logs,quality, document_management
 
 
 app = FastAPI(title="BEL MES API")
@@ -29,8 +29,6 @@ async def startup_event():
         raise e
 
 # Include routers
-# app.include_router(hr_routes.router)
-# app.include_router(finance_routes.router)
 app.include_router(auth.router)
 app.include_router(operator_login.router)
 app.include_router(master_order_routes.router)
@@ -41,18 +39,20 @@ app.include_router(comp_maintainance.router)
 app.include_router(comp_operator.router)
 app.include_router(component_status.router)
 app.include_router(scheduled.router)
+app.include_router(production_logs.router)
 app.include_router(priority_scheduling.router)
-app.include_router(production.router)
 app.include_router(dynamic_rescheduling.router)
 app.include_router(programs.router)
+app.include_router(quality.router)
+
 app.include_router(daily_production.router)
 app.include_router(inventoryv1.router, prefix="/api/v1")
-
 
 #######
 app.include_router(document_management_v2.router, prefix="/api/v1/document-management", tags=["documents"])
 app.include_router(inventoryv1.router, prefix="/api/v1")
 app.include_router(production_monitoring.router, tags=["production_monitoring"])
+app.include_router(toolsprograms.router)
 
 
 @app.get("/")
@@ -61,4 +61,5 @@ def read_root():
 
 
 # uvicorn app.main:app --reload
-# uvicorn app.main:app --host 172.18.7.85 --port 6797 --reload
+# uvicorn app.main:app --host 172.18.7.85 --port 6998 --reload
+# uvicorn app.main:app --host 172.18.7.88 --port 6222 --reload

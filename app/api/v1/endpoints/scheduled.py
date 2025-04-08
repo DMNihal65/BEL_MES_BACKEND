@@ -1,8 +1,9 @@
+import calendar
 from collections import defaultdict
-
-from fastapi import APIRouter, HTTPException
+from datetime import datetime, timedelta
+from typing import List, Dict, Any, Optional
+from fastapi import APIRouter, HTTPException, Query
 from pony.orm import db_session, select
-
 from app.models import Order, Operation, Machine, PartScheduleStatus, PlannedScheduleItem, ScheduleVersion, \
     ProductionLog, WorkCenter
 from app.crud.operation import fetch_operations
@@ -10,10 +11,9 @@ from app.crud.component_quantities import fetch_component_quantities
 from app.crud.leadtime import fetch_lead_times
 from app.algorithm.scheduling import schedule_operations
 import re
-
 from app.schemas.operations import WorkCenterMachine
 from app.schemas.scheduled1 import ScheduleResponse, ProductionLogsResponse, ProductionLogResponse, ScheduledOperation, \
-    CombinedScheduleProductionResponse, PartProductionResponse, PartProductionTimeline
+    CombinedScheduleProductionResponse, PartProductionResponse, PartProductionTimeline, MachineUtilization
 
 router = APIRouter(prefix="/api/v1/scheduling", tags=["scheduling"])
 
@@ -808,3 +808,163 @@ async def get_part_production_timeline():
     except Exception as e:
         print(f"Error retrieving part production timeline: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/machine-utilization", response_model=List[MachineUtilization])
+@db_session
+def get_machine_utilization(
+        month: Optional[int] = Query(None, description="Month (1-12)"),
+        year: Optional[int] = Query(None, description="Year (YYYY)"),
+        machine_id: Optional[int] = Query(None, description="Filter by specific machine ID")
+):
+    """
+    Get machine utilization metrics.
+
+    Calculates:
+    - Available hours: working hours (8) * days in month * 12 (months) * 0.85 (efficiency)
+    - Utilized hours: Sum of production time from logs
+    - Remaining hours: Available - Utilized
+    """
+    # Default to current month/year if not specified
+    if not month or not year:
+        current_date = datetime.now()
+        month = month or current_date.month
+        year = year or current_date.year
+
+    # Validate inputs
+    if not 1 <= month <= 12:
+        raise HTTPException(status_code=400, detail="Month must be between 1 and 12")
+
+    # Calculate all days in the month (including weekends)
+    _, days_in_month = calendar.monthrange(year, month)
+
+    # Calculate available hours
+    # Formula: working hours (8) * days in month * 12 (months) * 0.85 (efficiency)
+    efficiency_factor = 0.85
+    daily_working_hours = 8
+    months_in_year = 12
+
+    # Annual calculation projected to the current month
+    available_hours = days_in_month * daily_working_hours * months_in_year * efficiency_factor
+
+    # Set date range for the month
+    start_date = datetime(year, month, 1)
+    if month == 12:
+        end_date = datetime(year + 1, 1, 1)
+    else:
+        end_date = datetime(year, month + 1, 1)
+
+    # Query to fetch machines
+    machines_query = select(m for m in Machine)
+    if machine_id:
+        machines_query = machines_query.filter(lambda m: m.id == machine_id)
+
+    machines = machines_query[:]
+
+    result = []
+    for machine in machines:
+        # Get production logs for this machine in the given month
+        production_logs = select(p for p in ProductionLog
+                                 if p.machine_id == machine.id
+                                 and p.start_time >= start_date
+                                 and p.start_time < end_date
+                                 and p.end_time is not None)
+
+        # Calculate utilized hours from production logs
+        utilized_hours = 0
+        for log in production_logs:
+            # Calculate duration in hours
+            duration = (log.end_time - log.start_time).total_seconds() / 3600
+            utilized_hours += duration
+
+        # Calculate remaining and utilization percentage
+        remaining_hours = max(0, available_hours - utilized_hours)
+        utilization_percentage = (utilized_hours / available_hours * 100) if available_hours > 0 else 0
+
+        # Get the work center name from the related work center
+        work_center_name = machine.work_center.work_center_name if machine.work_center else None
+
+        result.append(MachineUtilization(
+            machine_id=machine.id,
+            machine_type=machine.type,
+            machine_make=machine.make,
+            machine_model=machine.model,
+            work_center_name=work_center_name,
+            available_hours=round(available_hours, 2),
+            utilized_hours=round(utilized_hours, 2),
+            remaining_hours=round(remaining_hours, 2),
+            utilization_percentage=round(utilization_percentage, 2)
+        ))
+
+    return result
+
+
+# Alternative endpoint to get utilization by date range
+@router.get("/machine-utilization/range", response_model=List[MachineUtilization])
+@db_session
+def get_machine_utilization_by_range(
+        start_date: datetime = Query(..., description="Start date (YYYY-MM-DD)"),
+        end_date: datetime = Query(..., description="End date (YYYY-MM-DD)"),
+        machine_id: Optional[int] = Query(None, description="Filter by specific machine ID")
+):
+    """
+    Get machine utilization metrics for a custom date range.
+    """
+    if start_date >= end_date:
+        raise HTTPException(status_code=400, detail="End date must be after start date")
+
+    # Calculate all days in the range (including weekends)
+    days_in_range = (end_date - start_date).days
+
+    # Calculate available hours
+    # Formula: working hours (8) * days in range * 12 (months) * 0.85 (efficiency)
+    efficiency_factor = 0.85
+    daily_working_hours = 8
+    months_in_year = 12
+
+    # Annual calculation projected to the current date range
+    available_hours = days_in_range * daily_working_hours * months_in_year * efficiency_factor
+
+    # Query to fetch machines
+    machines_query = select(m for m in Machine)
+    if machine_id:
+        machines_query = machines_query.filter(lambda m: m.id == machine_id)
+
+    machines = machines_query[:]
+
+    result = []
+    for machine in machines:
+        # Get production logs for this machine in the given date range
+        production_logs = select(p for p in ProductionLog
+                                 if p.machine_id == machine.id
+                                 and p.start_time >= start_date
+                                 and p.start_time < end_date
+                                 and p.end_time is not None)
+
+        # Calculate utilized hours from production logs
+        utilized_hours = 0
+        for log in production_logs:
+            # Calculate duration in hours
+            duration = (log.end_time - log.start_time).total_seconds() / 3600
+            utilized_hours += duration
+
+        # Calculate remaining and utilization percentage
+        remaining_hours = max(0, available_hours - utilized_hours)
+        utilization_percentage = (utilized_hours / available_hours * 100) if available_hours > 0 else 0
+
+        # Get the work center name from the related work center
+        work_center_name = machine.work_center.work_center_name if machine.work_center else None
+
+        result.append(MachineUtilization(
+            machine_id=machine.id,
+            machine_type=machine.type,
+            machine_make=machine.make,
+            machine_model=machine.model,
+            work_center_name=work_center_name,
+            available_hours=round(available_hours, 2),
+            utilized_hours=round(utilized_hours, 2),
+            remaining_hours=round(remaining_hours, 2),
+            utilization_percentage=round(utilization_percentage, 2)
+        ))
+
+    return result

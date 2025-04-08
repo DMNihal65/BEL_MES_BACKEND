@@ -144,6 +144,7 @@ def create_machine(machine: MachineCreate):
             cnc_controller_series=machine.cnc_controller_series,
             remarks=machine.remarks,
             calibration_date=machine.calibration_date,
+            calibration_due_date=machine.calibration_due_date,  # Added this field
             last_maintenance_date=machine.last_maintenance_date
         )
         commit()  # Commit the machine creation
@@ -169,6 +170,7 @@ def create_machine(machine: MachineCreate):
             "cnc_controller_series": db_machine.cnc_controller_series,
             "remarks": db_machine.remarks,
             "calibration_date": db_machine.calibration_date,
+            "calibration_due_date": db_machine.calibration_due_date,  # Added this field
             "last_maintenance_date": db_machine.last_maintenance_date,
             "work_center": {
                 "id": work_center.id,
@@ -182,6 +184,7 @@ def create_machine(machine: MachineCreate):
         # Rollback in case of any error
         rollback()
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.get("/machines/", response_model=List[MachineResponse])
 @db_session
@@ -213,6 +216,7 @@ def get_machines(work_center_code: Optional[str] = None):
                 cnc_controller_series=machine.cnc_controller_series,
                 remarks=machine.remarks,
                 calibration_date=machine.calibration_date,
+                calibration_due_date=machine.calibration_due_date,  # Added this field
                 last_maintenance_date=machine.last_maintenance_date,
                 work_center=WorkCenterResponse(
                     id=machine.work_center.id,
@@ -229,7 +233,6 @@ def get_machines(work_center_code: Optional[str] = None):
             status_code=500,
             detail=f"Error fetching machines: {str(e)}"
         )
-
 
 @router.get("/machines/{machine_id}", response_model=MachineResponse)
 @db_session
@@ -254,6 +257,7 @@ def get_machine(
             cnc_controller_series=machine.cnc_controller_series,
             remarks=machine.remarks,
             calibration_date=machine.calibration_date,
+            calibration_due_date=machine.calibration_due_date,  # Added this field
             last_maintenance_date=machine.last_maintenance_date,
             work_center=WorkCenterResponse(
                 id=machine.work_center.id,
@@ -271,7 +275,6 @@ def get_machine(
             status_code=500,
             detail=f"Error fetching machine: {str(e)}"
         )
-
 
 @router.put("/machines/{machine_id}", response_model=MachineResponse)
 @db_session
@@ -302,6 +305,7 @@ def update_machine(
             "cnc_controller_series": db_machine.cnc_controller_series,
             "remarks": db_machine.remarks,
             "calibration_date": db_machine.calibration_date,
+            "calibration_due_date": db_machine.calibration_due_date,  # Added this field
             "last_maintenance_date": db_machine.last_maintenance_date,
             "work_center": {
                 "id": db_machine.work_center.id,
@@ -316,6 +320,7 @@ def update_machine(
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.delete("/machines/{machine_id}")
 @db_session
@@ -352,6 +357,7 @@ def get_all_machines():
                 cnc_controller_series=machine.cnc_controller_series,
                 remarks=machine.remarks,
                 calibration_date=machine.calibration_date,
+                calibration_due_date=machine.calibration_due_date,  # Added this field
                 last_maintenance_date=machine.last_maintenance_date,
                 work_center=WorkCenterResponse(
                     id=machine.work_center.id,

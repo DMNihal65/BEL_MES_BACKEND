@@ -34,6 +34,7 @@ class MachineBase(BaseModel):
     cnc_controller_series: Optional[str] = Field(None, description="CNC controller series")
     remarks: Optional[str] = Field(None, description="Additional remarks")
     calibration_date: Optional[datetime] = Field(None, description="Last calibration date")
+    calibration_due_date: Optional[datetime] = Field(None, description="Next calibration due date")  # Added this field
     last_maintenance_date: Optional[datetime] = Field(None, description="Last maintenance date")
 
 class MachineCreate(MachineBase):
@@ -48,6 +49,7 @@ class MachineUpdate(BaseModel):
     cnc_controller_series: Optional[str] = None
     remarks: Optional[str] = None
     calibration_date: Optional[datetime] = None
+    calibration_due_date: Optional[datetime] = None  # Added this field
     last_maintenance_date: Optional[datetime] = None
 
 class MachineResponse(MachineBase):
