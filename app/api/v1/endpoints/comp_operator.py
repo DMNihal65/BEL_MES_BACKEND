@@ -143,34 +143,7 @@ async def get_pending_changes():
             detail=f"Error fetching pending changes: {str(e)}"
         )
 
-#
-# @router.get("/Machine-status-Notification")
-# async def get_latest_status_message():
-#     """
-#     Get the latest status message from the system
-#     """
-#     try:
-#         with db_session:
-#             # Get all machine statuses
-#             if not status_messages:
-#                 return {
-#                     "messages": []
-#                 }
-#
-#             # Get the latest messages for all machines
-#             latest_messages = {}
-#             for machine_id, messages in status_messages.items():
-#                 if messages:  # If there are messages for this machine
-#                     latest_messages[machine_id] = messages[-1]
-#
-#             return {
-#                 "latest_messages": latest_messages
-#             }
-#     except Exception as e:
-#         raise HTTPException(
-#             status_code=500,
-#             detail=f"Error fetching latest status messages: {str(e)}"
-#         )
+
 
 
 

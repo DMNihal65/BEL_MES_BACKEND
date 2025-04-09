@@ -19,6 +19,7 @@ class OperationUpdateRequest(BaseModel):
     ideal_cycle_time: float
     work_center_code: str
     machine_id: int
+    production_order: str
 
 
 # Response Models

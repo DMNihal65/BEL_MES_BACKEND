@@ -144,40 +144,6 @@ def extract_oarc_details(pdf_content):
     if current_operation:
         data["Operations"].append(current_operation)
 
-    # Extract document verification details from long text when operation is verification
-    # for operation in data["Operations"]:
-    #     if "verification" in operation["Operation"].lower():
-    #         doc_details = {}
-    #         long_text = operation["Long Text"]
-    #
-    #         # Extract document details using regex patterns
-    #         doc_patterns = {
-    #             "OARC Rev": r"OARC Rev\.\s*:\s*([^\n]+)",
-    #             "Part Rev": r"Part Rev\.\s*:\s*([^\n]+)",
-    #             "Drawing No": r"Drawing No\.\s*:\s*([^R]+)Rev\.\s*:\s*([^\n]+)",
-    #             "Cad No": r"Cad No\.\s*:\s*([^R]+)Rev\.\s*:\s*([^\n]+)",
-    #             "Stage Verification Doc": r"Stage Verification Document No\.\s*:\s*([^R]+)Rev\.\s*:\s*([^\n]+)",
-    #             "Final Verification Doc": r"Final Verification Document No\.\s*:\s*([^R]+)Rev\.\s*:\s*([^\n]+)",
-    #             "Raw Material Index Doc": r"Raw Material Index\s+Doc No\.\s*:\s*([\w\-]+)\s+Rev\.\s*:\s*(\d+)",
-    #             "Plating Inspection Doc": r"Plating inspection Doc No\.\s*:([\w\-]+)\s+Rev\.\s*:\s*(\d+)",
-    #             "MPP Doc": r"MPP Doc No\.\s*:\s*([^R]+)Rev\.\s*:\s*([^\n]+)"
-    #         }
-    #
-    #         for key, pattern in doc_patterns.items():
-    #             match = re.search(pattern, long_text)
-    #             if match:
-    #                 if len(match.groups()) == 2:
-    #                     doc_details[key] = {
-    #                         "Number": match.group(1).strip(),
-    #                         "Revision": match.group(2).strip()
-    #                     }
-    #                 else:
-    #                     doc_details[key] = match.group(1).strip()
-    #
-    #         data["Document Verification"] = doc_details
-    #         break
-
-    # Extract raw materials
     raw_materials_started = False
     raw_material_pattern = r'(\d{4})\s+(\w+)\s+([\w\s\-\.]+)\s+([\d\.]+)\s+(\w+)\s+([\d\.]+)'
 
@@ -208,62 +174,6 @@ def extract_oarc_details(pdf_content):
             raw_materials_started = False
 
     return data
-
-
-# @router.post("/upload-pdf")
-# async def upload_pdf(file: UploadFile = File(...)):
-#     try:
-#         pdf_content = await file.read()
-#         data = extract_oarc_details(io.BytesIO(pdf_content))
-#
-#         with db_session:
-#             master_order = save_to_database(data)
-#
-#             # Prepare detailed response
-#             response_data = {
-#                 "message": "PDF uploaded and data saved successfully",
-#                 "order_details": {
-#                     "id": master_order.id,
-#                     "production_order": master_order.production_order,
-#                     "sale_order": master_order.sale_order,
-#                     "wbs_element": master_order.wbs_element,
-#                     "part_number": master_order.part_number,
-#                     "part_description": master_order.part_description,
-#                     "total_operations": master_order.total_operations,
-#                     "required_quantity": master_order.required_quantity,
-#                     "launched_quantity": master_order.launched_quantity,
-#                     "plant_id": master_order.plant_id,
-#
-#                     "project": {
-#                         "id": master_order.project.id,
-#                         "name": master_order.project.name,
-#                         "priority": master_order.project.priority,
-#                         "delivery_date": master_order.project.delivery_date,
-#                         "start_date": master_order.project.start_date,
-#                         "end_date": master_order.project.end_date
-#                     } if master_order.project else None,
-#
-#                     "raw_material": {
-#                         "id": master_order.raw_material.id,
-#                         "child_part_number": master_order.raw_material.child_part_number,
-#                         "description": master_order.raw_material.description,
-#                         "quantity": master_order.raw_material.quantity,
-#                         "unit": {
-#                             "id": master_order.raw_material.unit.id,
-#                             "name": master_order.raw_material.unit.name
-#                         } if master_order.raw_material.unit else None,
-#                         "status": {
-#                             "id": master_order.raw_material.status.id,
-#                             "name": master_order.raw_material.status.name
-#                         } if master_order.raw_material.status else None
-#                     } if master_order.raw_material else None
-#                 }
-#             }
-#
-#             return response_data
-#
-#     except Exception as e:
-#         raise HTTPException(status_code=500, detail=str(e))
 
 
 @db_session
@@ -339,11 +249,12 @@ def save_to_database(data):
             raw_material=raw_material
         )
 
-        # Create initial 'inactive' status for scheduling
-        part_status = PartScheduleStatus.get(part_number=data["Part No"])
+        # Create initial 'inactive' status for scheduling - FIX: Use both part_number and production_order
+        part_status = PartScheduleStatus.get(part_number=data["Part No"], production_order=data["Prod Order No"])
         if not part_status:
             PartScheduleStatus(
                 part_number=data["Part No"],
+                production_order=data["Prod Order No"],
                 status='inactive'  # Default to inactive when OARC is uploaded
             )
 
@@ -424,6 +335,7 @@ def save_to_database(data):
                         available_from=datetime(2025, 1, 21, 11, 41, 20, 417587)  # Hardcoded as requested
                     )
 
+            # Create a new operation specific to this order
             operation = Operation(
                 order=master_order,
                 work_center=work_center,
@@ -439,7 +351,6 @@ def save_to_database(data):
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
-
 
 
 @router.get("/all_orders")
@@ -540,7 +451,6 @@ async def search_order(
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
 
 
-
 @router.put("/update_order/{order_number}")
 async def update_order(order_number: str, update_data: OrderUpdateRequest):
     try:
@@ -602,19 +512,27 @@ async def update_order(order_number: str, update_data: OrderUpdateRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.put("/operations/{part_number}/{operation_number}")
 async def update_operation(
         part_number: str,
         operation_number: int,
-        operation_data: OperationUpdateRequest
+        operation_data: OperationUpdateRequest,
+        production_order: Optional[str] = Query(None)  # Get from query parameter instead
 ):
     try:
         with db_session:
-            order = Order.get(part_number=part_number)
+            # Find the order using both part_number and production_order
+            if production_order:
+                order = Order.get(part_number=part_number, production_order=production_order)
+            else:
+                # Fallback to just part_number, but this may be ambiguous
+                order = Order.get(part_number=part_number)
+
             if not order:
                 raise HTTPException(
                     status_code=404,
-                    detail=f"No order found with part number {part_number}"
+                    detail=f"No order found with part number {part_number} and production order {production_order}"
                 )
 
             operation = select(op for op in Operation
@@ -730,12 +648,44 @@ async def create_order(order_data: CreateOrderRequest):
             )
 
             # Create initial 'inactive' status for scheduling
-            part_status = PartScheduleStatus.get(part_number=order_data.part_number)
+            # FIX: Updated to use both part_number and production_order
+            part_status = PartScheduleStatus.get(
+                part_number=order_data.part_number,
+                production_order=order_data.production_order
+            )
             if not part_status:
                 PartScheduleStatus(
                     part_number=order_data.part_number,
+                    production_order=order_data.production_order,
                     status='inactive'  # Default to inactive when order is created
                 )
+
+            # Check if there are existing operations for this part number that we should duplicate
+            # First, find other orders with the same part number
+            similar_orders = select(o for o in Order if o.part_number == order_data.part_number and o.id != order.id)[:]
+
+            # If there are similar orders, duplicate their operations
+            if similar_orders:
+                # Get the first similar order
+                source_order = similar_orders[0]
+
+                # Get all operations from the source order
+                source_operations = select(op for op in Operation if op.order == source_order)[:]
+
+                # Duplicate each operation for the new order
+                for source_op in source_operations:
+                    Operation(
+                        order=order,
+                        operation_number=source_op.operation_number,
+                        operation_description=source_op.operation_description,
+                        setup_time=source_op.setup_time,
+                        ideal_cycle_time=source_op.ideal_cycle_time,
+                        work_center=source_op.work_center,
+                        machine=source_op.machine
+                    )
+
+                # Update total operations count
+                order.total_operations = len(source_operations)
 
             commit()
             return {
@@ -781,6 +731,8 @@ async def create_order(order_data: CreateOrderRequest):
             status_code=500,
             detail=f"Error creating order: {str(e)}"
         )
+
+
 
 @router.post("/operations")
 async def create_operation(operation_data: CreateOperationRequest):
