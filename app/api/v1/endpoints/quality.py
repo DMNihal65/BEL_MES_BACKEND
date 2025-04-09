@@ -9,8 +9,7 @@ from app.schemas.quality import MasterBocCreate, MasterBocResponse, StageInspect
     OrderIPIDResponse, MasterBocIPIDInfo, MeasurementInstrumentsResponse
 from app.crud.quality import MasterBocCRUD, StageInspectionCRUD, QualityInspectionCRUD
 
-# Add the EXE_PATH constant at the top of the file
-EXE_PATH = "D:\siri\BEL\BEL_MES_BACKEND\GDNT_updates2.exe"  # Replace with your actual exe path
+# Add the EXE_PATH constant at the top of the file  # Replace with your actual exe path
 
 router = APIRouter(prefix="/quality", tags=["quality"])
 
@@ -188,27 +187,27 @@ async def get_order_ipids(
             status_code=400,
             detail=f"Error retrieving IPID data: {str(e)}"
         )
-
-@router.get("/run")
-async def run_exe(
-    current_user = Depends(get_current_user)
-) -> Any:
-    """
-    Run an external executable file
-    """
-    if not os.path.exists(EXE_PATH):
-        raise HTTPException(
-            status_code=404,
-            detail="Executable not found"
-        )
-
-    try:
-        subprocess.Popen(EXE_PATH, shell=True)
-        return {"message": "Executable started successfully"}
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error running executable: {str(e)}"
-        )
-
+#
+# @router.get("/run")
+# async def run_exe(
+#     current_user = Depends(get_current_user)
+# ) -> Any:
+#     """
+#     Run an external executable file
+#     """
+#     if not os.path.exists(EXE_PATH):
+#         raise HTTPException(
+#             status_code=404,
+#             detail="Executable not found"
+#         )
+#
+#     try:
+#         subprocess.Popen(EXE_PATH, shell=True)
+#         return {"message": "Executable started successfully"}
+#     except Exception as e:
+#         raise HTTPException(
+#             status_code=500,
+#             detail=f"Error running executable: {str(e)}"
+#         )
+#
 

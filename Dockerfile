@@ -1,44 +1,32 @@
-# Build stage
-FROM python:3.12-slim as builder
-
-# Set working directory
-WORKDIR /app
-
-# Install system dependencies
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends gcc libpq-dev && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
-
-# Install Python dependencies
-COPY requirements.txt .
-RUN pip wheel --no-cache-dir --no-deps --wheel-dir /app/wheels -r requirements.txt
-
-# Final stage
 FROM python:3.12-slim
 
-# Install runtime dependencies
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends libpq5 curl iputils-ping net-tools && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
-
 WORKDIR /app
 
-# Copy wheels from builder and install
-COPY --from=builder /app/wheels /wheels
-COPY --from=builder /app/requirements.txt .
-RUN pip install --no-cache /wheels/*
+# Install dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY . .
 
-# Expose port
+# Create .env file with the provided settings
+RUN echo "DB_HOST=172.18.7.155" > .env && \
+    echo "DB_PORT=5432" >> .env && \
+    echo "DB_NAME=BEL_DEMO2" >> .env && \
+    echo "DB_USER=cmtismc" >> .env && \
+    echo "DB_PASSWORD=cmtismc@2025" >> .env && \
+    echo "SECRET_KEY=BEL_MES_25" >> .env && \
+    echo "ALGORITHM=HS256" >> .env && \
+    echo "ACCESS_TOKEN_EXPIRE_MINUTES=30" >> .env && \
+    echo "REFRESH_TOKEN_EXPIRE_DAYS=7" >> .env && \
+    echo "MINIO_ENDPOINT=172.18.7.155:9000" >> .env && \
+    echo "MINIO_ACCESS_KEY=MrKxgiZXGyBArDz8bEnl" >> .env && \
+    echo "MINIO_SECRET_KEY=DJnTcMpypd6x75DlQfCM2MocFIjRON0jU06OgKnn" >> .env && \
+    echo "MINIO_BUCKET_NAME=documents" >> .env && \
+    echo "MINIO_SECURE=false" >> .env
+
+# Expose port 8002
 EXPOSE 8002
 
-# Set environment variables
-ENV PYTHONPATH=/app
-ENV PYTHONUNBUFFERED=1
-
-# Default command (will be overridden by docker-compose)
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8002", "--log-level", "debug"]
+# Command to run the application - updated to use package structure
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8002"]
