@@ -2,7 +2,6 @@ from pony.orm import *
 from ..database.connection import db  # Import the shared db instance
 from datetime import datetime
 
-
 class MasterBoc(db.Entity):
     """
     Master BOC table for storing bill of characteristics data
@@ -43,4 +42,18 @@ class StageInspection(db.Entity):
     measured_instrument = Required(str)
     op_no = Required(int)
     order_id = Required(int)
-    created_at = Required(datetime, default=lambda: datetime.now())  # Adds timestamp without timezone
+    quantity_no = Optional(int)  # Change from Required to Optional
+    created_at = Required(datetime, default=lambda: datetime.now())
+
+class Connectivity(db.Entity):
+    """
+    Connectivity table for storing instrument connectivity information
+    """
+    _table_ = ("quality", "connectivity")
+
+    id = PrimaryKey(int, auto=True)
+    inventory_item = Required('InventoryItem', reverse='connectivity')
+    instrument = Required(str)
+    uuid = Required(str)
+    address = Required(str)  # Added address field
+    created_at = Required(datetime, default=lambda: datetime.now())

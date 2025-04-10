@@ -1,6 +1,6 @@
 from datetime import datetime
 from pydantic import BaseModel, Field, model_validator
-from typing import List
+from typing import List, Optional
 import json
 
 # In quality_schema.py - Update MasterBocBase
@@ -66,6 +66,7 @@ class StageInspectionBase(BaseModel):
     measured_instrument: str = Field(..., description="Measuring instrument used")
     op_no: int = Field(..., description="Operation number", gt=0)
     order_id: int = Field(..., description="Order ID", gt=0)
+    quantity_no: Optional[int] = Field(None, description="Quantity number")
 
 class StageInspectionCreate(StageInspectionBase):
     pass
@@ -99,6 +100,7 @@ class StageInspectionDetail(BaseModel):
     measured_instrument: str
     op_no: int
     order_id: int
+    quantity_no: Optional[int] = None
     created_at: datetime
 
 class QualityInspectionResponse(BaseModel):
@@ -123,6 +125,7 @@ class StageInspectionWithOperator(BaseModel):
     measured_3: float
     measured_mean: float
     measured_instrument: str
+    quantity_no: Optional[int] = None
     created_at: datetime
     operator: OperatorInfo
 
@@ -173,4 +176,21 @@ class OrderIPIDResponse(BaseModel):
 class MeasurementInstrumentsResponse(BaseModel):
     """Response schema for measurement instruments list"""
     instruments: List[str]
+
+class ConnectivityBase(BaseModel):
+    """Base schema for Connectivity"""
+    inventory_item_id: int = Field(..., description="Inventory Item ID", gt=0)
+    instrument: str = Field(..., description="Instrument name", min_length=1)
+    uuid: str = Field(..., description="Unique identifier", min_length=1)
+    address: str = Field(..., description="Address of the instrument", min_length=1)
+
+class ConnectivityCreate(ConnectivityBase):
+    pass
+
+class ConnectivityResponse(ConnectivityBase):
+    id: int
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
 
