@@ -108,6 +108,7 @@ app.include_router(production_monitoring.router, tags=["production_monitoring"])
 # router = APIRouter(prefix="/api/inventory", tags=["inventory"])
 app.include_router(production_monitoring.router, tags=["production_monitoring"])
 
+
 @app.get("/")
 def read_root():
     logger.info("Root endpoint accessed")
@@ -121,7 +122,7 @@ async def shutdown_event():
     logger.info("----------------------------")
 
 # uvicorn app.main:app --reload
-# uvicorn app.main:app --host 172.18.7.88 --port 4448 --reload
+# uvicorn app.main:app --host 172.18.7.88 --port 2258 --reload
 
 # uvicorn app.main:app --host 172.18.7.88 --port 3282 --reload
 

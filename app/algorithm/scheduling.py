@@ -21,7 +21,7 @@ def adjust_to_shift_hours(time: datetime) -> datetime:
 
 
 @db_session
-def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
+def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, str], int],
                         lead_times: Dict[str, datetime] = None) -> \
         Tuple[pd.DataFrame, datetime, float, Dict, Dict, List[str]]:
     """Main scheduling function that creates a production schedule based on operations data"""
@@ -33,13 +33,9 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
     print(f"Input DataFrame Shape: {df.shape}")
     print(f"Unique Parts in DataFrame: {df['partno'].unique()}")
 
-    # Added: Production order diagnostic
-    if 'production_order' in df.columns:
-        print(f"Unique Production Orders in DataFrame: {df['production_order'].unique()}")
-
     # Enhanced Debug Logging
-    for partno in component_quantities.keys():
-        part_df = df[df['partno'] == partno]
+    for (partno, production_order) in component_quantities.keys():
+        part_df = df[(df['partno'] == partno) & (df['production_order'] == production_order)]
         print(f"\nPart {partno} Debug:")
         print(f"Operations Count: {len(part_df)}")
         if not part_df.empty:
@@ -49,129 +45,129 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
         print("ERROR: Input DataFrame is empty!")
         return pd.DataFrame(), datetime.now(), 0.0, {}, {}, ["Empty input DataFrame"]
 
-    # Gather all production order status information upfront
-    # CHANGE: Track by production order instead of part number
-    po_status_map = {}
-    po_activation_times = {}
+    # Gather all order and part status information upfront
+    part_status_map = {}
+    part_activation_times = {}
 
     for part_status in PartScheduleStatus.select():
-        po_status_map[part_status.production_order] = part_status.status
-        # Get activation timestamp for each production order
+        key = (part_status.part_number, part_status.production_order)
+        part_status_map[key] = part_status.status
         if part_status.status == 'active':
-            # Convert UTC time from database to IST for scheduling
             ist_offset = timedelta(hours=5, minutes=30)
             activation_time_ist = part_status.updated_at + ist_offset
-            po_activation_times[part_status.production_order] = activation_time_ist
+            part_activation_times[key] = activation_time_ist
 
-    # Create mapping between part numbers and their production orders
-    part_to_po_map = {}
-    if 'production_order' in df.columns:
-        for _, row in df.iterrows():
-            if pd.notna(row['production_order']):
-                if row['partno'] not in part_to_po_map:
-                    part_to_po_map[row['partno']] = []
-                if row['production_order'] not in part_to_po_map[row['partno']]:
-                    part_to_po_map[row['partno']].append(row['production_order'])
-
-    # Enhanced Filtering for Active Production Orders
-    # CHANGE: Filter based on production orders instead of part numbers
-    active_production_orders = {
-        po: po_status_map.get(po, 'inactive') == 'active'
-        for po in df['production_order'].unique() if pd.notna(po)
+    # Enhanced Filtering for Active Parts
+    active_parts = {
+        (partno, po): qty
+        for (partno, po), qty in component_quantities.items()
+        if part_status_map.get((partno, po), 'inactive') == 'active'
     }
 
-    # Map from production orders to their part numbers
-    po_to_part_map = {}
-    if 'production_order' in df.columns:
-        for _, row in df.iterrows():
-            if pd.notna(row['production_order']):
-                po_to_part_map[row['production_order']] = row['partno']
+    print("\n==== ACTIVE PARTS DIAGNOSTIC ====")
+    for (partno, production_order), qty in active_parts.items():
+        activation_time = part_activation_times.get((partno, production_order))
+        activation_time_str = activation_time.strftime("%Y-%m-%d %H:%M:%S") if activation_time else "None"
 
-    # Create a component quantities dict based on production orders
-    po_quantities = {}
-    for po, is_active in active_production_orders.items():
-        if is_active and po in po_to_part_map:
-            part = po_to_part_map[po]
-            if part in component_quantities:
-                po_quantities[po] = component_quantities[part]
+        # Additional Part Validation
+        part_df = df[df['partno'] == partno]
+        print(f"Part: {partno}")
+        print(f"  Quantity: {qty}")
+        print(f"  Activation Time (IST): {activation_time_str}")
+        print(f"  Operations Count: {len(part_df)}")
 
-    print("\n==== ACTIVE PRODUCTION ORDERS DIAGNOSTIC ====")
-    for po, is_active in active_production_orders.items():
-        if is_active:
-            activation_time = po_activation_times.get(po)
-            activation_time_str = activation_time.strftime("%Y-%m-%d %H:%M:%S") if activation_time else "None"
-            part = po_to_part_map.get(po, "Unknown")
+        if part_df.empty:
+            print(f"  WARNING: No operations found for part {partno}")
 
-            # Filter operations for this production order
-            po_df = df[df['production_order'] == po]
-
-            print(f"Production Order: {po}")
-            print(f"  Part Number: {part}")
-            print(f"  Quantity: {po_quantities.get(po, 0)}")
-            print(f"  Activation Time (IST): {activation_time_str}")
-            print(f"  Operations Count: {len(po_df)}")
-
-            if po_df.empty:
-                print(f"  WARNING: No operations found for production order {po}")
-
-    # Track skipped production orders with more detailed reasoning
-    skipped_pos = [
-        f"Skipped {po}: Status {po_status_map.get(po, 'not found')}"
-        for po in df['production_order'].unique() if pd.notna(po) and not active_production_orders.get(po, False)
+    # Track skipped parts with more detailed reasoning
+    skipped_parts = [
+        f"Skipped {partno}: Status {part_status_map.get((partno, production_order), 'not found')}"
+        for (partno, production_order) in component_quantities.keys()
+        if part_status_map.get((partno, production_order), 'inactive') != 'active'
     ]
 
-    print("\n==== SKIPPED PRODUCTION ORDERS ====")
-    for skipped in skipped_pos:
+    print("\n==== SKIPPED PARTS ====")
+    for skipped in skipped_parts:
         print(skipped)
 
-    # Check if we have any active production orders
-    active_pos = [po for po, is_active in active_production_orders.items() if is_active]
-    if not active_pos:
-        print("CRITICAL: No production orders are marked as active for scheduling")
-        return pd.DataFrame(), datetime.now(), 0.0, {}, {}, ["No production orders are marked as active for scheduling"]
+    if not active_parts:
+        print("CRITICAL: No parts are marked as active for scheduling")
+        return pd.DataFrame(), datetime.now(), 0.0, {}, {}, ["No parts are marked as active for scheduling"]
 
-    # Filter operations to only include active production orders
-    active_df = df[df['production_order'].isin(active_pos)]
-    if active_df.empty:
-        print("CRITICAL: No operations found for active production orders")
-        return pd.DataFrame(), datetime.now(), 0.0, {}, {}, ["No operations found for active production orders"]
+    # Create a more detailed tracking map that includes production orders
+    # This will track part_number + production_order combinations
+    production_orders = {}
+
+    with db_session:
+        # Collect all production orders for each part number
+        for order in Order.select():
+            if order.part_number not in production_orders:
+                production_orders[order.part_number] = []
+
+            production_orders[order.part_number].append({
+                'production_order': order.production_order,
+                'order_id': order.id,
+                'priority': order.project.priority if order.project else float('inf'),
+                'lead_time': order.project.delivery_date if order.project else None,
+                'raw_material': order.raw_material
+            })
 
     # Get project priorities and lead times
-    po_priorities = {}
-    po_lead_times = {}
+    part_priorities = {}
+    part_lead_times = {}
     order_info = {}
 
-    # Gather all order, priority, and lead time information for each production order
-    for po in active_pos:
-        with db_session:
-            order = Order.get(production_order=po)
-            if order and order.project:
-                po_priorities[po] = order.project.priority if order.project else float('inf')
-                if order.project.delivery_date:
-                    po_lead_times[po] = order.project.delivery_date
+    # Gather all order, priority, and lead time information
+    for (partno, production_order) in active_parts.keys():
+        orders = list(Order.select(lambda o: o.part_number == partno))
+        if orders:
+            # For backwards compatibility, use the highest priority order for sorting
+            highest_priority = min([
+                order.project.priority if order.project else float('inf')
+                for order in orders
+            ], default=float('inf'))
 
-    # Sort production orders by priority (lower number = higher priority)
-    sorted_pos = sorted(
-        active_pos,
-        key=lambda x: po_priorities.get(x, float('inf'))
+            part_priorities[(partno, production_order)] = highest_priority
+
+            # Store earliest lead time for reference
+            lead_times = [order.project.delivery_date for order in orders
+                          if order.project and order.project.delivery_date]
+            if lead_times:
+                part_lead_times[(partno, production_order)] = min(lead_times)
+
+    # Sort parts by priority only (lower number = higher priority)
+    sorted_parts = sorted(
+        active_parts.keys(),
+        key=lambda x: (part_priorities.get(x, float('inf')))
     )
 
-    # Reorder the dataframe based on sorted production orders
-    active_df['sort_order'] = active_df['production_order'].map({po: idx for idx, po in enumerate(sorted_pos)})
-    df_sorted = active_df.sort_values(by=['sort_order', 'sequence']).drop('sort_order', axis=1)
+    # Reorder the dataframe based on sorted parts
+    # Create a mapping of parts to sort order indices
+    part_to_idx = {part: idx for idx, part in enumerate(sorted_parts)}
+
+    # Add a sort_order column to the dataframe
+    df['sort_order'] = df.apply(
+        lambda row: part_to_idx.get((row['partno'], row['production_order']), float('inf')),
+        axis=1
+    )
+
+    # Sort the dataframe and filter for active parts
+    df_sorted = df[
+        df.apply(lambda row: (row['partno'], row['production_order']) in active_parts, axis=1)
+    ].sort_values(by=['sort_order', 'sequence']).drop('sort_order', axis=1)
 
     # Fetch raw materials with their InventoryStatus
-    raw_materials_query = select((o.production_order, o.raw_material, ist, o.raw_material.available_from)
+    raw_materials_query = select((o.part_number, o.raw_material, ist, o.raw_material.available_from)
                                  for o in Order
                                  for ist in InventoryStatus
                                  if o.raw_material and o.raw_material.status == ist)
     raw_materials = {
-        production_order: (
+        part_number: (
             ist.name == 'Available',
             rm.quantity,
             rm.unit,
             rm.available_from
-        ) for production_order, rm, ist, available_from in raw_materials_query
+        ) for part_number, rm, ist, available_from in raw_materials_query
     }
 
     # Fetch machine statuses with their status details
@@ -190,10 +186,9 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
         } for m, ms, s, available_from in machine_statuses_query
     }
 
-    # Group operations by production order instead of part number
-    po_operations = {
-        po: group.to_dict('records')
-        for po, group in df_sorted.groupby('production_order')
+    part_operations = {
+        (partno, production_order): group.to_dict('records')
+        for (partno, production_order), group in df_sorted.groupby(['partno', 'production_order'])
     }
 
     # Get current time in IST as default start date
@@ -201,12 +196,12 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
     default_start_date = datetime.now() + ist_offset
     default_start_date = adjust_to_shift_hours(default_start_date)
 
-    # Find the earliest activation time across all active production orders to use as the global start
+    # Find the earliest activation time across all active parts to use as the global start
     earliest_activation_time = None
-    for po in active_pos:
-        if po in po_activation_times:
-            if earliest_activation_time is None or po_activation_times[po] < earliest_activation_time:
-                earliest_activation_time = po_activation_times[po]
+    for key in active_parts.keys():
+        if key in part_activation_times:
+            if earliest_activation_time is None or part_activation_times[key] < earliest_activation_time:
+                earliest_activation_time = part_activation_times[key]
 
     # Use the earliest activation time or default to current time in IST
     global_start_date = adjust_to_shift_hours(
@@ -269,32 +264,38 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
 
         return last_available
 
-    def schedule_batch_operations(production_order: str, operations: List[dict], quantity: int, start_time: datetime) -> \
-    Tuple[
+    def schedule_batch_operations(partno: str, operations: List[dict], quantity: int, start_time: datetime,
+                                  order_id: int = None, production_order: str = None, order_raw_material=None) -> Tuple[
         List[list], int, Dict[int, datetime]]:
         """Schedule operations for a batch of components with precise raw material availability check"""
 
-        # Get part number from operations
-        partno = operations[0]['partno'] if operations else None
-        if not partno:
-            print(f"No part number found in operations for production order {production_order}")
-            return [], 0, {}
-
-        # Find the specific order
-        try:
-            with db_session:
-                order = Order.get(production_order=production_order)
-                if not order:
-                    print(f"No order found for production order {production_order}")
+        # Use the provided order details or find the order
+        if order_id is None:
+            # Find the specific order if not provided
+            try:
+                orders = list(Order.select(lambda o: o.part_number == partno))
+                if not orders:
+                    print(f"No order found for part {partno}")
                     return [], 0, {}
 
+                # Use the first order with a raw material, or the first order if none have raw materials
+                order = next((o for o in orders if o.raw_material), orders[0])
                 raw_material = order.raw_material
-        except Exception as e:
-            print(f"Error retrieving order for {production_order}: {str(e)}")
-            return [], 0, {}
+                production_order = order.production_order
+            except Exception as e:
+                print(f"Error retrieving order for {partno}: {str(e)}")
+                return [], 0, {}
+        else:
+            # Use the provided order details
+            try:
+                order = Order[order_id]
+                raw_material = order_raw_material or order.raw_material
+            except Exception as e:
+                print(f"Error retrieving order with ID {order_id}: {str(e)}")
+                return [], 0, {}
 
         if not raw_material:
-            print(f"No raw material found for production order {production_order}")
+            print(f"No raw material found for part {partno}, production order {production_order}")
             return [], 0, {}
 
         # Detailed raw material status check
@@ -304,15 +305,14 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
         effective_start_time = start_time
 
         # Enhanced raw material availability check
-        print(f"\nRaw Material Availability Check for Production Order: {production_order}:")
-        print(f"Part Number: {partno}")
+        print(f"\nRaw Material Availability Check for {partno} (Production Order: {production_order}):")
         print(f"Status: {raw_material_status.name}")
         print(f"Available From: {raw_material.available_from}")
         print(f"Initial Operation Start Time: {effective_start_time}")
 
         # Comprehensive availability check
         if raw_material_status.name != 'Available':
-            print(f"Raw material for Production Order: {production_order} is not in 'Available' status")
+            print(f"Raw material for {partno} (Production Order: {production_order}) is not in 'Available' status")
             return [], 0, {}
 
         # If raw material is available from a future time
@@ -338,12 +338,12 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
         operation_setup_done = {}
 
         # Debug print to verify effective start time
-        print(f"Final Effective Start Time for Production Order: {production_order}: {effective_start_time}")
+        print(f"Final Effective Start Time for {partno} (Production Order: {production_order}): {effective_start_time}")
 
         # Rest of the scheduling logic remains the same
         last_available_idx = find_last_available_operation(operations, operation_time)
         if last_available_idx < 0:
-            print(f"No available operations found for Production Order: {production_order}")
+            print(f"No available operations found for {partno} (Production Order: {production_order})")
             return [], 0, {}
 
         available_operations = operations[:last_available_idx + 1]
@@ -357,21 +357,20 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
                 operation_setup_done[operation_key] = False
 
             # Get setup time and cycle time
-            with db_session:
+            operation = Operation.select(lambda o:
+                                         o.order.id == order.id and
+                                         o.operation_number == op['sequence']).first()
+
+            if not operation:
+                # Fallback to any operation with matching sequence
                 operation = Operation.select(lambda o:
-                                             o.order.production_order == production_order and
+                                             o.order.part_number == partno and
                                              o.operation_number == op['sequence']).first()
-
                 if not operation:
-                    # Fallback to any operation with matching sequence
-                    operation = Operation.select(lambda o:
-                                                 o.order.part_number == partno and
-                                                 o.operation_number == op['sequence']).first()
-                    if not operation:
-                        continue
+                    continue
 
-                setup_minutes = float(operation.setup_time) * 60
-                cycle_minutes = float(operation.ideal_cycle_time) * 60
+            setup_minutes = float(operation.setup_time) * 60
+            cycle_minutes = float(operation.ideal_cycle_time) * 60
 
             current_time = operation_time
             machine_available, available_time = check_machine_status(machine_id, current_time)
@@ -509,93 +508,152 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
 
         return batch_schedule, len(available_operations), unit_completion_times
 
-    # Create a list of production orders to schedule
+    # Create sorted schedule items for each production order
     sorted_schedule_items = []
-    for po in sorted_pos:
-        if po not in po_operations:
+    for (partno, production_order) in sorted_parts:
+        if (partno, production_order) not in part_operations or partno not in production_orders:
             continue
 
-        # Get partno from first operation
-        operations = po_operations[po]
-        if not operations:
-            continue
+        # Schedule each production order separately
+        for order_info in production_orders[partno]:
+            # Match the production order
+            if order_info['production_order'] == production_order:
+                # Only schedule active parts
+                if (partno, production_order) in active_parts:
+                    # Create a scheduling item for this production order
+                    sorted_schedule_items.append({
+                        'partno': partno,
+                        'production_order': production_order,
+                        'order_id': order_info['order_id'],
+                        'priority': order_info['priority'],
+                        'lead_time': order_info['lead_time'],
+                        'operations': part_operations[(partno, production_order)],
+                        'quantity': active_parts[(partno, production_order)],
+                        'raw_material': order_info['raw_material']
+                    })
 
-        partno = operations[0]['partno']
-
-        # Add the production order to our schedule list
-        sorted_schedule_items.append({
-            'production_order': po,
-            'partno': partno,
-            'priority': po_priorities.get(po, float('inf')),
-            'lead_time': po_lead_times.get(po),
-            'operations': operations,
-            'quantity': po_quantities.get(po, 0)
-        })
+    # Sort the schedule items by priority
+    sorted_schedule_items.sort(key=lambda x: x['priority'])
 
     # Main scheduling loop using the sorted items with production orders
     if sorted_schedule_items:
         for schedule_item in sorted_schedule_items:
-            production_order = schedule_item['production_order']
             partno = schedule_item['partno']
             operations = schedule_item['operations']
             quantity = schedule_item['quantity']
             priority = schedule_item['priority']
             lead_time = schedule_item['lead_time']
+            production_order = schedule_item['production_order']
+            order_id = schedule_item['order_id']
+            raw_material = schedule_item['raw_material']
 
-            # Use production order-specific activation time if available, otherwise use global start date
-            po_start_time = po_activation_times.get(production_order, global_start_date)
-            po_start_time = adjust_to_shift_hours(po_start_time)
+            # Use part-specific activation time if available, otherwise use global start date
+            part_key = (partno, production_order)
+            part_start_time = part_activation_times.get(part_key, global_start_date)
+            part_start_time = adjust_to_shift_hours(part_start_time)
 
             print(
-                f"Scheduling Production Order: {production_order} (Part: {partno}) with activation time (IST): {po_start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+                f"Scheduling {partno} - Production Order: {production_order} with activation time (IST): {part_start_time.strftime('%Y-%m-%d %H:%M:%S')}")
 
-            # Schedule operations for this production order
+            # Pass order-specific information to schedule_batch_operations
             batch_schedule, completed_ops, unit_completion_times = schedule_batch_operations(
-                production_order, operations, quantity, po_start_time
+                partno, operations, quantity, part_start_time, order_id, production_order, raw_material
             )
 
             if batch_schedule:
                 schedule.extend(batch_schedule)
                 latest_completion_time = max(unit_completion_times.values()) if unit_completion_times else None
 
-                # Track status for this production order
-                part_status[production_order] = {
-                    'production_order': production_order,
+                # Track part status for each production order
+                status_key = f"{partno}_{production_order}"
+                part_status[status_key] = {
                     'partno': partno,
+                    'production_order': production_order,
                     'scheduled_end_time': latest_completion_time,
                     'priority': priority,
                     'lead_time': lead_time,
                     'completed_quantity': len(unit_completion_times),
                     'total_quantity': quantity,
                     'lead_time_provided': lead_time is not None,
-                    'start_time': po_start_time
+                    'start_time': part_start_time
                 }
 
                 # Calculate lead time difference for monitoring
                 if lead_time and latest_completion_time:
                     time_difference = (lead_time - latest_completion_time).days
-                    part_status[production_order]['lead_time_difference'] = time_difference
+                    part_status[status_key]['lead_time_difference'] = time_difference
 
                 # Update daily production tracking
-                if production_order not in daily_production:
-                    daily_production[production_order] = {
-                        'partno': partno,
-                        'dates': {}
-                    }
+                if partno not in daily_production:
+                    daily_production[partno] = {}
 
                 for unit_num, completion_time in unit_completion_times.items():
                     completion_day = completion_time.date()
-                    if completion_day not in daily_production[production_order]['dates']:
-                        daily_production[production_order]['dates'][completion_day] = 0
-                    daily_production[production_order]['dates'][completion_day] += 1
+                    if completion_day not in daily_production[partno]:
+                        daily_production[partno][completion_day] = 0
+                    daily_production[partno][completion_day] += 1
 
                 if completed_ops < len(operations):
                     partially_completed.append(
-                        f"PO: {production_order} (Part: {partno}): Completed {completed_ops}/{len(operations)} operation types for {quantity} units")
+                        f"{partno} (PO: {production_order}): Completed {completed_ops}/{len(operations)} operation types for {quantity} units")
+    else:
+        # Fallback to original scheduling logic if no schedule items were created
+        for (partno, production_order) in sorted_parts:
+            if (partno, production_order) not in part_operations:
+                continue
+
+            operations = part_operations[(partno, production_order)]
+            quantity = active_parts[(partno, production_order)]
+            priority = part_priorities.get((partno, production_order), float('inf'))
+            lead_time = part_lead_times.get((partno, production_order))
+
+            # Use part-specific activation time if available, otherwise use global start date
+            part_key = (partno, production_order)
+            part_start_time = part_activation_times.get(part_key, global_start_date)
+            part_start_time = adjust_to_shift_hours(part_start_time)
+
+            print(f"Scheduling {partno} with activation time (IST): {part_start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+
+            batch_schedule, completed_ops, unit_completion_times = schedule_batch_operations(
+                partno, operations, quantity, part_start_time, production_order=production_order
+            )
+
+            if batch_schedule:
+                schedule.extend(batch_schedule)
+                latest_completion_time = max(unit_completion_times.values()) if unit_completion_times else None
+
+                status_key = f"{partno}_{production_order}"
+                part_status[status_key] = {
+                    'partno': partno,
+                    'production_order': production_order,
+                    'scheduled_end_time': latest_completion_time,
+                    'priority': priority,
+                    'lead_time': lead_time,
+                    'completed_quantity': len(unit_completion_times),
+                    'total_quantity': quantity,
+                    'lead_time_provided': lead_time is not None,
+                    'start_time': part_start_time
+                }
+
+                if lead_time and latest_completion_time:
+                    time_difference = (lead_time - latest_completion_time).days
+                    part_status[status_key]['lead_time_difference'] = time_difference
+
+                for unit_num, completion_time in unit_completion_times.items():
+                    completion_day = completion_time.date()
+                    if partno not in daily_production:
+                        daily_production[partno] = {}
+                    if completion_day not in daily_production[partno]:
+                        daily_production[partno][completion_day] = 0
+                    daily_production[partno][completion_day] += 1
+
+                if completed_ops < len(operations):
+                    partially_completed.append(
+                        f"{partno} (PO: {production_order}): Completed {completed_ops}/{len(operations)} operation types for {quantity} units")
 
     # Create schedule dataframe with production order information
     if not schedule:
-        return pd.DataFrame(), global_start_date, 0.0, daily_production, part_status, partially_completed
+        return pd.DataFrame(), global_start_date, 0.0, daily_production, {}, partially_completed
 
     schedule_df = pd.DataFrame(
         schedule,
@@ -603,7 +661,7 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[str, int],
     )
 
     if schedule_df.empty:
-        return schedule_df, global_start_date, 0.0, daily_production, part_status, partially_completed
+        return schedule_df, global_start_date, 0.0, daily_production, {}, partially_completed
 
     overall_end_time = max(schedule_df['end_time'])
     overall_time = (overall_end_time - global_start_date).total_seconds() / 60

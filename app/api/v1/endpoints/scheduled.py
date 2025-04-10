@@ -324,10 +324,30 @@ async def schedule():
                     work_centers=work_centers_data  # Return work centers even if no active orders
                 )
 
-            # Get mapping of production orders to part numbers
-            po_to_part_mapping = {po: pn for po, pn in
-                                  select((p.production_order, p.part_number) for p in PartScheduleStatus)[:]
-                                  }
+            # Get mapping of production orders to part numbers and required quantities
+            po_to_part_mapping = {}
+            part_po_to_quantity = {}
+
+            # Get all active part statuses with their required quantities
+            active_part_statuses = select(p for p in PartScheduleStatus if p.status == 'active')[:]
+
+            for part_status in active_part_statuses:
+                po = part_status.production_order
+                part_number = part_status.part_number
+                po_to_part_mapping[po] = part_number
+
+                # Get quantity from Order if possible
+                order = Order.get(production_order=po, part_number=part_number)
+                quantity = order.launched_quantity if order else 0
+
+                # If no quantity found in Order, use a default value
+                if quantity <= 0:
+                    # Try to find the associated Order and get its launched_quantity
+                    order = Order.get(part_number=part_number)
+                    quantity = order.launched_quantity if order else 10  # Default to 10 if no quantity found
+
+                # Store the part-PO specific quantity
+                part_po_to_quantity[(part_number, po)] = quantity
 
         # Fetch operations for all parts
         df = fetch_operations()
@@ -347,37 +367,35 @@ async def schedule():
         print(f"Original operations dataframe shape: {df.shape}")
         print(f"Columns in operations dataframe: {df.columns.tolist()}")
 
-        # IMPORTANT: Filter operations to ONLY include those with active production orders
-        if 'production_order' in df.columns:
-            # Keep only operations with active production orders
-            original_row_count = len(df)
-            df = df[df['production_order'].isin(active_production_orders_set)]
-            print(f"Filtered from {original_row_count} to {len(df)} rows based on active production orders")
-        else:
-            # We need to manually map operations to active production orders
-            print("No production_order column in operations dataframe, adding it")
-
+        # Add production_order column to dataframe
+        if 'production_order' not in df.columns:
             # Maps part numbers to their active production orders
-            active_part_to_po = {}
-            for po in active_production_orders_set:
-                part_number = po_to_part_mapping.get(po)
-                if part_number:
-                    active_part_to_po[part_number] = po
+            part_to_pos = {}
+            for part_number in df['partno'].unique():
+                part_to_pos[part_number] = []
+                for po in active_production_orders_set:
+                    if po_to_part_mapping.get(po) == part_number:
+                        part_to_pos[part_number].append(po)
 
-            print(f"Active part to PO mapping: {active_part_to_po}")
+            # Expand the dataframe to include all active production orders
+            expanded_rows = []
+            for _, row in df.iterrows():
+                part_number = row['partno']
+                production_orders = part_to_pos.get(part_number, [])
 
-            # Function to assign active production orders based on part number
-            def get_active_production_order(row):
-                part_no = row['partno']
-                return active_part_to_po.get(part_no)
+                if not production_orders:
+                    # Skip parts with no active production orders
+                    continue
 
-            # Add production_order column
-            df['production_order'] = df.apply(get_active_production_order, axis=1)
+                for po in production_orders:
+                    new_row = row.copy()
+                    new_row['production_order'] = po
+                    expanded_rows.append(new_row)
 
-            # Drop rows that don't have an active production order assigned
-            original_row_count = len(df)
-            df = df.dropna(subset=['production_order'])
-            print(f"Filtered from {original_row_count} to {len(df)} rows after adding production orders")
+            if expanded_rows:
+                df = pd.DataFrame(expanded_rows)
+            else:
+                df = pd.DataFrame()  # Empty dataframe if no active production orders found
 
         # Double check if we have any operations for active production orders
         if df.empty:
@@ -392,34 +410,37 @@ async def schedule():
                 work_centers=work_centers_data  # Return work centers even if no operations for active orders
             )
 
-        # Get the active part numbers based on the filtered dataframe for components and lead times
+        # Filter to keep only rows with active production orders
+        df = df[df['production_order'].isin(active_production_orders_set)]
+
+        # Get the active part numbers based on the filtered dataframe
         active_part_numbers_in_df = df['partno'].unique().tolist()
         print(f"Active part numbers in filtered dataframe: {active_part_numbers_in_df}")
 
-        component_quantities = fetch_component_quantities()
+        # Create component_quantities dictionary with the correct format
+        component_quantities = {}
+        for _, row in df.iterrows():
+            part_number = row['partno']
+            production_order = row['production_order']
+            key = (part_number, production_order)
+
+            # Use the saved quantity for this part-PO combination
+            if key not in component_quantities and key in part_po_to_quantity:
+                component_quantities[key] = part_po_to_quantity[key]
+
+        print(f"Component quantities for scheduling: {component_quantities}")
+
+        # Get lead times
         lead_times = fetch_lead_times()
 
-        # Filter component_quantities and lead_times to only include parts in filtered operations
-        component_quantities = {k: v for k, v in component_quantities.items() if k in active_part_numbers_in_df}
+        # Filter lead_times to only include parts in filtered operations
         lead_times = {k: v for k, v in lead_times.items() if k in active_part_numbers_in_df}
 
-        # Call scheduling algorithm with filtered dataframe
+        # Call scheduling algorithm with filtered dataframe and properly structured component_quantities
         schedule_df, overall_end_time, overall_time, daily_production, \
             component_status, partially_completed = schedule_operations(
             df, component_quantities, lead_times
         )
-
-        # Keep tracking production_order in the result
-        if not schedule_df.empty and 'production_order' not in schedule_df.columns:
-            print("Warning: scheduling result doesn't have production_order column")
-
-            # Create mapping from partno to production order from filtered df
-            partno_to_po = {}
-            for _, row in df.iterrows():
-                partno_to_po[row['partno']] = row['production_order']
-
-            # Add production_order to schedule_df
-            schedule_df['production_order'] = schedule_df['partno'].map(partno_to_po)
 
         # Final verification
         if not schedule_df.empty:

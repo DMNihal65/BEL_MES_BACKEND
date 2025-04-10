@@ -24,10 +24,12 @@ class UpdateMachineStatusRequest(BaseModel):
 class OperatorMachineUpdate(BaseModel):
     description: str
     is_on: bool  # True for machine ON, False for machine OFF
+    created_by: Optional[str] = None  # Operator who created the update
 
 class OperatorRawMaterialUpdate(BaseModel):
     description: str
     is_available: bool  # True for available, False for unavailable
+    created_by: Optional[str] = None  # Operator who created the update
 
 class StatusOut(BaseModel):
     id: int
@@ -77,21 +79,22 @@ class ReferenceDataResponse(BaseModel):
     statuses: List[StatusResponse1]
     units: List[UnitResponse]
 
-# Updated notification models (without is_critical)
+# Updated notification models with created_by field
 class MachineNotification(BaseModel):
     machine_id: int
     machine_make: str
     status_name: str
     description: Optional[str]
-    updated_at: Optional[datetime]  # Using available_from as a proxy for update time
+    updated_at: Optional[datetime]
+    created_by: Optional[str] = None
 
 class RawMaterialNotification(BaseModel):
     id: int
-    # child_part_number: str
     part_number: Optional[str]  # From associated order if available
     status_name: str
     description: Optional[str]
-    updated_at: Optional[datetime]  # Using available_from as a proxy for update time
+    updated_at: Optional[datetime]
+    created_by: Optional[str] = None
 
 class MachineNotificationsResponse(BaseModel):
     total_notifications: int
@@ -100,5 +103,3 @@ class MachineNotificationsResponse(BaseModel):
 class RawMaterialNotificationsResponse(BaseModel):
     total_notifications: int
     notifications: List[RawMaterialNotification]
-
-

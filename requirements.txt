@@ -11,7 +11,7 @@ h11==0.14.0
 idna==3.10
 numpy==2.2.2
 minio==7.2.5  # Added minio client
-numpy==1.26.4
+
 pandas==2.2.3
 passlib==1.7.4
 pony==0.7.19
