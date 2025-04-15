@@ -19,11 +19,12 @@ class MachineRaw(db.Entity):
     """Entity class for machine_raw table in livedata schema"""
     _table_ = ('production', 'machine_raw')
 
-    id = PrimaryKey(int, auto=True)  # Auto-incrementing ID
-    machine_id = Required(int)  # Foreign key to master_order.machines table
+    id = PrimaryKey(int, auto=True)
+    machine_id = Required(int)
     timestamp = Required(datetime, default=lambda: datetime.utcnow())
     status = Required(StatusLookup)
     op_mode = Optional(int)
+    prog_status = Optional(int)
     selected_program = Optional(str)
     active_program = Optional(str)
     program_number = Optional(str)
@@ -40,6 +41,7 @@ class MachineRawLive(db.Entity):
     timestamp = Required(datetime, default=lambda: datetime.utcnow())
     status = Required(StatusLookup)
     op_mode = Optional(int)
+    prog_status = Optional(int)
     selected_program = Optional(str)
     active_program = Optional(str)
     part_count = Optional(int)
@@ -55,6 +57,8 @@ class ShiftSummary(db.Entity):
     machine_id = Required(int)
     shift = Required(int)
     timestamp = Required(datetime)
+
+    updatedate = Required(datetime, default=lambda: datetime.utcnow(), auto=True)
 
     off_time = Optional(time)
     idle_time = Optional(time)
@@ -73,8 +77,6 @@ class ShiftSummary(db.Entity):
     quality_loss = Optional(Decimal, precision=5, scale=2)
 
     oee = Optional(Decimal, precision=5, scale=2)
-
-    updatedate = Required(datetime, default=lambda: datetime.utcnow(), auto=True)
 
 
 class ShiftInfo(db.Entity):
@@ -96,3 +98,18 @@ class ConfigInfo(db.Entity):
     planned_non_production_time = Required(int)
     planned_downtime = Required(int)
     updatedate = Required(datetime, default=lambda: datetime.utcnow(), auto=True)
+
+
+class MachineDowntimes(db.Entity):
+    _table_ = ('production', 'machine_downtimes')
+
+    id = PrimaryKey(int, auto=True)
+    machine_id = Required(int)
+    priority = Optional(int)
+    category = Optional(str, nullable=True)
+    description = Optional(str, nullable=True)
+    open_dt = Required(datetime)
+    inprogress_dt = Optional(datetime)
+    closed_dt = Optional(datetime)
+    reported_by = Optional(int)
+    action_taken = Optional(str, nullable=True)
