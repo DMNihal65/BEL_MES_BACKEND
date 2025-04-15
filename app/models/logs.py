@@ -12,6 +12,9 @@ class MachineStatusLog(db.Entity):
     description = Optional(str)
     updated_at = Required(datetime)
     created_by = Optional(str)  # Operator who created the notification
+    is_acknowledged = Required(bool, default=False)  # Whether notification is acknowledged
+    acknowledged_by = Optional(str)  # User ID who acknowledged
+    acknowledged_at = Optional(datetime)  # When it was acknowledged
 
     def to_dict(self):
         return {
@@ -20,7 +23,10 @@ class MachineStatusLog(db.Entity):
             "status_name": self.status_name,
             "description": self.description,
             "updated_at": self.updated_at,
-            "created_by": self.created_by
+            "created_by": self.created_by,
+            "is_acknowledged": self.is_acknowledged,
+            "acknowledged_by": self.acknowledged_by,
+            "acknowledged_at": self.acknowledged_at
         }
 
 
@@ -35,6 +41,9 @@ class RawMaterialStatusLog(db.Entity):
     description = Optional(str)
     updated_at = Required(datetime)
     created_by = Optional(str)  # Operator who created the notification
+    is_acknowledged = Required(bool, default=False)  # Whether notification is acknowledged
+    acknowledged_by = Optional(str)  # User ID who acknowledged
+    acknowledged_at = Optional(datetime)  # When it was acknowledged
 
     def to_dict(self):
         return {
@@ -43,5 +52,8 @@ class RawMaterialStatusLog(db.Entity):
             "status_name": self.status_name,
             "description": self.description,
             "updated_at": self.updated_at,
-            "created_by": self.created_by
+            "created_by": self.created_by,
+            "is_acknowledged": self.is_acknowledged,
+            "acknowledged_by": self.acknowledged_by,
+            "acknowledged_at": self.acknowledged_at
         }

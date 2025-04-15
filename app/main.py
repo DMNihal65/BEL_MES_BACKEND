@@ -5,6 +5,7 @@ from .routes import hr_routes, finance_routes, master_order_routes
 from .api.v1.endpoints import document_management, inventoryv1, priority_scheduling
 from .api.v1.endpoints import component_status, programs, daily_production, operator_login, toolsprograms
 from .api.v1.endpoints import auth, planning, mpp, operations, scheduled, dynamic_rescheduling, comp_maintainance, comp_operator, document_management_v2, production_monitoring, production_logs,quality, document_management
+from .api.v1.endpoints import notification_service
 
 
 app = FastAPI(title="BEL MES API")
@@ -44,6 +45,7 @@ app.include_router(priority_scheduling.router)
 app.include_router(dynamic_rescheduling.router)
 app.include_router(programs.router)
 app.include_router(quality.router)
+app.include_router(notification_service.router)
 
 app.include_router(daily_production.router)
 app.include_router(inventoryv1.router, prefix="/api/v1")
