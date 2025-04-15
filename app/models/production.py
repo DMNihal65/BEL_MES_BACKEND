@@ -78,3 +78,5 @@ class MachineDowntimes(db.Entity):
     open_dt = Required(datetime)
     inprogress_dt = Optional(datetime)
     closed_dt = Optional(datetime)
+
+

@@ -1,8 +1,11 @@
-from app.schemas.scheduled import ScheduledOperation, ProductionLogResponse, CombinedScheduleProductionResponse, MachineLiveStatus, MachineStatusHistory, MachineAnalytics, ProductionSummary, StatusChange, PartCount, ProgramChange, MachineSummary
+from app.schemas.scheduled import ScheduledOperation, ProductionLogResponse, CombinedScheduleProductionResponse, \
+    MachineLiveStatus, MachineStatusHistory, MachineAnalytics, ProductionSummary, StatusChange, PartCount, \
+    ProgramChange, MachineSummary
 
 from fastapi import APIRouter, HTTPException, Query, Path, Depends, status, WebSocket
 from pony.orm import db_session, select, avg, count, desc
-from app.schemas.scheduled import ScheduledOperation, ScheduleResponse, ProductionMetrics, MachineStatus, ProductionKPI, ShiftSummary, ProductionTrend, QualityMetrics, ResourceUtilization
+from app.schemas.scheduled import ScheduledOperation, ScheduleResponse, ProductionMetrics, MachineStatus, ProductionKPI, \
+    ShiftSummary, ProductionTrend, QualityMetrics, ResourceUtilization
 from app.models import Order, Operation, Machine, PartScheduleStatus, PlannedScheduleItem, ScheduleVersion
 from app.crud.operation import fetch_operations
 from app.crud.component_quantities import fetch_component_quantities
@@ -37,6 +40,7 @@ import json
 
 router = APIRouter(prefix="/production_monitoring", tags=["production_monitoring"])
 
+
 # Add a class to manage WebSocket connections
 class ConnectionManager:
     def __init__(self):
@@ -57,7 +61,9 @@ class ConnectionManager:
                 # Remove dead connections
                 self.active_connections.remove(connection)
 
+
 manager = ConnectionManager()
+
 
 def extract_quantity(quantity_str: str) -> tuple[int, int, int]:
     """
@@ -97,7 +103,6 @@ def extract_quantity(quantity_str: str) -> tuple[int, int, int]:
     except Exception as e:
         print(f"Error parsing quantity string: {quantity_str}, Error: {str(e)}")
         return 1, 1, 1
-
 
 
 @router.get("/actual-planned-schedule/", response_model=CombinedScheduleProductionResponse)
@@ -286,6 +291,7 @@ async def get_combined_schedule_production():
         print(f"Error in combined schedule production endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.get("/real-time-machine-status/", response_model=List[MachineStatus])
 @db_session
 async def get_real_time_machine_status():
@@ -295,7 +301,7 @@ async def get_real_time_machine_status():
         machine_statuses = []
         current_time = datetime.utcnow()
         day_ago = current_time - timedelta(hours=24)
-        
+
         for machine in machines:
             current_status = get_machine_current_status(machine.id)
             if current_status:
@@ -325,17 +331,18 @@ async def get_real_time_machine_status():
                     uptime=uptime,
                     efficiency=efficiency
                 ))
-        
+
         return machine_statuses
     except Exception as e:
         print(f"Error in get_real_time_machine_status: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.get("/machine-metrics/{machine_id}", response_model=ProductionMetrics)
 async def get_machine_metrics(
-    machine_id: int,
-    start_date: datetime = Query(default=None),
-    end_date: datetime = Query(default=None)
+        machine_id: int,
+        start_date: datetime = Query(default=None),
+        end_date: datetime = Query(default=None)
 ):
     """Get detailed metrics for a specific machine"""
     try:
@@ -346,15 +353,17 @@ async def get_machine_metrics(
                 end_date = datetime.utcnow()
 
             metrics = get_machine_production_metrics(machine_id, start_date, end_date)
-            
+
             return ProductionMetrics(
                 oee=metrics['status_distribution'].get('PRODUCTION', 0),
                 availability=metrics['status_distribution'].get('ON', 0),
                 performance=calculate_machine_efficiency(machine_id, start_date, end_date),
                 quality=95.0,  # This would need to be calculated from quality data
                 total_planned_time=(end_date - start_date).total_seconds() / 3600,
-                actual_runtime=metrics['status_distribution'].get('PRODUCTION', 0) * (end_date - start_date).total_seconds() / 3600 / 100,
-                downtime=metrics['status_distribution'].get('OFF', 0) * (end_date - start_date).total_seconds() / 3600 / 100,
+                actual_runtime=metrics['status_distribution'].get('PRODUCTION', 0) * (
+                            end_date - start_date).total_seconds() / 3600 / 100,
+                downtime=metrics['status_distribution'].get('OFF', 0) * (
+                            end_date - start_date).total_seconds() / 3600 / 100,
                 ideal_cycle_time=0.0,  # Would need to be calculated from standard times
                 actual_cycle_time=0.0,  # Would need to be calculated from actual production
                 total_pieces=metrics['part_count'],
@@ -364,6 +373,7 @@ async def get_machine_metrics(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.get("/shift-summary/", response_model=List[ShiftSummary])
 async def get_shift_summary(date: datetime = Query(default=None)):
     """Get production summary for each shift using actual machine data"""
@@ -371,20 +381,21 @@ async def get_shift_summary(date: datetime = Query(default=None)):
         with db_session:
             if not date:
                 date = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-            
+
             shifts = [
                 ("Morning", date.replace(hour=6), date.replace(hour=14)),
                 ("Afternoon", date.replace(hour=14), date.replace(hour=22)),
                 ("Night", date.replace(hour=22), (date + timedelta(days=1)).replace(hour=6))
             ]
-            
+
             summaries = []
             for shift_name, shift_start, shift_end in shifts:
                 shift_metrics = calculate_shift_metrics(shift_start, shift_end)
-                
+
                 total_parts = sum(metrics['part_count'] for metrics in shift_metrics.values())
-                avg_efficiency = sum(metrics['efficiency'] for metrics in shift_metrics.values()) / len(shift_metrics) if shift_metrics else 0
-                
+                avg_efficiency = sum(metrics['efficiency'] for metrics in shift_metrics.values()) / len(
+                    shift_metrics) if shift_metrics else 0
+
                 summaries.append(ShiftSummary(
                     shift=shift_name,
                     start_time=shift_start,
@@ -397,16 +408,17 @@ async def get_shift_summary(date: datetime = Query(default=None)):
                     machines=[f"{m.work_center.code}-{m.make}" for m in Machine.select()],
                     efficiency=avg_efficiency
                 ))
-            
+
             return summaries
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.get("/production-trends/", response_model=List[ProductionTrend])
 async def get_production_trends(
-    start_date: datetime = Query(default=None),
-    end_date: datetime = Query(default=None),
-    interval: str = Query(default="hour")
+        start_date: datetime = Query(default=None),
+        end_date: datetime = Query(default=None),
+        interval: str = Query(default="hour")
 ):
     """Get production trends using actual machine data"""
     try:
@@ -424,27 +436,29 @@ async def get_production_trends(
             }.get(interval, 60)
 
             trends_data = get_production_trends(start_date, end_date, interval_minutes)
-            
+
             return [
                 ProductionTrend(
                     timestamp=trend['timestamp'],
                     production_rate=sum(m['part_count'] for m in trend['machines'].values()),
                     quality_rate=95.0,  # Would need quality data
-                    machine_utilization=sum(m['efficiency'] for m in trend['machines'].values()) / len(trend['machines']) if trend['machines'] else 0
+                    machine_utilization=sum(m['efficiency'] for m in trend['machines'].values()) / len(
+                        trend['machines']) if trend['machines'] else 0
                 )
                 for trend in trends_data
             ]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.get("/production-logs/", response_model=List[ProductionLogResponse])
 async def get_production_logs(
-    machine_id: Optional[int] = Query(None, description="Filter by machine ID"),
-    operator_id: Optional[int] = Query(None, description="Filter by operator ID"),
-    schedule_version_id: Optional[int] = Query(None, description="Filter by schedule version ID"),
-    start_date: Optional[datetime] = Query(None, description="Filter logs after this date"),
-    end_date: Optional[datetime] = Query(None, description="Filter logs before this date"),
-    limit: int = Query(50, ge=1, le=100, description="Number of logs to return")
+        machine_id: Optional[int] = Query(None, description="Filter by machine ID"),
+        operator_id: Optional[int] = Query(None, description="Filter by operator ID"),
+        schedule_version_id: Optional[int] = Query(None, description="Filter by schedule version ID"),
+        start_date: Optional[datetime] = Query(None, description="Filter logs after this date"),
+        end_date: Optional[datetime] = Query(None, description="Filter logs before this date"),
+        limit: int = Query(50, ge=1, le=100, description="Number of logs to return")
 ):
     """
     Retrieve production logs with optional filtering by machine, operator, schedule version, and date range.
@@ -453,29 +467,29 @@ async def get_production_logs(
         with db_session:
             # Base query
             query = select(log for log in ProductionLog)
-            
+
             # Apply filters
             if machine_id is not None:
                 query = query.filter(lambda l: l.machine_id == machine_id)
-            
+
             if operator_id is not None:
                 query = query.filter(lambda l: l.operator.id == operator_id)
-                
+
             if schedule_version_id is not None:
                 query = query.filter(lambda l: l.schedule_version.id == schedule_version_id)
-                
+
             if start_date is not None:
                 query = query.filter(lambda l: l.start_time >= start_date)
-                
+
             if end_date is not None:
                 query = query.filter(lambda l: l.end_time <= end_date)
-            
+
             # Order by most recent first
             query = query.order_by(desc(ProductionLog.start_time))
-            
+
             # Execute query with limit
             logs = query.limit(limit)[:]
-            
+
             # Transform to response model
             response_logs = []
             for log in logs:
@@ -486,14 +500,14 @@ async def get_production_logs(
                         machine = Machine.get(id=log.machine_id)
                         if machine and hasattr(machine, 'work_center'):
                             machine_name = f"{machine.work_center.code}-{machine.make}"
-                    
+
                     schedule_info = log.schedule_version
                     part_number = None
                     operation_description = None
                     version_number = None
                     scheduled_item_id = None
                     production_order = None
-                    
+
                     if schedule_info:
                         schedule_item = schedule_info.schedule_item
                         if schedule_item:
@@ -504,7 +518,7 @@ async def get_production_logs(
                             if schedule_item.operation:
                                 operation_description = schedule_item.operation.operation_description
                         version_number = schedule_info.version_number
-                    
+
                     response_log = ProductionLogResponse(
                         id=log.id,
                         operator_id=log.operator.id if log.operator else None,
@@ -522,13 +536,13 @@ async def get_production_logs(
                         production_order=production_order
                     )
                     response_logs.append(response_log)
-                    
+
                 except ValidationError as ve:
                     print(f"Validation error for log {log.id}: {str(ve)}")
                     continue
-                
+
             return response_logs
-            
+
     except Exception as e:
         error_msg = f"Error retrieving production logs: {str(e)}"
         print(error_msg)
@@ -540,12 +554,13 @@ async def get_production_logs(
             }
         )
 
+
 @router.get("/combined-schedule-production/", response_model=CombinedScheduleProductionResponse)
 async def get_combined_schedule_production(
-    start_date: Optional[datetime] = Query(None, description="Filter from this date"),
-    end_date: Optional[datetime] = Query(None, description="Filter until this date"),
-    machine_id: Optional[int] = Query(None, description="Filter by machine ID"),
-    operator_id: Optional[int] = Query(None, description="Filter by operator ID")
+        start_date: Optional[datetime] = Query(None, description="Filter from this date"),
+        end_date: Optional[datetime] = Query(None, description="Filter until this date"),
+        machine_id: Optional[int] = Query(None, description="Filter by machine ID"),
+        operator_id: Optional[int] = Query(None, description="Filter by operator ID")
 ):
     """
     Retrieve combined production logs and scheduled operations with optional filtering
@@ -554,7 +569,7 @@ async def get_combined_schedule_production(
         with db_session:
             # Get production logs using existing function
             logs_query = select(log for log in ProductionLog)
-            
+
             if start_date:
                 logs_query = logs_query.filter(lambda l: l.start_time >= start_date)
             if end_date:
@@ -563,9 +578,9 @@ async def get_combined_schedule_production(
                 logs_query = logs_query.filter(lambda l: l.machine_id == machine_id)
             if operator_id:
                 logs_query = logs_query.filter(lambda l: l.operator.id == operator_id)
-                
+
             logs = logs_query.order_by(desc(ProductionLog.start_time))[:]
-            
+
             # Process logs similar to get_production_logs endpoint
             logs_data = []
             for log in logs:
@@ -575,14 +590,14 @@ async def get_combined_schedule_production(
                         machine = Machine.get(id=log.machine_id)
                         if machine and hasattr(machine, 'work_center'):
                             machine_name = f"{machine.work_center.code}-{machine.make}"
-                    
+
                     schedule_info = log.schedule_version
                     part_number = None
                     operation_description = None
                     version_number = None
                     scheduled_item_id = None
                     production_order = None
-                    
+
                     if schedule_info:
                         schedule_item = schedule_info.schedule_item
                         if schedule_item:
@@ -593,7 +608,7 @@ async def get_combined_schedule_production(
                             if schedule_item.operation:
                                 operation_description = schedule_item.operation.operation_description
                         version_number = schedule_info.version_number
-                    
+
                     logs_data.append(ProductionLogResponse(
                         id=log.id,
                         operator_id=log.operator.id if log.operator else None,
@@ -632,7 +647,7 @@ async def get_combined_schedule_production(
 
                 for _, row in schedule_df.iterrows():
                     total_qty, current_qty, today_qty = extract_quantity(row['quantity'])
-                    
+
                     if total_qty > 1:  # Skip setup operations
                         quantity_str = f"Process({current_qty}/{total_qty}pcs, Today: {today_qty}pcs)"
                         scheduled_operations.append(
@@ -663,6 +678,7 @@ async def get_combined_schedule_production(
             }
         )
 
+
 # Live Machine Status Endpoint
 @router.get("/live-status/", response_model=List[MachineLiveStatus])
 async def get_live_machine_status():
@@ -673,13 +689,13 @@ async def get_live_machine_status():
         with db_session:
             live_statuses = []
             machines = select(m for m in Machine)[:]
-            
+
             for machine in machines:
                 try:
                     live_data = MachineRawLive.get(machine_id=machine.id)
                     if live_data:
                         print(f"Processing machine {machine.id}")  # Debug log
-                        
+
                         # Base machine data
                         machine_data = {
                             "machine_id": machine.id,
@@ -701,7 +717,7 @@ async def get_live_machine_status():
                             "operation_number": None,
                             "operation_description": None
                         }
-                        
+
                         # Get order details if job is in progress
                         if live_data.job_in_progress:
                             print(f"Getting order details for job {live_data.job_in_progress}")  # Debug log
@@ -711,23 +727,24 @@ async def get_live_machine_status():
                                 machine_data.update(order_details)
                             else:
                                 print(f"No order details found for job {live_data.job_in_progress}")
-                        
+
                         live_statuses.append(MachineLiveStatus(**machine_data))
                         print(f"Successfully added machine {machine.id} to response")  # Debug log
-                
+
                 except Exception as machine_error:
                     print(f"Error processing machine {machine.id}: {str(machine_error)}")
                     continue
-            
+
             print(f"Returning {len(live_statuses)} machine statuses")  # Debug log
             return live_statuses
-            
+
     except Exception as e:
         print(f"Error in get_live_machine_status: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error fetching live status: {str(e)}"
         )
+
 
 # WebSocket endpoint for live machine status
 @router.websocket("/ws/live-status/")
@@ -738,13 +755,13 @@ async def websocket_live_status(websocket: WebSocket):
     try:
         await manager.connect(websocket)
         print(f"Client connected to WebSocket. Total connections: {len(manager.active_connections)}")
-        
+
         while websocket in manager.active_connections:
             try:
                 with db_session:
                     machine_statuses = list(MachineRawLive.select()[:])
                     print(f"Found {len(machine_statuses)} machine statuses")
-                    
+
                     response_data = []
                     for status in machine_statuses:
                         try:
@@ -763,7 +780,8 @@ async def websocket_live_status(websocket: WebSocket):
                                 "selected_program": status.selected_program or "",
                                 "part_count": status.part_count or 0,
                                 "job_status": status.job_status,
-                                "last_updated": status.time_stamp.isoformat() if status.time_stamp else None,  # Convert datetime to ISO string
+                                "last_updated": status.time_stamp.isoformat() if status.time_stamp else None,
+                                # Convert datetime to ISO string
                                 "job_in_progress": status.job_in_progress,
                                 # Initialize order details with default values
                                 "production_order": None,
@@ -774,7 +792,7 @@ async def websocket_live_status(websocket: WebSocket):
                                 "operation_number": None,
                                 "operation_description": None
                             }
-                            
+
                             # Get order details if job is in progress
                             if status.job_in_progress:
                                 print(f"Getting order details for job {status.job_in_progress}")
@@ -784,13 +802,13 @@ async def websocket_live_status(websocket: WebSocket):
                                     machine_data.update(order_details)
                                 else:
                                     print(f"No order details found for job {status.job_in_progress}")
-                            
+
                             response_data.append(machine_data)
-                            
+
                         except Exception as machine_error:
                             print(f"Error processing machine status: {str(machine_error)}")
                             continue
-                    
+
                     if websocket in manager.active_connections:
                         try:
                             print(f"Sending {len(response_data)} machine statuses")
@@ -801,15 +819,15 @@ async def websocket_live_status(websocket: WebSocket):
                         except Exception as send_error:
                             print(f"Unexpected error sending data: {str(send_error)}")
                             break
-                
+
             except Exception as loop_error:
                 print(f"Error in WebSocket loop: {str(loop_error)}")
                 if "close message" in str(loop_error).lower():
                     break
                 continue
-                
+
             await asyncio.sleep(1)  # Update interval
-            
+
     except WebSocketDisconnect:
         print("Client disconnected from WebSocket")
     except Exception as e:
@@ -819,12 +837,13 @@ async def websocket_live_status(websocket: WebSocket):
             manager.disconnect(websocket)
             print("Cleaned up WebSocket connection")
 
+
 # Machine History and Analytics
 @router.get("/machine-history/{machine_id}", response_model=MachineStatusHistory)
 async def get_machine_history(
-    machine_id: int,
-    start_date: datetime = Query(default=None),
-    end_date: datetime = Query(default=None)
+        machine_id: int,
+        start_date: datetime = Query(default=None),
+        end_date: datetime = Query(default=None)
 ):
     """
     Get detailed machine history with organized data for various graphs
@@ -841,11 +860,11 @@ async def get_machine_history(
                 raise HTTPException(status_code=404, detail="Machine not found")
 
             # Get all records for the time period
-            history_records = select(r for r in MachineRaw 
-                                  if r.machine_id == machine_id 
-                                  and r.time_stamp >= start_date 
-                                  and r.time_stamp <= end_date
-                                  ).order_by(lambda r: r.time_stamp)[:]
+            history_records = select(r for r in MachineRaw
+                                     if r.machine_id == machine_id
+                                     and r.time_stamp >= start_date
+                                     and r.time_stamp <= end_date
+                                     ).order_by(lambda r: r.time_stamp)[:]
 
             # Initialize data structures
             status_changes = []
@@ -862,7 +881,7 @@ async def get_machine_history(
                     if current_status and status_start_time:
                         duration = (record.time_stamp - status_start_time).total_seconds() / 3600  # hours
                         status_duration[current_status] += duration
-                    
+
                     current_status = record.status.status_name
                     status_start_time = record.time_stamp
                     status_changes.append(StatusChange(
@@ -904,18 +923,19 @@ async def get_machine_history(
                 hourly_production=dict(hourly_production),
                 status_duration=dict(status_duration)
             )
-            
+
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error fetching machine history: {str(e)}"
         )
 
+
 # Production Analytics Dashboard
 @router.get("/production-analytics/", response_model=List[MachineAnalytics])
 async def get_production_analytics(
-    start_date: datetime = Query(default=None),
-    end_date: datetime = Query(default=None)
+        start_date: datetime = Query(default=None),
+        end_date: datetime = Query(default=None)
 ):
     """
     Get comprehensive production analytics for all machines
@@ -934,15 +954,15 @@ async def get_production_analytics(
                 try:
                     # Get all records for the machine within time range
                     machine_records = list(select(r for r in MachineRaw
-                        if r.machine_id == machine.id
-                        and r.time_stamp >= start_date
-                        and r.time_stamp <= end_date
-                    ).order_by(lambda r: r.time_stamp)[:])
+                                                  if r.machine_id == machine.id
+                                                  and r.time_stamp >= start_date
+                                                  and r.time_stamp <= end_date
+                                                  ).order_by(lambda r: r.time_stamp)[:])
 
                     # Calculate status distribution
                     status_counts = defaultdict(int)
                     total_records = len(machine_records)
-                    
+
                     for record in machine_records:
                         if record and record.status and record.status.status_name:
                             status_counts[record.status.status_name] += 1
@@ -969,7 +989,7 @@ async def get_production_analytics(
                             df.set_index('timestamp', inplace=True)
                             hourly_production = df.resample('H').last()
                             hourly_production = hourly_production.fillna(method='ffill')
-                            
+
                             for idx, row in hourly_production.iterrows():
                                 if pd.notnull(row['part_count']):
                                     production_trends.append(
@@ -984,7 +1004,8 @@ async def get_production_analytics(
                     # Calculate total parts
                     total_parts = 0
                     if machine_records:
-                        part_counts = [r.part_count for r in machine_records if r and hasattr(r, 'part_count') and r.part_count is not None]
+                        part_counts = [r.part_count for r in machine_records if
+                                       r and hasattr(r, 'part_count') and r.part_count is not None]
                         if part_counts:
                             total_parts = max(part_counts)
 
@@ -1014,41 +1035,43 @@ async def get_production_analytics(
             detail=f"Error fetching production analytics: {str(e)}"
         )
 
+
 def calculate_average_cycle_time(production_records):
     """Helper function to calculate average cycle time"""
     try:
         if not production_records:
             return 0.0
-        
+
         cycle_times = []
         prev_record = None
-        
+
         for record in production_records:
-            if (prev_record and 
-                hasattr(prev_record, 'part_count') and 
-                hasattr(record, 'part_count') and 
-                prev_record.part_count is not None and 
-                record.part_count is not None):
-                
+            if (prev_record and
+                    hasattr(prev_record, 'part_count') and
+                    hasattr(record, 'part_count') and
+                    prev_record.part_count is not None and
+                    record.part_count is not None):
+
                 if record.part_count > prev_record.part_count:
                     time_diff = (record.time_stamp - prev_record.time_stamp).total_seconds()
                     part_diff = record.part_count - prev_record.part_count
                     if part_diff > 0:
                         cycle_times.append(time_diff / part_diff)
             prev_record = record
-        
+
         return sum(cycle_times) / len(cycle_times) if cycle_times else 0.0
-        
+
     except Exception as e:
         print(f"Error calculating cycle time: {str(e)}")
         return 0.0
 
+
 # Production Summary
 @router.get("/production-summary/", response_model=ProductionSummary)
 async def get_production_summary(
-    start_date: datetime = Query(default=None),
-    end_date: datetime = Query(default=None)
-):
+        start_date: datetime = Query(default=None),
+        end_date: datetime = Query(default=None)
+, status=None):
     """
     Get overall production summary across all machines
     """
@@ -1067,10 +1090,10 @@ async def get_production_summary(
             for machine in machines:
                 # Corrected records query
                 records = select(r for r in MachineRaw
-                    if r.machine_id == machine.id
-                    and r.time_stamp >= start_date
-                    and r.time_stamp <= end_date
-                )[:]
+                                 if r.machine_id == machine.id
+                                 and r.time_stamp >= start_date
+                                 and r.time_stamp <= end_date
+                                 )[:]
 
                 # Calculate machine-specific metrics
                 machine_production = sum(r.part_count or 0 for r in records)

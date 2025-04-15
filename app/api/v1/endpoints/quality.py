@@ -14,7 +14,6 @@ from app.models.quality import Connectivity
 from app.models.inventoryv1 import InventoryItem
 
 # Add the EXE_PATH constant at the top of the file
-EXE_PATH = "D:\siri\BEL\BEL_MES_BACKEND\GDNT_updates2.exe"  # Replace with your actual exe path
 
 router = APIRouter(prefix="/api/v1/quality", tags=["quality"])
 
@@ -202,27 +201,6 @@ async def get_order_ipids(
         )
 
 
-@router.get("/run")
-async def run_exe(
-        current_user=Depends(get_current_user)
-) -> Any:
-    """
-    Run an external executable file
-    """
-    if not os.path.exists(EXE_PATH):
-        raise HTTPException(
-            status_code=404,
-            detail="Executable not found"
-        )
-
-    try:
-        subprocess.Popen(EXE_PATH, shell=True)
-        return {"message": "Executable started successfully"}
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error running executable: {str(e)}"
-        )
 
 
 @router.post(
@@ -360,5 +338,4 @@ def get_connectivity_by_instrument(
             status_code=500,
             detail=f"An error occurred while retrieving connectivity information: {str(e)}"
         )
-
 

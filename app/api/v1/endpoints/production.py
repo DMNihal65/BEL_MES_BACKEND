@@ -1,13 +1,12 @@
-
 from fastapi import APIRouter, HTTPException, Query, Body
 from typing import List, Optional, Any, Dict
 from datetime import datetime
 from pony.orm import db_session, select, commit
 from pydantic import BaseModel
-
 from app.models import User
 # Import just the ScheduleVersion model
 from app.models.scheduled import ScheduleVersion, ProductionLog
+
 
 router = APIRouter(
     prefix="/production",
@@ -178,7 +177,6 @@ def create_production_log(
 
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Error creating production log: {str(e)}")
-
 
 
 
