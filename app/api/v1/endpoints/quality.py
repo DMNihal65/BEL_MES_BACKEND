@@ -5,15 +5,16 @@ import subprocess
 from pony.orm import db_session, commit, flush, select
 
 from app.core.security import get_current_user
+from app.models import Operation, Order, User
 from app.schemas.quality import MasterBocCreate, MasterBocResponse, StageInspectionResponse, \
     StageInspectionCreate, QualityInspectionResponse, DetailedQualityInspectionResponse, \
     OrderIPIDResponse, MasterBocIPIDInfo, MeasurementInstrumentsResponse, \
-    ConnectivityCreate, ConnectivityResponse
+    ConnectivityCreate, ConnectivityResponse, StageInspectionDetail
 from app.crud.quality import MasterBocCRUD, StageInspectionCRUD, QualityInspectionCRUD
-from app.models.quality import Connectivity
+from app.models.quality import Connectivity, StageInspection
 from app.models.inventoryv1 import InventoryItem
 
-# Add the EXE_PATH constant at the top of the file
+from app.schemas.quality import OperatorInfo, StageInspectionWithOperator, OperationGroup
 
 router = APIRouter(prefix="/api/v1/quality", tags=["quality"])
 
@@ -113,39 +114,56 @@ async def create_stage_inspection(
         data: StageInspectionCreate,
         current_user=Depends(get_current_user)
 ) -> Any:
-    """Create a new Stage Inspection entry"""
+    """
+    Create a new Stage Inspection entry
+
+    This endpoint enforces the following validation rules:
+    - If creating a quantity > 1, the first quantity must exist and be marked as done
+    - Each subsequent quantity can only be added if the previous one is marked as done
+    """
     try:
         stage_inspection = StageInspectionCRUD.create_stage_inspection(data)
         return stage_inspection
-    except Exception as e:
+    except ValueError as e:
         raise HTTPException(
             status_code=400,
+            detail=str(e)
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
             detail=f"Error creating Stage Inspection: {str(e)}"
         )
 
 
-@router.get(
-    "/inspection/{order_id}",
-    response_model=QualityInspectionResponse
+@router.patch(
+    "/stage-inspection/{inspection_id}/status",
+    response_model=StageInspectionResponse,
+    summary="Update the completion status of a stage inspection"
 )
-async def get_quality_inspection_data(
-        order_id: int = Path(..., gt=0),
+async def update_inspection_status(
+        inspection_id: int = Path(..., gt=0, description="Stage inspection ID"),
+        is_done: bool = Query(..., description="New status (true = done, false = not done)"),
         current_user=Depends(get_current_user)
 ) -> Any:
     """
-    Get comprehensive quality inspection data for an order including:
-    - Order information (production order, part number)
-    - All stage inspections for the order with operation details
+    Update the completion status (is_done) of a stage inspection.
+
+    This allows marking an inspection as completed, which is required before
+    subsequent quantities for the same order and operation can be added.
     """
     try:
-        inspection_data = QualityInspectionCRUD.get_quality_inspection_data(order_id)
-        return inspection_data
+        updated_inspection = StageInspectionCRUD.update_inspection_status(inspection_id, is_done)
+        return updated_inspection
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(
+            status_code=404,
+            detail=str(e)
+        )
     except Exception as e:
         raise HTTPException(
-            status_code=400,
-            detail=f"Error retrieving quality inspection data: {str(e)}"
+            status_code=500,
+            detail=f"Error updating inspection status: {str(e)}"
         )
 
 
@@ -177,6 +195,105 @@ async def get_detailed_quality_inspection(
 
 
 @router.get(
+    "/stage-inspection/{order_id}/grouped",
+    response_model=DetailedQualityInspectionResponse,
+    summary="Get stage inspection data grouped by operation number"
+)
+@db_session
+async def get_stage_inspection_grouped(
+        order_id: int = Path(..., gt=0),
+        current_user=Depends(get_current_user)
+) -> Any:
+    """
+    Get stage inspection data grouped by operation number including:
+    - Order information (production order, part number)
+    - List of all operation numbers
+    - Stage inspections grouped by operation number
+    - Operator information for each inspection
+    """
+    try:
+        # Get order information
+        order = Order.get(id=order_id)
+        if not order:
+            raise HTTPException(status_code=404, detail=f"Order with ID {order_id} not found")
+
+        # Get all operations for this order
+        operations = select(op for op in Operation if op.order.id == order_id).order_by(
+            Operation.operation_number)[:]
+
+        if not operations:
+            raise HTTPException(status_code=404, detail=f"No operations found for order {order_id}")
+
+        # Get all operation numbers
+        operation_numbers = [op.operation_number for op in operations]
+
+        inspection_groups = []
+
+        # Process each operation that has inspections
+        for op in operations:
+            # Get stage inspections for this operation
+            stage_inspections = select(si for si in StageInspection
+                                       if si.order_id == order_id and
+                                       si.op_no == op.operation_number)[:]
+
+            if stage_inspections:  # Only add to inspection_data if there are inspections
+                inspection_list = []
+                for si in stage_inspections:
+                    # Get operator information
+                    operator = User.get(id=si.op_id)
+                    if operator:
+                        operator_info = OperatorInfo(
+                            id=operator.id,
+                            username=operator.username,
+                            email=operator.email
+                        )
+
+                        inspection_list.append(
+                            StageInspectionWithOperator(
+                                id=si.id,
+                                nominal_value=si.nominal_value,
+                                uppertol=si.uppertol,
+                                lowertol=si.lowertol,
+                                zone=si.zone,
+                                dimension_type=si.dimension_type,
+                                measured_1=si.measured_1,
+                                measured_2=si.measured_2,
+                                measured_3=si.measured_3,
+                                measured_mean=si.measured_mean,
+                                measured_instrument=si.measured_instrument,
+                                is_done=si.is_done,
+                                quantity_no=si.quantity_no,
+                                created_at=si.created_at,
+                                operator=operator_info
+                            )
+                        )
+
+                if inspection_list:
+                    inspection_groups.append(
+                        OperationGroup(
+                            operation_number=op.operation_number,
+                            inspections=inspection_list
+                        )
+                    )
+
+        return DetailedQualityInspectionResponse(
+            order_id=order.id,
+            production_order=order.production_order,
+            part_number=order.part_number,
+            operations=operation_numbers,  # All operation numbers
+            inspection_data=inspection_groups  # Only operations with inspections
+        )
+
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Error retrieving stage inspection data: {str(e)}"
+        )
+
+
+@router.get(
     "/master-boc/ipids/{order_id}",
     response_model=OrderIPIDResponse
 )
@@ -199,8 +316,6 @@ async def get_order_ipids(
             status_code=400,
             detail=f"Error retrieving IPID data: {str(e)}"
         )
-
-
 
 
 @router.post(

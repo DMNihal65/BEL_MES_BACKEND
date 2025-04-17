@@ -43,6 +43,7 @@ class StageInspection(db.Entity):
     op_no = Required(int)
     order_id = Required(int)
     quantity_no = Optional(int)  # Change from Required to Optional
+    is_done = Required(bool, default=False)  # Added is_done field
     created_at = Required(datetime, default=lambda: datetime.now())
 
 class Connectivity(db.Entity):

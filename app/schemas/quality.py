@@ -67,12 +67,14 @@ class StageInspectionBase(BaseModel):
     op_no: int = Field(..., description="Operation number", gt=0)
     order_id: int = Field(..., description="Order ID", gt=0)
     quantity_no: Optional[int] = Field(None, description="Quantity number")
+    is_done: bool = Field(False, description="Indicates if this inspection is completed")
 
 class StageInspectionCreate(StageInspectionBase):
     pass
 
 class StageInspectionResponse(StageInspectionBase):
     id: int
+    created_at: datetime
 
     class Config:
         from_attributes = True
@@ -101,7 +103,9 @@ class StageInspectionDetail(BaseModel):
     op_no: int
     order_id: int
     quantity_no: Optional[int] = None
+    is_done: bool
     created_at: datetime
+
 
 class QualityInspectionResponse(BaseModel):
     order_info: OrderInfo
@@ -125,6 +129,7 @@ class StageInspectionWithOperator(BaseModel):
     measured_3: float
     measured_mean: float
     measured_instrument: str
+    is_done: bool
     quantity_no: Optional[int] = None
     created_at: datetime
     operator: OperatorInfo
@@ -193,4 +198,3 @@ class ConnectivityResponse(ConnectivityBase):
 
     class Config:
         from_attributes = True
-

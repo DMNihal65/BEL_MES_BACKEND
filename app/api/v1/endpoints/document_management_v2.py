@@ -2379,3 +2379,455 @@ def download_ballooned_drawing_by_po_and_op(
         error_details = traceback.format_exc()
         print(f"Error downloading ballooned drawing: {error_details}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/report/upload/", response_model=DocumentResponse)
+async def upload_report_document(
+        file: UploadFile = File(...),
+        folder_path: str = Form(...),
+        document_name: str = Form(...),
+        description: Optional[str] = Form(None),
+        version_number: str = Form(...),
+        order_number: Optional[str] = Form(None),
+        metadata: Optional[str] = Form("{}"),
+        current_user: User = Depends(get_current_user)
+):
+    """Upload a report document with the ability to create custom folder paths"""
+    try:
+        with db_session:
+            user = User.get(id=current_user.id)
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+
+            # Define report document type name as a string constant
+            REPORT_DOC_TYPE = "REPORT"
+
+            # Get or create Report document type
+            doc_type_obj = DocumentTypeV2.get(name=REPORT_DOC_TYPE)
+            if not doc_type_obj:
+                doc_type_obj = DocumentTypeV2(
+                    name=REPORT_DOC_TYPE,
+                    description="Report Documents",
+                    allowed_extensions=[".pdf", ".doc", ".docx", ".xlsx", ".xls", ".csv", ".txt"]
+                )
+                commit()
+
+            # Get or create root folder for document types
+            root_folder = FolderV2.get(name="Document Types", parent_folder=None)
+            if not root_folder:
+                root_folder = FolderV2(
+                    name="Document Types",
+                    path="Document Types",
+                    created_by=user
+                )
+                commit()
+
+            # Get or create Report folder
+            report_folder = FolderV2.get(lambda f: f.name == REPORT_DOC_TYPE and f.parent_folder == root_folder)
+            if not report_folder:
+                report_folder = FolderV2(
+                    name=REPORT_DOC_TYPE,
+                    path=f"Document Types/{REPORT_DOC_TYPE}",
+                    parent_folder=root_folder,
+                    created_by=user
+                )
+                commit()
+
+            # Process the custom folder path to get to the target folder
+            if folder_path:
+                folder_parts = folder_path.strip("/").split("/")
+                current_folder = report_folder
+                current_path = f"Document Types/{REPORT_DOC_TYPE}"
+
+                # Create each folder in the path if it doesn't exist
+                for folder_name in folder_parts:
+                    if not folder_name:
+                        continue
+
+                    current_path += f"/{folder_name}"
+                    next_folder = FolderV2.get(lambda f: f.name == folder_name and f.parent_folder == current_folder)
+
+                    if not next_folder:
+                        next_folder = FolderV2(
+                            name=folder_name,
+                            path=current_path,
+                            parent_folder=current_folder,
+                            created_by=user
+                        )
+                        commit()
+
+                    current_folder = next_folder
+
+                # The specified folder path will be the parent folder
+                parent_folder = current_folder
+            else:
+                # If no folder path is provided, use the report root folder as parent
+                parent_folder = report_folder
+
+            # Get production order if order_number is provided
+            production_order = None
+            if order_number:
+                production_order = Order.get(production_order=order_number)
+                if not production_order:
+                    raise HTTPException(status_code=404, detail=f"Order {order_number} not found")
+
+                # Create a folder for the order_number inside the parent folder
+                order_folder_path = f"{parent_folder.path}/{order_number}"
+                order_folder = FolderV2.get(lambda f: f.name == order_number and f.parent_folder == parent_folder)
+                if not order_folder:
+                    order_folder = FolderV2(
+                        name=order_number,
+                        path=order_folder_path,
+                        parent_folder=parent_folder,
+                        created_by=user
+                    )
+                    commit()
+
+                # Use the order folder as the target folder for the document
+                target_folder = order_folder
+            else:
+                # If no order number, just use the parent folder
+                target_folder = parent_folder
+
+            # Validate file extension
+            file_ext = file.filename.split('.')[-1].lower()
+            if f".{file_ext}" not in doc_type_obj.allowed_extensions:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"File type .{file_ext} not allowed for Report documents"
+                )
+
+            # Create document
+            new_doc = DocumentV2(
+                name=document_name,
+                folder=target_folder,
+                doc_type=doc_type_obj,
+                description=description,
+                part_number=order_number if order_number else "",
+                production_order=production_order,
+                created_by=user
+            )
+            commit()
+
+            # Handle file upload and version creation
+            file_content = await file.read()
+            checksum = hashlib.sha256(file_content).hexdigest()
+            minio_path = f"documents/v2/{target_folder.path}/{new_doc.id}/v{version_number}/{file.filename}"
+
+            try:
+                file.file.seek(0)
+                minio.upload_file(
+                    file=file.file,
+                    object_name=minio_path,
+                    content_type=file.content_type or "application/octet-stream"
+                )
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Failed to upload file: {str(e)}")
+
+            # Parse metadata
+            try:
+                metadata_dict = json.loads(metadata) if metadata else {}
+            except json.JSONDecodeError:
+                metadata_dict = {}
+
+            # Create version
+            version = DocumentVersionV2(
+                document=new_doc,
+                version_number=version_number,
+                minio_path=minio_path,
+                file_size=len(file_content),
+                checksum=checksum,
+                created_by=user,
+                metadata=metadata_dict
+            )
+            new_doc.latest_version = version
+
+            # Create access log - using string constant instead of enum
+            DocumentAccessLogV2(
+                document=new_doc,
+                version=version,
+                user=user,
+                action_type="UPDATE",
+                ip_address="0.0.0.0"
+            )
+
+            commit()
+
+            return {
+                "id": new_doc.id,
+                "name": new_doc.name,
+                "folder_id": new_doc.folder.id,
+                "doc_type_id": new_doc.doc_type.id,
+                "description": new_doc.description,
+                "part_number": new_doc.part_number,
+                "production_order_id": new_doc.production_order.id if new_doc.production_order else None,
+                "created_at": new_doc.created_at,
+                "created_by_id": new_doc.created_by.id,
+                "is_active": new_doc.is_active,
+                "latest_version": {
+                    "id": version.id,
+                    "document_id": new_doc.id,
+                    "version_number": version.version_number,
+                    "minio_path": version.minio_path,
+                    "file_size": version.file_size,
+                    "checksum": version.checksum,
+                    "created_at": version.created_at,
+                    "created_by_id": version.created_by.id,
+                    "is_active": version.is_active,
+                    "metadata": version.metadata
+                }
+            }
+
+    except Exception as e:
+        # Add more detailed error logging
+        print(f"Error in upload_report_document: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/debug/folder/{folder_name}", response_model=Dict)
+async def debug_folder(
+        folder_name: str,
+        current_user: User = Depends(get_current_user)
+):
+    """
+    Debug endpoint to check if a folder exists and its properties.
+    """
+    try:
+        with db_session:
+            user = User.get(id=current_user.id)
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+
+            # Find the Document Types root folder
+            root_folder = FolderV2.get(name="Document Types", parent_folder=None)
+            if not root_folder:
+                raise HTTPException(status_code=404, detail="Document Types folder not found")
+
+            # Find the Report folder under Document Types
+            report_folder = FolderV2.get(lambda f: f.name == "REPORT" and f.parent_folder == root_folder)
+            if not report_folder:
+                raise HTTPException(status_code=404, detail="REPORT folder not found")
+
+            # Look for the specified folder directly
+            all_matching_folders = select(f for f in FolderV2 if f.name == folder_name)
+
+            # Look for the specified folder under REPORT
+            target_folder = FolderV2.get(lambda f: f.name == folder_name and f.parent_folder == report_folder)
+
+            folder_results = []
+
+            # Check all matching folders with the name
+            for folder in all_matching_folders:
+                folder_results.append({
+                    "id": folder.id,
+                    "name": folder.name,
+                    "parent_folder_id": folder.parent_folder.id if folder.parent_folder else None,
+                    "parent_folder_name": folder.parent_folder.name if folder.parent_folder else None,
+                    "is_active": folder.is_active,
+                    "path": folder.path,
+                    "created_at": folder.created_at.isoformat() if folder.created_at else None,
+                    "created_by_id": folder.created_by.id if folder.created_by else None
+                })
+
+            return {
+                "folder_name": folder_name,
+                "report_folder_id": report_folder.id,
+                "direct_match_under_report": {
+                    "found": target_folder is not None,
+                    "is_active": target_folder.is_active if target_folder else None,
+                    "id": target_folder.id if target_folder else None
+                },
+                "all_matching_folders": folder_results,
+                "count_all_matching": len(folder_results)
+            }
+
+    except Exception as e:
+        print(f"Error in debug_folder: {str(e)}")
+        import traceback
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/report/structure/", response_model=List[Dict])
+async def get_report_structure(
+        current_user: User = Depends(get_current_user),
+        force_refresh: bool = False  # Add a parameter to force refresh from DB
+):
+    """
+    Get all folders and files under the report folder structure.
+    Returns a hierarchical representation of folders and their documents.
+    """
+    try:
+        with db_session:
+            user = User.get(id=current_user.id)
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+
+            # Define report document type name as a string constant
+            REPORT_DOC_TYPE = "REPORT"
+
+            # Find the Document Types root folder
+            root_folder = FolderV2.get(name="Document Types", parent_folder=None)
+            if not root_folder:
+                raise HTTPException(status_code=404, detail="Document Types folder not found")
+
+            # Find the Report folder under Document Types
+            report_folder = FolderV2.get(lambda f: f.name == REPORT_DOC_TYPE and f.parent_folder == root_folder)
+            if not report_folder:
+                raise HTTPException(status_code=404, detail="REPORT folder not found")
+
+            # Function to recursively build folder structure
+            def build_folder_structure(folder):
+                result = {
+                    "id": folder.id,
+                    "name": folder.name,
+                    "type": "folder",
+                    "path": folder.path,
+                    "created_at": folder.created_at.isoformat() if folder.created_at else None,
+                    "created_by_id": folder.created_by.id if folder.created_by else None,
+                    "children": []
+                }
+
+                # Print debug information for this folder
+                print(f"Processing folder: {folder.name} (ID: {folder.id}, is_active: {folder.is_active})")
+
+                # Debug: Check for specific folder
+                if folder.name == "REPORT":
+                    # Check for VMS folder directly to see if it exists at all
+                    vms_folder = select(f for f in FolderV2 if f.name == "VMS" and f.parent_folder == folder)
+                    for vf in vms_folder:
+                        print(f"VMS folder found: ID={vf.id}, is_active={vf.is_active}, parent={vf.parent_folder.id}")
+
+                # Get all documents in this folder
+                documents = select(d for d in DocumentV2 if d.folder == folder and d.is_active)
+
+                # Debug: print count of documents found
+                print(f"Found {documents.count()} active documents in folder {folder.name}")
+
+                for doc in documents:
+                    # Get the latest version info
+                    latest_version = doc.latest_version
+                    if latest_version:
+                        result["children"].append({
+                            "id": doc.id,
+                            "name": doc.name,
+                            "type": "document",
+                            "description": doc.description,
+                            "part_number": doc.part_number,
+                            "production_order_id": doc.production_order.id if doc.production_order else None,
+                            "created_at": doc.created_at.isoformat() if doc.created_at else None,
+                            "created_by_id": doc.created_by.id if doc.created_by else None,
+                            "latest_version": {
+                                "id": latest_version.id,
+                                "version_number": latest_version.version_number,
+                                "minio_path": latest_version.minio_path,
+                                "file_size": latest_version.file_size,
+                                "created_at": latest_version.created_at.isoformat() if latest_version.created_at else None
+                            }
+                        })
+
+                # IMPORTANT: Get all subfolders - query directly for active status
+                subfolders = list(
+                    select(f for f in FolderV2 if f.parent_folder.id == folder.id and f.is_active == True))
+
+                # Debug: print detailed info about subfolders
+                print(f"Found {len(subfolders)} active subfolders in folder {folder.name}")
+                for sf in subfolders:
+                    print(f"  - Subfolder: {sf.name} (ID: {sf.id}, is_active: {sf.is_active})")
+
+                # Recursively build structure for each subfolder
+                for subfolder in subfolders:
+                    subfolder_structure = build_folder_structure(subfolder)
+                    result["children"].append(subfolder_structure)
+
+                return result
+
+            # Build the complete structure starting from report folder
+            result = build_folder_structure(report_folder)
+
+            return [result]  # Return as a list for consistency with response_model
+
+    except Exception as e:
+        # Log the error for debugging
+        print(f"Error in get_report_structure: {str(e)}")
+        import traceback
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/report/structure/{item_type}/{item_id}", status_code=200)
+async def delete_report_item(
+        item_type: str,
+        item_id: int,
+        current_user: User = Depends(get_current_user)
+):
+    """
+    Delete a folder or document from the report structure.
+
+    - item_type: Must be either "folder" or "document"
+    - item_id: The ID of the item to delete
+
+    This performs a soft delete by setting is_active=False.
+    """
+    try:
+        with db_session:
+            user = User.get(id=current_user.id)
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+
+            if item_type not in ["folder", "document"]:
+                raise HTTPException(status_code=400, detail="Invalid item type. Must be 'folder' or 'document'")
+
+            # Handle folder deletion
+            if item_type == "folder":
+                folder = FolderV2.get(id=item_id)
+                if not folder:
+                    raise HTTPException(status_code=404, detail="Folder not found")
+
+                # Check if user has permission to delete this folder
+                # Add your permission logic here if needed
+
+                # Function to recursively mark folder and all its contents as inactive
+                def mark_folder_inactive(folder):
+                    # Mark all documents in the folder as inactive
+                    documents = select(d for d in DocumentV2 if d.folder == folder and d.is_active)
+                    for doc in documents:
+                        doc.is_active = False
+                        doc.modified_at = datetime.utcnow()
+                        doc.modified_by = user
+
+                    # Recursively mark all subfolders and their contents as inactive
+                    subfolders = select(f for f in FolderV2 if f.parent_folder == folder and f.is_active)
+                    for subfolder in subfolders:
+                        mark_folder_inactive(subfolder)
+
+                    # Finally mark the folder itself as inactive
+                    folder.is_active = False
+                    folder.modified_at = datetime.utcnow()
+                    folder.modified_by = user
+
+                # Execute the recursive deletion
+                mark_folder_inactive(folder)
+
+                return {"message": f"Folder '{folder.name}' and all its contents have been deleted"}
+
+            # Handle document deletion
+            elif item_type == "document":
+                document = DocumentV2.get(id=item_id)
+                if not document:
+                    raise HTTPException(status_code=404, detail="Document not found")
+
+                # Check if user has permission to delete this document
+                # Add your permission logic here if needed
+
+                # Mark document as inactive
+                document.is_active = False
+                document.modified_at = datetime.utcnow()
+                document.modified_by = user
+
+                return {"message": f"Document '{document.name}' has been deleted"}
+
+    except Exception as e:
+        # Log the error for debugging
+        print(f"Error in delete_report_item: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))

@@ -122,8 +122,34 @@ class StageInspectionCRUD:
     @staticmethod
     @db_session
     def create_stage_inspection(data: StageInspectionCreate) -> StageInspectionResponse:
-        """Create a new Stage Inspection entry"""
+        """Create a new Stage Inspection entry with validation for quantity progression"""
         try:
+            # Check if this is a subsequent quantity for the same order and operation
+            if data.quantity_no is not None and data.quantity_no > 1:
+                # Verify that the first quantity for this order & op_no exists and is marked as done
+                first_quantity = select(si for si in StageInspection
+                                        if si.order_id == data.order_id
+                                        and si.op_no == data.op_no
+                                        and si.quantity_no == 1).first()
+
+                if not first_quantity:
+                    raise ValueError(
+                        f"Cannot add quantity {data.quantity_no} because quantity 1 does not exist for order {data.order_id}, operation {data.op_no}")
+
+                if not first_quantity.is_done:
+                    raise ValueError(
+                        f"Cannot add quantity {data.quantity_no} because quantity 1 for order {data.order_id}, operation {data.op_no} is not marked as done")
+
+                # Check if previous quantity exists and is marked as done
+                prev_quantity = select(si for si in StageInspection
+                                       if si.order_id == data.order_id
+                                       and si.op_no == data.op_no
+                                       and si.quantity_no == data.quantity_no - 1).first()
+
+                if prev_quantity and not prev_quantity.is_done:
+                    raise ValueError(
+                        f"Cannot add quantity {data.quantity_no} because previous quantity is not marked as done")
+
             # Create new instance
             stage_inspection_data = {
                 'op_id': data.op_id,
@@ -139,6 +165,7 @@ class StageInspectionCRUD:
                 'measured_instrument': data.measured_instrument,
                 'op_no': data.op_no,
                 'order_id': data.order_id,
+                'is_done': data.is_done,
             }
 
             # Only add quantity_no if it's provided
@@ -152,55 +179,21 @@ class StageInspectionCRUD:
         except Exception as e:
             raise ValueError(f"Failed to create Stage Inspection: {str(e)}")
 
-
-class QualityInspectionCRUD:
     @staticmethod
     @db_session
-    def get_quality_inspection_data(order_id: int) -> QualityInspectionResponse:
-        """Get comprehensive quality inspection data for an order"""
-        # Get order information
-        order = Order.get(id=order_id)
-        if not order:
-            raise ValueError(f"Order with ID {order_id} not found")
+    def update_inspection_status(inspection_id: int, is_done: bool) -> StageInspectionResponse:
+        """Update the is_done status of a stage inspection"""
+        try:
+            inspection = StageInspection.get(id=inspection_id)
+            if not inspection:
+                raise ValueError(f"Stage inspection with ID {inspection_id} not found")
 
-        # Get all operations for this order
-        operations = select(op for op in Operation if op.order.id == order_id)[:]
+            inspection.is_done = is_done
+            commit()
 
-        # Get all stage inspections for this order
-        stage_inspections = select(si for si in StageInspection
-                                   if si.order_id == order_id)[:]
-
-        # Prepare response data
-        order_info = OrderInfo(
-            order_id=order.id,
-            production_order=order.production_order,
-            part_number=order.part_number
-        )
-
-        inspections = [
-            StageInspectionDetail(
-                id=si.id,
-                op_id=si.op_id,
-                nominal_value=si.nominal_value,
-                uppertol=si.uppertol,
-                lowertol=si.lowertol,
-                zone=si.zone,
-                dimension_type=si.dimension_type,
-                measured_1=si.measured_1,
-                measured_2=si.measured_2,
-                measured_3=si.measured_3,
-                measured_mean=si.measured_mean,
-                measured_instrument=si.measured_instrument,
-                op_no=si.op_no,
-                order_id=si.order_id,
-                created_at=si.created_at
-            ) for si in stage_inspections
-        ]
-
-        return QualityInspectionResponse(
-            order_info=order_info,
-            inspections=inspections
-        )
+            return StageInspectionResponse.from_orm(inspection)
+        except Exception as e:
+            raise ValueError(f"Failed to update inspection status: {str(e)}")
 
 
 class QualityInspectionCRUD:
@@ -257,6 +250,8 @@ class QualityInspectionCRUD:
                                 measured_3=si.measured_3,
                                 measured_mean=si.measured_mean,
                                 measured_instrument=si.measured_instrument,
+                                is_done=si.is_done,  # Added is_done field
+                                quantity_no=si.quantity_no,  # Include quantity_no
                                 created_at=si.created_at,
                                 operator=operator_info
                             )
