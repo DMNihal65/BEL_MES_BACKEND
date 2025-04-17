@@ -37,6 +37,7 @@ class InventoryItem(db.Entity):
     calibrations = Set('CalibrationSchedule', reverse='inventory_item')
     transactions = Set('InventoryTransaction', reverse='inventory_item')
     requests = Set('InventoryRequest', reverse='inventory_item')
+    connectivity = Set('Connectivity', reverse='inventory_item')  # Added reverse relationship
     status = Required(str)  # Active, Inactive, Under Maintenance, etc.
     created_at = Required(datetime, default=datetime.utcnow)
     updated_at = Required(datetime)

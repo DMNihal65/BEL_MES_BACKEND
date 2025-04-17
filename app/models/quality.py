@@ -43,4 +43,18 @@ class StageInspection(db.Entity):
     op_no = Required(int)
     order_id = Required(int)
     quantity_no = Optional(int)  # Change from Required to Optional
+    is_done = Required(bool, default=False)  # Added is_done field
+    created_at = Required(datetime, default=lambda: datetime.now())
+
+class Connectivity(db.Entity):
+    """
+    Connectivity table for storing instrument connectivity information
+    """
+    _table_ = ("quality", "connectivity")
+
+    id = PrimaryKey(int, auto=True)
+    inventory_item = Required('InventoryItem', reverse='connectivity')
+    instrument = Required(str)
+    uuid = Required(str)
+    address = Required(str)  # Added address field
     created_at = Required(datetime, default=lambda: datetime.now())

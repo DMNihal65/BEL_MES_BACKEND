@@ -67,12 +67,14 @@ class StageInspectionBase(BaseModel):
     op_no: int = Field(..., description="Operation number", gt=0)
     order_id: int = Field(..., description="Order ID", gt=0)
     quantity_no: Optional[int] = Field(None, description="Quantity number")
+    is_done: bool = Field(False, description="Indicates if this inspection is completed")
 
 class StageInspectionCreate(StageInspectionBase):
     pass
 
 class StageInspectionResponse(StageInspectionBase):
     id: int
+    created_at: datetime
 
     class Config:
         from_attributes = True
@@ -101,7 +103,9 @@ class StageInspectionDetail(BaseModel):
     op_no: int
     order_id: int
     quantity_no: Optional[int] = None
+    is_done: bool
     created_at: datetime
+
 
 class QualityInspectionResponse(BaseModel):
     order_info: OrderInfo
@@ -125,6 +129,7 @@ class StageInspectionWithOperator(BaseModel):
     measured_3: float
     measured_mean: float
     measured_instrument: str
+    is_done: bool
     quantity_no: Optional[int] = None
     created_at: datetime
     operator: OperatorInfo
@@ -176,4 +181,21 @@ class OrderIPIDResponse(BaseModel):
 class MeasurementInstrumentsResponse(BaseModel):
     """Response schema for measurement instruments list"""
     instruments: List[str]
+
+class ConnectivityBase(BaseModel):
+    """Base schema for Connectivity"""
+    inventory_item_id: int = Field(..., description="Inventory Item ID", gt=0)
+    instrument: str = Field(..., description="Instrument name", min_length=1)
+    uuid: str = Field(..., description="Unique identifier", min_length=1)
+    address: str = Field(..., description="Address of the instrument", min_length=1)
+
+class ConnectivityCreate(ConnectivityBase):
+    pass
+
+class ConnectivityResponse(ConnectivityBase):
+    id: int
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
 

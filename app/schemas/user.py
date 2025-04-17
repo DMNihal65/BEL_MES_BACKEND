@@ -46,6 +46,7 @@ class Token(BaseModel):
     token_type: str
     role: str
     access_list: List[str]
+    user_id: int
 
 class UserInDB(UserBase):
     id: int
@@ -55,7 +56,7 @@ class UserInDB(UserBase):
     is_active: bool
 
     class Config:
-        from_attributes = True 
+        from_attributes = True
 
 class UserRoleBase(BaseModel):
     role_name: str
@@ -87,3 +88,13 @@ class UserRoleResponseNew(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class UserLogOut(BaseModel):
+    id: int
+    user_id: int
+    login_timestamp: datetime
+    logout_timestamp: Optional[datetime]
+
+    class Config:
+        orm_mode = True
