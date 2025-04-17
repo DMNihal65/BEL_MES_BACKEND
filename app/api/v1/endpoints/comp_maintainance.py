@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Body, Query, Depends
+from fastapi import APIRouter, HTTPException, Body, Query, Depends, BackgroundTasks
 from pony.orm import db_session, select, commit, Database, Required, Optional as PonyOptional, PrimaryKey, Set, desc
 from app.schemas.comp_maintainance import (
     MachineStatusResponse, MachineStatusOut, UpdateMachineStatusRequest,
@@ -11,12 +11,78 @@ from app.models import MachineStatus, Status, Machine, RawMaterial, InventorySta
 from app.models.logs import MachineStatusLog, RawMaterialStatusLog  # Import the new log models
 from typing import Optional, Dict, List
 from datetime import datetime, timedelta
+from .notification_service import send_notification
 
 router = APIRouter(prefix="/api/v1/maintainance", tags=["maintainance"])
 
+
+# Function to asynchronously send notifications
+async def send_machine_notification(machine_id, machine_make, status_name, description, created_by):
+    """Send a machine notification with direct parameters instead of database entity"""
+    try:
+        with db_session:
+            # Use timestamp to get the most recent log entry
+            current_time = datetime.now()
+
+            # Query the latest log for this machine using select() and order by timestamp
+            latest_logs = select(
+                log for log in MachineStatusLog
+                if log.machine_id == machine_id
+                and log.machine_make == machine_make
+                and log.status_name == status_name
+                and log.description == description
+                and log.created_by == created_by
+            ).order_by(lambda log: desc(log.updated_at)).limit(1)
+
+            log_entries = list(latest_logs)
+
+            # Check if we found any matching log
+            if log_entries:
+                log_entry = log_entries[0]
+                # Pass the found log entry to notification service
+                await send_notification(log_entry, "machine")
+            else:
+                print(f"Error: Could not find newly created machine log entry for machine_id={machine_id}")
+    except Exception as e:
+        print(f"Error in send_machine_notification: {str(e)}")
+
+
+async def send_material_notification(material_id, part_number, status_name, description, created_by):
+    """Send a material notification with direct parameters instead of database entity"""
+    try:
+        with db_session:
+            # Build the base query
+            query = select(
+                log for log in RawMaterialStatusLog
+                if log.material_id == material_id
+                and log.status_name == status_name
+                and log.description == description
+                and log.created_by == created_by
+            )
+
+            # Add part_number check only if it's provided
+            if part_number:
+                query = query.filter(lambda log: log.part_number == part_number)
+
+            # Order by most recent and limit to 1
+            latest_logs = query.order_by(lambda log: desc(log.updated_at)).limit(1)
+
+            log_entries = list(latest_logs)
+
+            # Check if we found any matching log
+            if log_entries:
+                log_entry = log_entries[0]
+                # Pass the found log entry to notification service
+                await send_notification(log_entry, "material")
+            else:
+                print(f"Error: Could not find newly created material log entry for material_id={material_id}")
+    except Exception as e:
+        print(f"Error in send_material_notification: {str(e)}")
+
+
 # Updated endpoint for operators to send machine status updates to supervisors
 @router.post("/operator/machine-update/{machine_id}", response_model=MachineStatusOut)
-async def operator_machine_update(machine_id: int, update: OperatorMachineUpdate):
+async def operator_machine_update(machine_id: int, update: OperatorMachineUpdate, background_tasks: BackgroundTasks):
     """
     Endpoint for operators to send machine status updates to supervisors.
     Allows operators to turn machine on/off and provide a description.
@@ -80,15 +146,32 @@ async def operator_machine_update(machine_id: int, update: OperatorMachineUpdate
             current_time = datetime.now()
 
             # Create log entry in the logs schema
-            MachineStatusLog(
+            log_entry = MachineStatusLog(
                 machine_id=machine_id,
                 machine_make=machine.make,
                 status_name=new_status.name,
                 description=update.description,
                 updated_at=current_time,
-                created_by=update.created_by
+                created_by=update.created_by,
+                is_acknowledged=False
             )
             commit()  # Ensure the transaction is committed
+
+            # Store values we need for notification
+            machine_make = machine.make
+            status_name = new_status.name
+            description = update.description
+            created_by = update.created_by
+
+            # Add task to send notification asynchronously
+            background_tasks.add_task(
+                send_machine_notification,
+                machine_id,
+                machine_make,
+                status_name,
+                description,
+                created_by
+            )
 
             # Create response object with updated data
             updated_status = MachineStatusOut(
@@ -111,7 +194,8 @@ async def operator_machine_update(machine_id: int, update: OperatorMachineUpdate
 
 # Updated endpoint for operators to send raw material status updates to supervisors
 @router.post("/operator/raw-material-update/{part_number}", response_model=RawMaterialResponse)
-async def operator_raw_material_update(part_number: str, update: OperatorRawMaterialUpdate):
+async def operator_raw_material_update(part_number: str, update: OperatorRawMaterialUpdate,
+                                       background_tasks: BackgroundTasks):
     """
     Endpoint for operators to send raw material status updates to supervisors.
     Allows operators to mark raw materials as available/unavailable and provide a description.
@@ -121,8 +205,8 @@ async def operator_raw_material_update(part_number: str, update: OperatorRawMate
         with db_session:
             # First try to find raw material by part_number in orders
             raw_material = select(rm for rm in RawMaterial
-                                 for o in rm.orders
-                                 if o.part_number == part_number).first()
+                                  for o in rm.orders
+                                  if o.part_number == part_number).first()
 
             # If not found, try to find by child_part_number
             if not raw_material:
@@ -180,15 +264,32 @@ async def operator_raw_material_update(part_number: str, update: OperatorRawMate
                 notification_part_number = first_order.part_number
 
             # Create log entry in the logs schema
-            RawMaterialStatusLog(
+            log_entry = RawMaterialStatusLog(
                 material_id=raw_material.id,
                 part_number=notification_part_number,
                 status_name=new_status.name,
                 description=update.description,
                 updated_at=current_time,
-                created_by=update.created_by
+                created_by=update.created_by,
+                is_acknowledged=False
             )
             commit()  # Ensure the transaction is committed
+
+            # Store values we need for notification
+            material_id = raw_material.id
+            status_name = new_status.name
+            description = update.description
+            created_by = update.created_by
+
+            # Add task to send notification asynchronously
+            background_tasks.add_task(
+                send_material_notification,
+                material_id,
+                notification_part_number,
+                status_name,
+                description,
+                created_by
+            )
 
             # Create orders list for response
             orders_info = [
@@ -227,7 +328,8 @@ async def get_supervisor_machine_notifications(
         hours: Optional[int] = Query(None, description="Get notifications from the last X hours"),
         status: Optional[str] = Query(None, description="Filter by status name (e.g., 'stopped', 'running')"),
         machine_id: Optional[int] = Query(None, description="Filter by machine ID"),
-        limit: Optional[int] = Query(None, description="Limit the number of results")
+        limit: Optional[int] = Query(None, description="Limit the number of results"),
+        acknowledged: Optional[bool] = Query(None, description="Filter by acknowledgment status")
 ):
     """
     Get machine status notifications for supervisors from logs schema.
@@ -252,6 +354,10 @@ async def get_supervisor_machine_notifications(
             if machine_id:
                 query = query.filter(lambda log: log.machine_id == machine_id)
 
+            # Apply acknowledgment filter if specified
+            if acknowledged is not None:
+                query = query.filter(lambda log: log.is_acknowledged == acknowledged)
+
             # Order by timestamp, newest first
             query = query.order_by(lambda log: desc(log.updated_at))
 
@@ -261,10 +367,23 @@ async def get_supervisor_machine_notifications(
 
             # Execute query and convert to notification objects
             log_entities = list(query)
-            notifications = [
-                MachineNotification(**entity.to_dict())
-                for entity in log_entities
-            ]
+            notifications = []
+
+            for entity in log_entities:
+                # Create notification with explicit ID
+                notification = MachineNotification(
+                    id=entity.id,  # Explicitly include notification ID
+                    machine_id=entity.machine_id,
+                    machine_make=entity.machine_make,
+                    status_name=entity.status_name,
+                    description=entity.description,
+                    updated_at=entity.updated_at,
+                    created_by=entity.created_by,
+                    is_acknowledged=entity.is_acknowledged,
+                    acknowledged_by=entity.acknowledged_by,
+                    acknowledged_at=entity.acknowledged_at
+                )
+                notifications.append(notification)
 
             return MachineNotificationsResponse(
                 total_notifications=len(notifications),
@@ -285,7 +404,8 @@ async def get_supervisor_raw_material_notifications(
         status: Optional[str] = Query(None, description="Filter by status name (e.g., 'unavailable', 'available')"),
         material_id: Optional[int] = Query(None, description="Filter by raw material ID"),
         part_number: Optional[str] = Query(None, description="Filter by part number"),
-        limit: Optional[int] = Query(None, description="Limit the number of results")
+        limit: Optional[int] = Query(None, description="Limit the number of results"),
+        acknowledged: Optional[bool] = Query(None, description="Filter by acknowledgment status")
 ):
     """
     Get raw material status notifications for supervisors from logs schema.
@@ -315,6 +435,10 @@ async def get_supervisor_raw_material_notifications(
                 part_number_lower = part_number.lower()
                 query = query.filter(lambda log: log.part_number and part_number_lower in log.part_number.lower())
 
+            # Apply acknowledgment filter if specified
+            if acknowledged is not None:
+                query = query.filter(lambda log: log.is_acknowledged == acknowledged)
+
             # Order by timestamp, newest first
             query = query.order_by(lambda log: desc(log.updated_at))
 
@@ -324,10 +448,23 @@ async def get_supervisor_raw_material_notifications(
 
             # Execute query and convert to notification objects
             log_entities = list(query)
-            notifications = [
-                RawMaterialNotification(**entity.to_dict())
-                for entity in log_entities
-            ]
+            notifications = []
+
+            for entity in log_entities:
+                # Create notification with explicit ID
+                notification = RawMaterialNotification(
+                    id=entity.id,  # Explicitly include notification ID
+                    material_id=entity.material_id,
+                    part_number=entity.part_number,
+                    status_name=entity.status_name,
+                    description=entity.description,
+                    updated_at=entity.updated_at,
+                    created_by=entity.created_by,
+                    is_acknowledged=entity.is_acknowledged,
+                    acknowledged_by=entity.acknowledged_by,
+                    acknowledged_at=entity.acknowledged_at
+                )
+                notifications.append(notification)
 
             return RawMaterialNotificationsResponse(
                 total_notifications=len(notifications),
@@ -347,7 +484,8 @@ async def get_supervisor_machine_updates(
         hours: Optional[int] = Query(None, description="Get updates from the last X hours"),
         status: Optional[str] = Query(None, description="Filter by status name"),
         machine_id: Optional[int] = Query(None, description="Filter by machine ID"),
-        limit: Optional[int] = Query(None, description="Limit the number of results")
+        limit: Optional[int] = Query(None, description="Limit the number of results"),
+        acknowledged: Optional[bool] = Query(None, description="Filter by acknowledgment status")
 ):
     """
     Get machine status updates with persistent database storage.
@@ -355,7 +493,7 @@ async def get_supervisor_machine_updates(
     """
     # This endpoint uses the same implementation as the notifications endpoint
     # since we're now storing all updates in the database
-    return await get_supervisor_machine_notifications(hours, status, machine_id, limit)
+    return await get_supervisor_machine_notifications(hours, status, machine_id, limit, acknowledged)
 
 
 # Updated endpoint for administrators/supervisors to update machine status
@@ -491,6 +629,7 @@ async def get_all_statuses():
             detail=f"Error fetching statuses: {str(e)}"
         )
 
+
 @router.put("/machine-status/{machine_id}", response_model=MachineStatusOut)
 async def update_machine_status(machine_id: int, status_update: UpdateMachineStatusRequest):
     """
@@ -539,3 +678,4 @@ async def update_machine_status(machine_id: int, status_update: UpdateMachineSta
             status_code=500,
             detail=f"Error updating machine status: {str(e)}"
         )
+

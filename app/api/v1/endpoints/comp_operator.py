@@ -1,7 +1,7 @@
 import traceback
 
-from fastapi import APIRouter, HTTPException, Query, Depends
-from pony.orm import db_session, select
+from fastapi import APIRouter, HTTPException, Query, Depends, BackgroundTasks
+from pony.orm import db_session, select, commit, desc
 from typing import Dict, Optional, List, Set, Any
 from datetime import datetime, timedelta
 
@@ -11,6 +11,8 @@ from app.schemas.comp_maintainance import (
 )
 from app.models import MachineStatus, Status, ProductionLog, ScheduleVersion, PlannedScheduleItem, Machine, Operation, \
     Order
+from app.models.logs import MachineStatusLog, RawMaterialStatusLog
+from .notification_service import send_notification
 
 # Modified storage to include read status tracking
 pending_changes: Dict[int, Dict] = {}
@@ -19,7 +21,6 @@ read_messages: Dict[int, Set[str]] = {}  # Machine ID -> Set of read message tim
 
 # Add a dictionary to track read status of messages
 message_read_status: Dict[str, bool] = {}
-
 
 router = APIRouter(prefix="/api/v1/operator", tags=["operator"])
 
@@ -54,6 +55,7 @@ async def get_operator_machine_status():
             status_code=500,
             detail=f"Error fetching machine status: {str(e)}"
         )
+
 
 @router.put("/machine-status/{machine_id}/request-change")
 async def request_machine_status_change(machine_id: int, status_update: UpdateMachineStatusRequest):
@@ -108,6 +110,7 @@ async def request_machine_status_change(machine_id: int, status_update: UpdateMa
             detail=f"Error submitting change request: {str(e)}"
         )
 
+
 # Update the get-pending-changes endpoint to include description
 @router.get("/pending-changes/")
 async def get_pending_changes():
@@ -143,6 +146,7 @@ async def get_pending_changes():
             detail=f"Error fetching pending changes: {str(e)}"
         )
 
+
 #
 # @router.get("/Machine-status-Notification")
 # async def get_latest_status_message():
@@ -171,7 +175,6 @@ async def get_pending_changes():
 #             status_code=500,
 #             detail=f"Error fetching latest status messages: {str(e)}"
 #         )
-
 
 
 @router.post("/approve-change/{machine_id}")
@@ -220,7 +223,6 @@ async def approve_status_change(machine_id: int):
             status_code=500,
             detail=f"Error approving change: {str(e)}"
         )
-
 
 
 @router.post("/reject-change/{machine_id}")
@@ -759,4 +761,187 @@ def get_machine_operations(
         raise HTTPException(
             status_code=500,
             detail=f"Error retrieving machine operations at step {debug_step}: {str(e)}"
+        )
+
+
+# Function to asynchronously send notifications
+async def send_machine_notification(machine_id, machine_make, status_name, description, created_by):
+    """Send a machine notification with direct parameters instead of database entity"""
+    try:
+        with db_session:
+            # Query the latest log for this machine using select() and order by timestamp
+            latest_logs = select(
+                log for log in MachineStatusLog
+                if log.machine_id == machine_id
+                and log.machine_make == machine_make
+                and log.status_name == status_name
+                and log.description == description
+                and log.created_by == created_by
+            ).order_by(lambda log: desc(log.updated_at)).limit(1)
+
+            log_entries = list(latest_logs)
+
+            # Check if we found any matching log
+            if log_entries:
+                log_entry = log_entries[0]
+                # Pass the found log entry to notification service
+                await send_notification(log_entry, "machine")
+            else:
+                print(f"Error: Could not find newly created machine log entry for machine_id={machine_id}")
+    except Exception as e:
+        print(f"Error in send_machine_notification: {str(e)}")
+
+
+async def send_material_notification(material_id, part_number, status_name, description, created_by):
+    """Send a material notification with direct parameters instead of database entity"""
+    try:
+        with db_session:
+            # Build the base query
+            query = select(
+                log for log in RawMaterialStatusLog
+                if log.material_id == material_id
+                and log.status_name == status_name
+                and log.description == description
+                and log.created_by == created_by
+            )
+
+            # Add part_number check only if it's provided
+            if part_number:
+                query = query.filter(lambda log: log.part_number == part_number)
+
+            # Order by most recent and limit to 1
+            latest_logs = query.order_by(lambda log: desc(log.updated_at)).limit(1)
+
+            log_entries = list(latest_logs)
+
+            # Check if we found any matching log
+            if log_entries:
+                log_entry = log_entries[0]
+                # Pass the found log entry to notification service
+                await send_notification(log_entry, "material")
+            else:
+                print(f"Error: Could not find newly created material log entry for material_id={material_id}")
+    except Exception as e:
+        print(f"Error in send_material_notification: {str(e)}")
+
+
+# Example endpoint for operator to update machine status
+@router.post("/machine-status/{machine_id}")
+async def update_machine_status(
+        machine_id: int,
+        status_data: Dict[str, Any],
+        background_tasks: BackgroundTasks
+):
+    """
+    Update machine status and send notification to supervisors
+    """
+    try:
+        with db_session:
+            # Here you would update your machine status in the main database...
+
+            # Get values from status_data
+            machine_make = status_data.get("machine_make", "Unknown")
+            status_name = status_data.get("status_name", "Unknown")
+            description = status_data.get("description", "")
+            created_by = status_data.get("created_by")
+            current_time = datetime.now()
+
+            # Then create a notification log
+            log_entry = MachineStatusLog(
+                machine_id=machine_id,
+                machine_make=machine_make,
+                status_name=status_name,
+                description=description,
+                updated_at=current_time,
+                created_by=created_by,
+                is_acknowledged=False
+            )
+            # Get the ID for logging
+            log_id = log_entry.id
+            commit()
+
+            print(f"Created machine notification log with ID {log_id}")
+
+            # Add task to send notification asynchronously
+            background_tasks.add_task(
+                send_machine_notification,
+                machine_id,
+                machine_make,
+                status_name,
+                description,
+                created_by
+            )
+
+            return {
+                "status": "success",
+                "message": "Machine status updated and notification sent",
+                "notification_id": log_id
+            }
+
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error updating machine status: {str(e)}"
+        )
+
+
+# Example endpoint for operator to update raw material status
+@router.post("/material-status/{material_id}")
+async def update_material_status(
+        material_id: int,
+        status_data: Dict[str, Any],
+        background_tasks: BackgroundTasks
+):
+    """
+    Update raw material status and send notification to supervisors
+    """
+    try:
+        with db_session:
+            # Here you would update your material status in the main database...
+
+            # Get values from status_data
+            part_number = status_data.get("part_number")
+            status_name = status_data.get("status_name", "Unknown")
+            description = status_data.get("description", "")
+            created_by = status_data.get("created_by")
+            current_time = datetime.now()
+
+            # Then create a notification log
+            log_entry = RawMaterialStatusLog(
+                material_id=material_id,
+                part_number=part_number,
+                status_name=status_name,
+                description=description,
+                updated_at=current_time,
+                created_by=created_by,
+                is_acknowledged=False
+            )
+            # Get the ID for logging
+            log_id = log_entry.id
+            commit()
+
+            print(f"Created material notification log with ID {log_id}")
+
+            # Add task to send notification asynchronously
+            background_tasks.add_task(
+                send_material_notification,
+                material_id,
+                part_number,
+                status_name,
+                description,
+                created_by
+            )
+
+            return {
+                "status": "success",
+                "message": "Material status updated and notification sent",
+                "notification_id": log_id
+            }
+
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error updating material status: {str(e)}"
         )

@@ -79,22 +79,30 @@ class ReferenceDataResponse(BaseModel):
     statuses: List[StatusResponse1]
     units: List[UnitResponse]
 
-# Updated notification models with created_by field
+# Updated notification models with acknowledgment fields
 class MachineNotification(BaseModel):
+    id: Optional[int] = None  # Notification ID
     machine_id: int
     machine_make: str
     status_name: str
     description: Optional[str]
     updated_at: Optional[datetime]
     created_by: Optional[str] = None
+    is_acknowledged: bool = False
+    acknowledged_by: Optional[str] = None
+    acknowledged_at: Optional[datetime] = None
 
 class RawMaterialNotification(BaseModel):
-    id: int
+    id: Optional[int] = None  # Notification ID
+    material_id: int  # Added material_id field
     part_number: Optional[str]  # From associated order if available
     status_name: str
     description: Optional[str]
     updated_at: Optional[datetime]
     created_by: Optional[str] = None
+    is_acknowledged: bool = False
+    acknowledged_by: Optional[str] = None
+    acknowledged_at: Optional[datetime] = None
 
 class MachineNotificationsResponse(BaseModel):
     total_notifications: int
@@ -103,3 +111,8 @@ class MachineNotificationsResponse(BaseModel):
 class RawMaterialNotificationsResponse(BaseModel):
     total_notifications: int
     notifications: List[RawMaterialNotification]
+
+# Notification acknowledgment request
+class NotificationAcknowledgmentRequest(BaseModel):
+    notification_id: int
+    user_id: str  # User acknowledging the notification
