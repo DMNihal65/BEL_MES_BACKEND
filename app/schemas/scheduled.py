@@ -1,9 +1,11 @@
 from pydantic import BaseModel
-from datetime import datetime
-from typing import List, Dict, Optional
+from datetime import datetime, date
+from typing import List, Dict, Optional, Any
+
 
 class PartStatusUpdate(BaseModel):
     status: str
+
 
 class ScheduledOperation(BaseModel):
     component: str
@@ -14,9 +16,11 @@ class ScheduledOperation(BaseModel):
     quantity: str
     production_order: Optional[str]
 
+
 class DailyProduction(BaseModel):
     date: datetime
     quantity: int
+
 
 class ComponentStatus(BaseModel):
     scheduled_end_time: Optional[datetime]
@@ -24,17 +28,6 @@ class ComponentStatus(BaseModel):
     on_time: Optional[bool]
     completed_quantity: int
     total_quantity: int
-
-class MachineInfo(BaseModel):
-    id: str
-    name: str
-    model: str
-    type: str
-
-class WorkCenterInfo(BaseModel):
-    work_center_code: str
-    work_center_name: str
-    machines: List[MachineInfo]
 
 
 class ScheduleResponse(BaseModel):
@@ -46,70 +39,6 @@ class ScheduleResponse(BaseModel):
     partially_completed: List[str]
 
 
-class ProductionLogResponse(BaseModel):
-    id: int
-    operator_id: int
-    start_time: Optional[datetime]  # Made optional
-    end_time: Optional[datetime]    # Made optional
-    quantity_completed: int
-    quantity_rejected: int
-    part_number: Optional[str]      # Made optional
-    operation_description: Optional[str]  # Made optional
-    machine_name: Optional[str]     # Made optional
-    notes: Optional[str]
-    version_number: Optional[int]   # Made optional
-
-class ProductionLogsResponse(BaseModel):
-    production_logs: List[ProductionLogResponse]
-    total_completed: int
-    total_rejected: int
-    total_logs: int
-
-
-class CombinedScheduleProductionResponse(BaseModel):
-    production_logs: List[ProductionLogResponse]
-    scheduled_operations: List[ScheduledOperation]
-
-class RescheduleUpdate(BaseModel):
-    item_id: int
-    old_version: int
-    new_version: int
-    completed_qty: int
-    remaining_qty: int
-    start_time: str
-    end_time: str
-    machine_id: int
-    raw_material_status: str
-    operation_number: int
-    last_available_operation: int
-    part_number: str
-    production_order: str
-
-class CombinedScheduleResponse(BaseModel):
-    reschedule: List[RescheduleUpdate]  # Changed from updates to reschedule
-    total_updates: int
-    production_logs: List[ProductionLogResponse]
-    scheduled_operations: List[ScheduledOperation]
-    overall_end_time: datetime
-    overall_time: str
-    daily_production: dict
-    total_completed: int
-    total_rejected: int
-    total_logs: int
-    work_centers: List[WorkCenterInfo]
-
-class PartProductionTimeline(BaseModel):
-    part_number: str
-    production_order: str
-    completed_total_quantity: int
-    operations_count: int
-    status: Optional[str]
-
-class PartProductionResponse(BaseModel):
-    items: List[PartProductionTimeline]
-    total_parts: int
-
-
 class ScheduledOperation(BaseModel):
     component: str
     description: str
@@ -118,7 +47,6 @@ class ScheduledOperation(BaseModel):
     end_time: datetime
     quantity: str
     production_order: Optional[str]
-
 
 
 class ProductionLogResponse(BaseModel):
@@ -141,6 +69,7 @@ class ProductionLogResponse(BaseModel):
     class Config:
         from_attributes = True
 
+
 class ProductionLogsResponse(BaseModel):
     production_logs: List[ProductionLogResponse]
     total_completed: int
@@ -151,6 +80,7 @@ class ProductionLogsResponse(BaseModel):
 class CombinedScheduleProductionResponse(BaseModel):
     production_logs: List[ProductionLogResponse]
     scheduled_operations: List[ScheduledOperation]
+
 
 class ProductionMetrics(BaseModel):
     oee: float  # Overall Equipment Effectiveness
@@ -166,6 +96,7 @@ class ProductionMetrics(BaseModel):
     good_pieces: int
     rejected_pieces: int
 
+
 class MachineStatus(BaseModel):
     machine_id: int
     machine_name: str
@@ -176,6 +107,7 @@ class MachineStatus(BaseModel):
     uptime: Optional[float]
     efficiency: Optional[float]
 
+
 class ProductionKPI(BaseModel):
     target_production: int
     actual_production: int
@@ -185,6 +117,7 @@ class ProductionKPI(BaseModel):
     cycle_time_variance: float
     setup_time: float
     downtime: float
+
 
 class ShiftSummary(BaseModel):
     shift: str
@@ -198,11 +131,13 @@ class ShiftSummary(BaseModel):
     machines: List[str]
     efficiency: float
 
+
 class ProductionTrend(BaseModel):
     timestamp: datetime
     production_rate: float
     quality_rate: float = 100.0
     machine_utilization: float = 100.0
+
 
 class QualityMetrics(BaseModel):
     defect_rate: float
@@ -211,6 +146,7 @@ class QualityMetrics(BaseModel):
     first_pass_yield: float
     defect_categories: Dict[str, int]
     quality_issues: List[Dict[str, str]]
+
 
 class ResourceUtilization(BaseModel):
     machine_id: int
@@ -221,6 +157,7 @@ class ResourceUtilization(BaseModel):
     setup_time: float
     breakdown_time: float
     maintenance_time: float
+
 
 class MachineLiveStatus(BaseModel):
     machine_id: int
@@ -245,18 +182,22 @@ class MachineLiveStatus(BaseModel):
     class Config:
         from_attributes = True
 
+
 class StatusChange(BaseModel):
     timestamp: datetime
     status: str
     program: Optional[str]
 
+
 class PartCount(BaseModel):
     timestamp: datetime
     count: int
 
+
 class ProgramChange(BaseModel):
     timestamp: datetime
     program: str
+
 
 class MachineStatusHistory(BaseModel):
     machine_id: int
@@ -269,6 +210,7 @@ class MachineStatusHistory(BaseModel):
     hourly_production: Dict[datetime, int]
     status_duration: Dict[str, float]  # Duration in hours
 
+
 class MachineAnalytics(BaseModel):
     machine_id: int
     machine_name: str
@@ -278,11 +220,13 @@ class MachineAnalytics(BaseModel):
     uptime_percentage: float
     average_cycle_time: float
 
+
 class MachineSummary(BaseModel):
     machine_id: int
     machine_name: str
     total_production: int
     status_distribution: Dict[str, float]
+
 
 class ProductionSummary(BaseModel):
     start_date: datetime
@@ -290,3 +234,181 @@ class ProductionSummary(BaseModel):
     total_production: int
     machine_summaries: List[MachineSummary]
     overall_status_distribution: Dict[str, float]
+
+
+class OrderProductionAnalysis(BaseModel):
+    production_order: str
+    part_number: str
+    part_description: str
+    total_completed: int
+    total_rejected: int
+    quality_rate: float
+    daily_production: Dict[date, int]
+    machine_wise_production: Dict[str, Dict[str, float]]
+    average_setup_time: float
+    average_production_time: float
+    planned_vs_actual: List[Dict[str, Any]]
+
+
+class ShiftPerformanceAnalysis(BaseModel):
+    shift_date: date
+    shift_start: datetime
+    shift_end: datetime
+    total_production: int
+    total_rejected: int
+    quality_rate: float
+    operator_performance: Dict[str, Dict[str, int]]
+    machine_utilization: Dict[str, float]
+
+
+class ProductionKPIDashboard(BaseModel):
+    period_start: datetime
+    period_end: datetime
+    overall_metrics: Dict[str, float]
+    machine_kpis: List[Dict[str, Any]]
+    top_bottlenecks: List[Dict[str, Any]]
+
+
+class OEETrend(BaseModel):
+    date: date
+    availability: float
+    performance: float
+    quality: float
+    oee: float
+
+
+class OEELosses(BaseModel):
+    availability_loss: float
+    performance_loss: float
+    quality_loss: float
+
+
+class MachineOEEAnalysis(BaseModel):
+    machine_id: int
+    machine_name: str
+    average_oee: float
+    average_availability: float
+    average_performance: float
+    average_quality: float
+    oee_trends: List[OEETrend]
+    losses: OEELosses
+
+
+class OEEMetrics(BaseModel):
+    availability: float
+    performance: float
+    quality: float
+    oee: float
+
+
+class LossAnalysis(BaseModel):
+    availability_loss: float
+    performance_loss: float
+    quality_loss: float
+
+
+class DetailedShiftSummary(BaseModel):
+    date: date
+    shift: int
+    machine_id: int
+    machine_name: str
+    production_time: Optional[str]
+    idle_time: Optional[str]
+    off_time: Optional[str]
+    total_parts: int
+    good_parts: int
+    bad_parts: int
+    oee_metrics: OEEMetrics
+    loss_analysis: LossAnalysis
+
+
+class StatusChange(BaseModel):
+    timestamp: datetime
+    status: str
+    duration: float
+
+
+class MachineStatusTimeline(BaseModel):
+    machine_id: int
+    machine_name: str
+    status_changes: List[StatusChange]
+    status_distribution: Dict[str, float]
+    hourly_distribution: Dict[datetime, Dict[str, int]]
+
+
+class DailyComparison(BaseModel):
+    date: date
+    planned: int
+    actual: int
+    variance: int
+
+
+class MachineComparison(BaseModel):
+    machine_id: int
+    machine_name: str
+    total_planned: int
+    total_actual: int
+    achievement_rate: float
+    daily_comparison: List[DailyComparison]
+
+
+class ProductionComparison(BaseModel):
+    period_start: datetime
+    period_end: datetime
+    overall_metrics: Dict[str, float]
+    machine_comparisons: List[MachineComparison]
+
+
+class DailyProductionComparison(BaseModel):
+    date: date
+    planned_production: int
+    actual_production: int
+    achievement_percentage: float
+
+    class Config:
+        from_attributes = True
+
+
+class DailyMachineProduction(BaseModel):
+    machine_id: int
+    machine_name: str
+    planned_production: int
+    actual_production: int
+    achievement_percentage: float
+
+
+class DailyProductionData(BaseModel):
+    date: date
+    planned_total: int
+    actual_total: int
+    achievement_percentage: float
+    machine_breakdown: List[DailyMachineProduction]
+
+
+class ProductionDateRange(BaseModel):
+    start_date: date
+    end_date: date
+    daily_production: List[DailyProductionData]
+    total_planned: int
+    total_actual: int
+    overall_achievement: float
+
+
+class OverallOEEAnalysis(BaseModel):
+    """Factory-wide OEE analysis across all machines"""
+    period_start: datetime
+    period_end: datetime
+    overall_oee: float
+    overall_availability: float
+    overall_performance: float
+    overall_quality: float
+    shift_breakdown: Optional[List[Dict[str, Any]]] = None
+    daily_trends: List[OEETrend]
+    losses: OEELosses
+    total_production: int
+    total_good_parts: int
+    total_bad_parts: int
+    machine_count: int
+
+    class Config:
+        from_attributes = True

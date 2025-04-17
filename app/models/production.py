@@ -1,7 +1,8 @@
-from pony.orm import Required, Set, PrimaryKey, Optional, select
+from decimal import Decimal
+
+from pony.orm import Required, Set, PrimaryKey, Optional, composite_key
 from datetime import datetime, time
 from ..database.connection import db
-from .master_order import Operation, Order  # Add these imports
 
 
 class StatusLookup(db.Entity):
@@ -18,16 +19,18 @@ class MachineRaw(db.Entity):
     """Entity class for machine_raw table in livedata schema"""
     _table_ = ('production', 'machine_raw')
 
-    id = PrimaryKey(int, auto=True)  # Auto-incrementing ID
-    machine_id = Required(int)  # Foreign key to master_order.machines table
+    id = PrimaryKey(int, auto=True)
+    machine_id = Required(int)
     timestamp = Required(datetime, default=lambda: datetime.utcnow())
     status = Required(StatusLookup)
+    op_mode = Optional(int)
+    prog_status = Optional(int)
     selected_program = Optional(str)
     active_program = Optional(str)
     program_number = Optional(str)
     part_count = Optional(int)
     job_in_progress = Optional(int)
-    # PrimaryKey(id, machine_id)
+    part_status = Optional(int)
 
 
 class MachineRawLive(db.Entity):
@@ -37,33 +40,65 @@ class MachineRawLive(db.Entity):
     machine_id = PrimaryKey(int)
     timestamp = Required(datetime, default=lambda: datetime.utcnow())
     status = Required(StatusLookup)
+    op_mode = Optional(int)
+    prog_status = Optional(int)
     selected_program = Optional(str)
     active_program = Optional(str)
-    # program_number = Optional(str)
     part_count = Optional(int)
     job_status = Optional(int)
     job_in_progress = Optional(int)
+    program_number = Optional(int)
 
-    def get_order_details(self):
-        """Get associated order details through job_in_progress (operation_id)"""
-        try:
-            if self.job_in_progress:
-                operation = Operation.get(id=self.job_in_progress)
-                if operation:
-                    order = operation.order
-                    return {
-                        'production_order': order.production_order,
-                        'part_number': order.part_number,
-                        'part_description': order.part_description,
-                        'required_quantity': order.required_quantity,
-                        'launched_quantity': order.launched_quantity,
-                        'operation_number': operation.operation_number,
-                        'operation_description': operation.operation_description
-                    }
-            return None
-        except Exception as e:
-            print(f"Error getting order details: {str(e)}")
-            return None
+
+class ShiftSummary(db.Entity):
+    """Shift-wise production summary"""
+    _table_ = ('production', 'shift_summary')
+
+    id = PrimaryKey(int, auto=True)
+    machine_id = Required(int)
+    shift = Required(int)
+    timestamp = Required(datetime)
+
+    updatedate = Required(datetime, default=lambda: datetime.utcnow(), auto=True)
+
+    off_time = Optional(time)
+    idle_time = Optional(time)
+    production_time = Optional(time)
+
+    total_parts = Optional(int)
+    good_parts = Optional(int)
+    bad_parts = Optional(int)
+
+    availability = Optional(Decimal, precision=5, scale=2)
+    performance = Optional(Decimal, precision=5, scale=2)
+    quality = Optional(Decimal, precision=5, scale=2)
+
+    availability_loss = Optional(Decimal, precision=5, scale=2)
+    performance_loss = Optional(Decimal, precision=5, scale=2)
+    quality_loss = Optional(Decimal, precision=5, scale=2)
+
+    oee = Optional(Decimal, precision=5, scale=2)
+
+
+class ShiftInfo(db.Entity):
+    """Shift timing configuration"""
+    _table_ = ('production', 'shift_info')
+
+    id = PrimaryKey(int, auto=True)
+    start_time = Required(time)
+    end_time = Required(time)
+
+
+class ConfigInfo(db.Entity):
+    """Shift timing configuration"""
+    _table_ = ('production', 'config_info')
+
+    id = PrimaryKey(int, auto=True)
+    machine_id = Required(int, unique=True)
+    shift_duration = Required(int)
+    planned_non_production_time = Required(int)
+    planned_downtime = Required(int)
+    updatedate = Required(datetime, default=lambda: datetime.utcnow(), auto=True)
 
 
 class MachineDowntimes(db.Entity):
@@ -71,12 +106,11 @@ class MachineDowntimes(db.Entity):
 
     id = PrimaryKey(int, auto=True)
     machine_id = Required(int)
-    status = Required(int)
     priority = Optional(int)
-    type = Optional(str)
-    description = Optional(str)
+    category = Optional(str, nullable=True)
+    description = Optional(str, nullable=True)
     open_dt = Required(datetime)
     inprogress_dt = Optional(datetime)
     closed_dt = Optional(datetime)
-
-
+    reported_by = Optional(int)
+    action_taken = Optional(str, nullable=True)
