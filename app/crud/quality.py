@@ -3,13 +3,15 @@ from typing import Optional, List
 from pony.orm import db_session, commit, select, distinct
 import json
 from fastapi import APIRouter, HTTPException, Depends, Path, Query
+from datetime import datetime
 
 from app.models import Operation, Order, User
-from app.models.quality import MasterBoc, StageInspection
+from app.models.document_management_v2 import DocumentV2
+from app.models.quality import MasterBoc, StageInspection, FTP
 from app.schemas.quality import MasterBocCreate, MasterBocResponse, StageInspectionResponse, StageInspectionCreate, \
     QualityInspectionResponse, OrderInfo, StageInspectionDetail, DetailedQualityInspectionResponse, \
     StageInspectionWithOperator, OperatorInfo, OperationGroup, OrderIPIDResponse, MasterBocIPIDInfo, OperationIPIDGroup, \
-    IPIDInfo
+    IPIDInfo, FTPResponse
 
 router = APIRouter()
 
@@ -18,19 +20,61 @@ class MasterBocCRUD:
     @staticmethod
     @db_session
     def create_master_boc(data: MasterBocCreate) -> MasterBocResponse:
-        """Create a new Master BOC entry"""
+        """Create a new Master BOC entry or update existing one based on bbox"""
         try:
+            # Verify that Order and Document exist
+            order = Order.get(id=data.order_id)
+            if not order:
+                raise ValueError(f"Order with ID {data.order_id} not found")
+
+            document = DocumentV2.get(id=data.document_id)
+            if not document:
+                raise ValueError(f"Document with ID {data.document_id} not found")
+
             # Convert to database format
             db_data = data.to_db_dict()
 
-            # Create new instance
-            master_boc = MasterBoc(**db_data)
+            # Check if a master_boc with the same bbox exists
+            existing_master_boc = select(m for m in MasterBoc 
+                                       if m.order.id == data.order_id 
+                                       and m.op_no == data.op_no 
+                                       and m.bbox == db_data['bbox']).first()
+
+            if existing_master_boc:
+                # Update existing master_boc
+                existing_master_boc.document = document
+                existing_master_boc.nominal = db_data['nominal']
+                existing_master_boc.uppertol = db_data['uppertol']
+                existing_master_boc.lowertol = db_data['lowertol']
+                existing_master_boc.zone = db_data['zone']
+                existing_master_boc.dimension_type = db_data['dimension_type']
+                existing_master_boc.measured_instrument = db_data['measured_instrument']
+                existing_master_boc.ipid = db_data['ipid']
+                master_boc = existing_master_boc
+            else:
+                # Create new instance with proper relationships
+                master_boc = MasterBoc(
+                    order=order,
+                    document=document,
+                    nominal=db_data['nominal'],
+                    uppertol=db_data['uppertol'],
+                    lowertol=db_data['lowertol'],
+                    zone=db_data['zone'],
+                    dimension_type=db_data['dimension_type'],
+                    measured_instrument=db_data['measured_instrument'],
+                    op_no=db_data['op_no'],
+                    bbox=db_data['bbox'],
+                    ipid=db_data['ipid']
+                )
+
             commit()
 
             # Convert to response model
             return MasterBocResponse.from_orm(master_boc)
+        except ValueError as e:
+            raise ValueError(str(e))
         except Exception as e:
-            raise ValueError(f"Failed to create Master BOC: {str(e)}")
+            raise ValueError(f"Failed to create/update Master BOC: {str(e)}")
 
     @staticmethod
     @db_session
@@ -49,15 +93,25 @@ class MasterBocCRUD:
             measurement_instruments: Optional[List[str]] = None
     ) -> List[MasterBocResponse]:
         """Get all Master BOCs for an order and specific operation number"""
-        query = select(m for m in MasterBoc
-                       if m.order_id == order_id and m.op_no == op_no)
+        try:
+            # Verify that Order exists
+            order = Order.get(id=order_id)
+            if not order:
+                raise ValueError(f"Order with ID {order_id} not found")
 
-        # Add measurement instruments filter if provided
-        if measurement_instruments:
-            query = query.filter(lambda m: m.measured_instrument in measurement_instruments)
+            query = select(m for m in MasterBoc
+                           if m.order.id == order_id and m.op_no == op_no)
 
-        master_bocs = query.order_by(MasterBoc.id)[:]
-        return [MasterBocResponse.from_orm(m) for m in master_bocs]
+            # Add measurement instruments filter if provided
+            if measurement_instruments:
+                query = query.filter(lambda m: m.measured_instrument in measurement_instruments)
+
+            master_bocs = query.order_by(MasterBoc.id)[:]
+            return [MasterBocResponse.from_orm(m) for m in master_bocs]
+        except ValueError as e:
+            raise ValueError(str(e))
+        except Exception as e:
+            raise ValueError(f"Failed to get Master BOCs: {str(e)}")
 
     @staticmethod
     @db_session
@@ -175,6 +229,40 @@ class StageInspectionCRUD:
             stage_inspection = StageInspection(**stage_inspection_data)
             commit()
 
+            # After creating stage inspection, update FTP status
+            # First, find all master_bocs for this order and operation
+            master_bocs = select(m for m in MasterBoc
+                               if m.order.id == data.order_id
+                               and m.op_no == data.op_no)[:]
+
+            # Update FTP status for each master_boc's IPID
+            for master_boc in master_bocs:
+                # Get all stage inspections for this order and operation number
+                stage_inspections = select(si for si in StageInspection
+                                        if si.order_id == data.order_id
+                                        and si.op_no == data.op_no)[:]
+                
+                # If there are no stage inspections, consider it not completed
+                if not stage_inspections:
+                    is_completed = False
+                else:
+                    # Check if all stage inspections are marked as done
+                    is_completed = all(si.is_done for si in stage_inspections)
+
+                # Get or create FTP entry
+                ftp = FTP.get(order_id=data.order_id, ipid=master_boc.ipid)
+                if not ftp:
+                    ftp = FTP(
+                        order_id=data.order_id,
+                        ipid=master_boc.ipid,
+                        is_completed=is_completed
+                    )
+                else:
+                    ftp.is_completed = is_completed
+                    ftp.updated_at = datetime.now()
+
+            commit()
+
             return StageInspectionResponse.from_orm(stage_inspection)
         except Exception as e:
             raise ValueError(f"Failed to create Stage Inspection: {str(e)}")
@@ -182,16 +270,54 @@ class StageInspectionCRUD:
     @staticmethod
     @db_session
     def update_inspection_status(inspection_id: int, is_done: bool) -> StageInspectionResponse:
-        """Update the is_done status of a stage inspection"""
+        """Update the is_done status of a stage inspection and update related FTP statuses"""
         try:
+            # Get the stage inspection
             inspection = StageInspection.get(id=inspection_id)
             if not inspection:
                 raise ValueError(f"Stage inspection with ID {inspection_id} not found")
 
+            # Update the inspection status
             inspection.is_done = is_done
+            
+            # Get all master_bocs for this order and operation number
+            master_bocs = select(m for m in MasterBoc
+                               if m.order.id == inspection.order_id
+                               and m.op_no == inspection.op_no)[:]
+
+            if not master_bocs:
+                raise ValueError(f"No master_boc found for order_id {inspection.order_id} and op_no {inspection.op_no}")
+
+            # Get all stage inspections for this order and operation number
+            stage_inspections = select(si for si in StageInspection
+                                    if si.order_id == inspection.order_id
+                                    and si.op_no == inspection.op_no)[:]
+
+            # Calculate completion status
+            is_completed = bool(stage_inspections) and all(si.is_done for si in stage_inspections)
+
+            # Update FTP status for each master_boc's IPID
+            for master_boc in master_bocs:
+                # Get or create FTP entry
+                ftp = FTP.get(order_id=inspection.order_id, ipid=master_boc.ipid)
+                if ftp:
+                    # Update existing entry
+                    ftp.is_completed = is_completed
+                    ftp.updated_at = datetime.now()
+                else:
+                    # Create new entry
+                    ftp = FTP(
+                        order_id=inspection.order_id,
+                        ipid=master_boc.ipid,
+                        is_completed=is_completed
+                    )
+
+            # Commit all changes
             commit()
 
             return StageInspectionResponse.from_orm(inspection)
+        except ValueError as e:
+            raise ValueError(str(e))
         except Exception as e:
             raise ValueError(f"Failed to update inspection status: {str(e)}")
 
@@ -272,3 +398,70 @@ class QualityInspectionCRUD:
             operations=operation_numbers,  # All operation numbers
             inspection_data=inspection_groups  # Only operations with inspections
         )
+
+
+class FTPCRUD:
+    @staticmethod
+    @db_session
+    def update_ftp_status(order_id: int, ipid: str) -> Optional[FTPResponse]:
+        """
+        Update or create FTP status for a given order_id and ipid.
+        Checks all stage inspections related to the ipid and updates status accordingly.
+        """
+        try:
+            # Get the master_boc entry for this ipid
+            master_boc = MasterBoc.get(order_id=order_id, ipid=ipid)
+            if not master_boc:
+                raise ValueError(f"No master_boc found for order_id {order_id} and ipid {ipid}")
+
+            # Get all stage inspections for this order and operation number
+            stage_inspections = select(si for si in StageInspection
+                                    if si.order_id == order_id
+                                    and si.op_no == master_boc.op_no)[:]
+
+            # If there are no stage inspections, consider it not completed
+            if not stage_inspections:
+                is_completed = False
+            else:
+                # Check if all stage inspections are marked as done
+                is_completed = all(si.is_done for si in stage_inspections)
+
+            # Get or create FTP entry
+            ftp = FTP.get(order_id=order_id, ipid=ipid)
+            if not ftp:
+                ftp = FTP(
+                    order_id=order_id,
+                    ipid=ipid,
+                    is_completed=is_completed
+                )
+            else:
+                ftp.is_completed = is_completed
+                ftp.updated_at = datetime.now()
+
+            commit()
+            return FTPResponse.from_orm(ftp)
+
+        except Exception as e:
+            raise ValueError(f"Failed to update FTP status: {str(e)}")
+
+    @staticmethod
+    @db_session
+    def get_ftp_status(order_id: int, ipid: str) -> Optional[FTPResponse]:
+        """Get FTP status for a given order_id and ipid"""
+        try:
+            ftp = FTP.get(order_id=order_id, ipid=ipid)
+            if ftp:
+                return FTPResponse.from_orm(ftp)
+            return None
+        except Exception as e:
+            raise ValueError(f"Failed to get FTP status: {str(e)}")
+
+    @staticmethod
+    @db_session
+    def get_all_ftp_by_order(order_id: int) -> List[FTPResponse]:
+        """Get all FTP entries for a given order"""
+        try:
+            ftps = select(f for f in FTP if f.order_id == order_id)[:]
+            return [FTPResponse.from_orm(f) for f in ftps]
+        except Exception as e:
+            raise ValueError(f"Failed to get FTP entries: {str(e)}")

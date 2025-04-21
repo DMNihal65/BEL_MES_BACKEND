@@ -1,6 +1,8 @@
 from pony.orm import *
 from ..database.connection import db  # Import the shared db instance
 from datetime import datetime
+from .master_order import Order
+from .document_management_v2 import DocumentV2
 
 class MasterBoc(db.Entity):
     """
@@ -9,8 +11,8 @@ class MasterBoc(db.Entity):
     _table_ = ("quality", "master_boc")  # (schema_name, table_name)
 
     id = PrimaryKey(int, auto=True)
-    order_id = Required(int)
-    document_id = Required(int)
+    order = Required(Order, column='order_id', reverse='master_bocs')  # Added reverse relationship
+    document = Required(DocumentV2, column='document_id', reverse='master_bocs')  # Added reverse relationship
     nominal = Required(str)
     uppertol = Required(float)
     lowertol = Required(float)
@@ -58,3 +60,18 @@ class Connectivity(db.Entity):
     uuid = Required(str)
     address = Required(str)  # Added address field
     created_at = Required(datetime, default=lambda: datetime.now())
+
+class FTP(db.Entity):
+    """
+    FTP table for tracking IPID completion status
+    """
+    _table_ = ("quality", "ftp_status")  # Changed table name to be more specific
+
+    id = PrimaryKey(int, auto=True)
+    order_id = Required(int, size=64)  # Added size specification
+    ipid = Required(str, max_len=255)  # Added max length
+    is_completed = Required(bool, default=False)
+    created_at = Required(datetime, default=lambda: datetime.now())
+    updated_at = Required(datetime, default=lambda: datetime.now())
+
+    composite_key(order_id, ipid)  # Ensure unique combination of order_id and ipid

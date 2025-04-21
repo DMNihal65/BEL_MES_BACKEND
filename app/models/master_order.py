@@ -105,6 +105,7 @@ class Order(db.Entity):
     planned_schedule_items = Set('PlannedScheduleItem', reverse='order')
     inventory_requests = Set("InventoryRequest")
     documents_v2 = Set('DocumentV2', reverse='production_order')
+    master_bocs = Set('MasterBoc', reverse='order')  # Add this line for MasterBoc relationship
 
 
 class Operation(db.Entity):

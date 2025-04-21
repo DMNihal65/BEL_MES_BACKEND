@@ -9,8 +9,8 @@ from app.models import Operation, Order, User
 from app.schemas.quality import MasterBocCreate, MasterBocResponse, StageInspectionResponse, \
     StageInspectionCreate, QualityInspectionResponse, DetailedQualityInspectionResponse, \
     OrderIPIDResponse, MasterBocIPIDInfo, MeasurementInstrumentsResponse, \
-    ConnectivityCreate, ConnectivityResponse, StageInspectionDetail
-from app.crud.quality import MasterBocCRUD, StageInspectionCRUD, QualityInspectionCRUD
+    ConnectivityCreate, ConnectivityResponse, StageInspectionDetail, FTPResponse
+from app.crud.quality import MasterBocCRUD, StageInspectionCRUD, QualityInspectionCRUD, FTPCRUD
 from app.models.quality import Connectivity, StageInspection
 from app.models.inventoryv1 import InventoryItem
 
@@ -446,6 +446,81 @@ def get_connectivity_by_instrument(
         raise HTTPException(
             status_code=500,
             detail=f"An error occurred while retrieving connectivity information: {str(e)}"
+        )
+
+@router.post(
+    "/ftp/{order_id}/{ipid}/update",
+    response_model=FTPResponse,
+    summary="Update FTP status for an IPID"
+)
+async def update_ftp_status(
+    order_id: int = Path(..., gt=0),
+    ipid: str = Path(..., min_length=1),
+    current_user = Depends(get_current_user)
+) -> Any:
+    """
+    Update the FTP status for a given order_id and IPID.
+    The status is determined by checking if all stage inspections for the IPID are marked as done.
+    """
+    try:
+        ftp_status = FTPCRUD.update_ftp_status(order_id, ipid)
+        return ftp_status
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error updating FTP status: {str(e)}"
+        )
+
+@router.get(
+    "/ftp/{order_id}/{ipid}",
+    response_model=FTPResponse,
+    summary="Get FTP status for an IPID"
+)
+async def get_ftp_status(
+    order_id: int = Path(..., gt=0),
+    ipid: str = Path(..., min_length=1),
+    current_user = Depends(get_current_user)
+) -> Any:
+    """
+    Get the FTP status for a given order_id and IPID
+    """
+    try:
+        ftp_status = FTPCRUD.get_ftp_status(order_id, ipid)
+        if not ftp_status:
+            raise HTTPException(
+                status_code=404,
+                detail=f"FTP status not found for order_id {order_id} and IPID {ipid}"
+            )
+        return ftp_status
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error retrieving FTP status: {str(e)}"
+        )
+
+@router.get(
+    "/ftp/order/{order_id}",
+    response_model=List[FTPResponse],
+    summary="Get all FTP statuses for an order"
+)
+async def get_all_ftp_by_order(
+    order_id: int = Path(..., gt=0),
+    current_user = Depends(get_current_user)
+) -> Any:
+    """
+    Get all FTP statuses for a given order
+    """
+    try:
+        ftp_statuses = FTPCRUD.get_all_ftp_by_order(order_id)
+        return ftp_statuses
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error retrieving FTP statuses: {str(e)}"
         )
 
 
