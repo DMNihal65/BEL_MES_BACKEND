@@ -81,6 +81,7 @@ class ReferenceDataResponse(BaseModel):
 
 # Updated notification models with acknowledgment fields
 class MachineNotification(BaseModel):
+    id: Optional[int] = None  # Notification ID
     machine_id: int
     machine_make: str
     status_name: str
@@ -92,7 +93,8 @@ class MachineNotification(BaseModel):
     acknowledged_at: Optional[datetime] = None
 
 class RawMaterialNotification(BaseModel):
-    id: int
+    id: Optional[int] = None  # Notification ID
+    material_id: int  # Added material_id field
     part_number: Optional[str]  # From associated order if available
     status_name: str
     description: Optional[str]

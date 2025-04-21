@@ -66,17 +66,32 @@ class MachineRawLive(db.Entity):
             return None
 
 
+# class MachineDowntimes(db.Entity):
+#     _table_ = ('production', 'machine_downtimes')
+
+#     id = PrimaryKey(int, auto=True)
+#     machine_id = Required(int)
+#     # status = Required(int)
+#     priority = Optional(int)
+#     # type = Optional(str)
+#     description = Optional(str)
+#     open_dt = Required(datetime)
+#     inprogress_dt = Optional(datetime)
+#     closed_dt = Optional(datetime)
+
+
 class MachineDowntimes(db.Entity):
     _table_ = ('production', 'machine_downtimes')
 
     id = PrimaryKey(int, auto=True)
     machine_id = Required(int)
-    status = Required(int)
     priority = Optional(int)
-    type = Optional(str)
-    description = Optional(str)
+    category = Optional(str, nullable=True)
+    description = Optional(str, nullable=True)
     open_dt = Required(datetime)
     inprogress_dt = Optional(datetime)
     closed_dt = Optional(datetime)
+    reported_by = Optional(int)
+    action_taken = Optional(str, nullable=True)
 
 

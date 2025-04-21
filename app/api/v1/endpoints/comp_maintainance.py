@@ -20,20 +20,28 @@ async def send_machine_notification(machine_id, machine_make, status_name, descr
     """Send a machine notification with direct parameters instead of database entity"""
     try:
         with db_session:
-            # Create a new log entry to get its ID
-            log_entry = MachineStatusLog.get(
-                machine_id=machine_id,
-                machine_make=machine_make,
-                status_name=status_name,
-                description=description,
-                created_by=created_by
-            )
+            # Use timestamp to get the most recent log entry
+            current_time = datetime.now()
             
-            if log_entry:
-                # Pass only the ID - the notification service will re-query
+            # Query the latest log for this machine using select() and order by timestamp
+            latest_logs = select(
+                log for log in MachineStatusLog 
+                if log.machine_id == machine_id
+                and log.machine_make == machine_make
+                and log.status_name == status_name
+                and log.description == description
+                and log.created_by == created_by
+            ).order_by(lambda log: desc(log.updated_at)).limit(1)
+            
+            log_entries = list(latest_logs)
+            
+            # Check if we found any matching log
+            if log_entries:
+                log_entry = log_entries[0]
+                # Pass the found log entry to notification service
                 await send_notification(log_entry, "machine")
             else:
-                print(f"Error: Could not find newly created machine log entry")
+                print(f"Error: Could not find newly created machine log entry for machine_id={machine_id}")
     except Exception as e:
         print(f"Error in send_machine_notification: {str(e)}")
 
@@ -41,20 +49,31 @@ async def send_material_notification(material_id, part_number, status_name, desc
     """Send a material notification with direct parameters instead of database entity"""
     try:
         with db_session:
-            # Create a new log entry to get its ID
-            log_entry = RawMaterialStatusLog.get(
-                material_id=material_id,
-                part_number=part_number,
-                status_name=status_name,
-                description=description,
-                created_by=created_by
+            # Build the base query
+            query = select(
+                log for log in RawMaterialStatusLog 
+                if log.material_id == material_id
+                and log.status_name == status_name
+                and log.description == description
+                and log.created_by == created_by
             )
             
-            if log_entry:
-                # Pass only the ID - the notification service will re-query
+            # Add part_number check only if it's provided
+            if part_number:
+                query = query.filter(lambda log: log.part_number == part_number)
+            
+            # Order by most recent and limit to 1
+            latest_logs = query.order_by(lambda log: desc(log.updated_at)).limit(1)
+            
+            log_entries = list(latest_logs)
+            
+            # Check if we found any matching log
+            if log_entries:
+                log_entry = log_entries[0]
+                # Pass the found log entry to notification service
                 await send_notification(log_entry, "material")
             else:
-                print(f"Error: Could not find newly created material log entry")
+                print(f"Error: Could not find newly created material log entry for material_id={material_id}")
     except Exception as e:
         print(f"Error in send_material_notification: {str(e)}")
 
@@ -344,10 +363,23 @@ async def get_supervisor_machine_notifications(
 
             # Execute query and convert to notification objects
             log_entities = list(query)
-            notifications = [
-                MachineNotification(**entity.to_dict())
-                for entity in log_entities
-            ]
+            notifications = []
+            
+            for entity in log_entities:
+                # Create notification with explicit ID
+                notification = MachineNotification(
+                    id=entity.id,  # Explicitly include notification ID
+                    machine_id=entity.machine_id,
+                    machine_make=entity.machine_make,
+                    status_name=entity.status_name,
+                    description=entity.description,
+                    updated_at=entity.updated_at,
+                    created_by=entity.created_by,
+                    is_acknowledged=entity.is_acknowledged,
+                    acknowledged_by=entity.acknowledged_by,
+                    acknowledged_at=entity.acknowledged_at
+                )
+                notifications.append(notification)
 
             return MachineNotificationsResponse(
                 total_notifications=len(notifications),
@@ -412,10 +444,23 @@ async def get_supervisor_raw_material_notifications(
 
             # Execute query and convert to notification objects
             log_entities = list(query)
-            notifications = [
-                RawMaterialNotification(**entity.to_dict())
-                for entity in log_entities
-            ]
+            notifications = []
+            
+            for entity in log_entities:
+                # Create notification with explicit ID
+                notification = RawMaterialNotification(
+                    id=entity.id,  # Explicitly include notification ID
+                    material_id=entity.material_id,
+                    part_number=entity.part_number,
+                    status_name=entity.status_name,
+                    description=entity.description,
+                    updated_at=entity.updated_at,
+                    created_by=entity.created_by,
+                    is_acknowledged=entity.is_acknowledged,
+                    acknowledged_by=entity.acknowledged_by,
+                    acknowledged_at=entity.acknowledged_at
+                )
+                notifications.append(notification)
 
             return RawMaterialNotificationsResponse(
                 total_notifications=len(notifications),

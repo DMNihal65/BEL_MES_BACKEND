@@ -6,7 +6,9 @@ import json
 from app.models.logs import MachineStatusLog, RawMaterialStatusLog
 from app.schemas.comp_maintainance import NotificationAcknowledgmentRequest
 
-router = APIRouter()
+# router = APIRouter()
+
+router = APIRouter(prefix="/api/v1/notification", tags=["notification"])
 
 # Store active WebSocket connections
 active_connections: Dict[str, List[WebSocket]] = {
@@ -48,6 +50,10 @@ def entity_to_dict(entity):
             
             # Convert to dict
             entity_dict = {}
+            # Always include the ID
+            entity_dict["id"] = refreshed_entity.id
+            
+            # Add all other fields
             for key, value in refreshed_entity.to_dict().items():
                 if isinstance(value, datetime):
                     entity_dict[key] = value.isoformat()
@@ -58,17 +64,43 @@ def entity_to_dict(entity):
 
 # Function to broadcast a message to all connected clients for a specific type
 async def broadcast(message: Dict[str, Any], connection_type: str):
-    if connection_type in active_connections:
-        # Serialize message with custom encoder for datetime objects
-        json_message = json.dumps(message, cls=DateTimeEncoder)
+    if connection_type not in active_connections:
+        print(f"Warning: No active connections for {connection_type}")
+        return
         
-        for connection in active_connections[connection_type]:
-            try:
-                await connection.send_text(json_message)
-            except Exception as e:
-                print(f"Error sending to WebSocket: {str(e)}")
-                # Remove failed connections
-                disconnect(connection, connection_type)
+    if not active_connections[connection_type]:
+        print(f"Warning: Empty connection list for {connection_type}")
+        return
+    
+    # Serialize message with custom encoder for datetime objects
+    try:
+        json_message = json.dumps(message, cls=DateTimeEncoder)
+    except Exception as e:
+        print(f"Error serializing message: {str(e)}")
+        print(f"Message content: {message}")
+        return
+        
+    failed_connections = []
+    successful_connections = 0
+    
+    for connection in active_connections[connection_type]:
+        try:
+            await connection.send_text(json_message)
+            successful_connections += 1
+        except Exception as e:
+            print(f"Error sending to WebSocket: {str(e)}")
+            # Track failed connections for removal
+            failed_connections.append(connection)
+    
+    # Remove failed connections
+    for connection in failed_connections:
+        disconnect(connection, connection_type)
+        
+    if failed_connections:
+        print(f"Removed {len(failed_connections)} failed connections from {connection_type}")
+        
+    if successful_connections:
+        print(f"Successfully sent message to {successful_connections} clients of type {connection_type}")
 
 # WebSocket endpoint for machine notifications
 @router.websocket("/ws/machine-notifications")
@@ -80,10 +112,18 @@ async def machine_notifications_ws(websocket: WebSocket):
             notifications = list(select(n for n in MachineStatusLog if not n.is_acknowledged))
             if notifications:
                 # Convert entity to dict within the db_session
-                notification_dicts = [entity_to_dict(n) for n in notifications]
+                notification_dicts = []
+                for n in notifications:
+                    n_dict = entity_to_dict(n)
+                    # Ensure ID is included
+                    notification_dicts.append({
+                        "id": n.id,
+                        **n_dict
+                    })
                 
                 await websocket.send_json({
                     "type": "initial_notifications",
+                    "total_notifications": len(notification_dicts),
                     "notifications": notification_dicts
                 })
 
@@ -143,10 +183,18 @@ async def material_notifications_ws(websocket: WebSocket):
             notifications = list(select(n for n in RawMaterialStatusLog if not n.is_acknowledged))
             if notifications:
                 # Convert entity to dict within the db_session
-                notification_dicts = [entity_to_dict(n) for n in notifications]
+                notification_dicts = []
+                for n in notifications:
+                    n_dict = entity_to_dict(n)
+                    # Ensure ID is included
+                    notification_dicts.append({
+                        "id": n.id,
+                        **n_dict
+                    })
                 
                 await websocket.send_json({
                     "type": "initial_notifications",
+                    "total_notifications": len(notification_dicts),
                     "notifications": notification_dicts
                 })
 
@@ -302,7 +350,14 @@ async def get_unacknowledged_machine_notifications():
     try:
         with db_session:
             notifications = list(select(n for n in MachineStatusLog if not n.is_acknowledged))
-            notification_dicts = [entity_to_dict(n) for n in notifications]
+            notification_dicts = []
+            for n in notifications:
+                n_dict = entity_to_dict(n)
+                # Ensure ID is included
+                notification_dicts.append({
+                    "id": n.id,
+                    **n_dict
+                })
             
             return {
                 "total_notifications": len(notification_dicts),
@@ -321,7 +376,14 @@ async def get_unacknowledged_material_notifications():
     try:
         with db_session:
             notifications = list(select(n for n in RawMaterialStatusLog if not n.is_acknowledged))
-            notification_dicts = [entity_to_dict(n) for n in notifications]
+            notification_dicts = []
+            for n in notifications:
+                n_dict = entity_to_dict(n)
+                # Ensure ID is included
+                notification_dicts.append({
+                    "id": n.id,
+                    **n_dict
+                })
             
             return {
                 "total_notifications": len(notification_dicts),
@@ -337,18 +399,53 @@ async def send_notification(log_entry, notification_type):
     This function should be called after a new log entry is added to the database.
     """
     try:
+        if not log_entry:
+            print(f"Error: Null log entry passed to send_notification for {notification_type}")
+            return
+            
+        # Get the ID early
+        notification_id = log_entry.id if hasattr(log_entry, 'id') else None
+        
+        if not notification_id:
+            print(f"Error: Log entry has no ID: {log_entry}")
+            return
+            
         # Convert the log entry to a dict with proper datetime handling
         notification_dict = entity_to_dict(log_entry)
         
+        if not notification_dict:
+            print(f"Error: Could not convert log entry to dict: {log_entry}")
+            return
+        
+        # Ensure notification_id is included in the dict
+        if 'id' not in notification_dict:
+            notification_dict['id'] = notification_id
+        
         notification_data = {
             "type": "new_notification",
-            "notification": notification_dict
+            "notification_id": notification_id,
+            "notification": notification_dict,
+            # Include a timestamp for when the notification was sent
+            "sent_at": datetime.now().isoformat()
         }
+        
+        # Determine how many clients will receive this notification
+        client_count = 0
+        if notification_type == "machine":
+            client_count = len(active_connections.get("machine_notifications", []))
+        elif notification_type == "material":
+            client_count = len(active_connections.get("material_notifications", []))
+            
+        print(f"Sending {notification_type} notification ID {notification_id} to {client_count} clients")
         
         if notification_type == "machine":
             await broadcast(notification_data, "machine_notifications")
         elif notification_type == "material":
             await broadcast(notification_data, "material_notifications")
             
+        print(f"Successfully sent {notification_type} notification ID {notification_id}")
+            
     except Exception as e:
-        print(f"Error sending notification: {str(e)}") 
+        print(f"Error sending notification: {str(e)}")
+        import traceback
+        traceback.print_exc() 

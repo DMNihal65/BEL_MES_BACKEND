@@ -1,7 +1,7 @@
 import traceback
 
 from fastapi import APIRouter, HTTPException, Query, Depends, BackgroundTasks
-from pony.orm import db_session, select, commit
+from pony.orm import db_session, select, commit, desc
 from typing import Dict, Optional, List, Set, Any
 from datetime import datetime, timedelta
 
@@ -768,20 +768,25 @@ async def send_machine_notification(machine_id, machine_make, status_name, descr
     """Send a machine notification with direct parameters instead of database entity"""
     try:
         with db_session:
-            # Create a new log entry to get its ID
-            log_entry = MachineStatusLog.get(
-                machine_id=machine_id,
-                machine_make=machine_make,
-                status_name=status_name,
-                description=description,
-                created_by=created_by
-            )
+            # Query the latest log for this machine using select() and order by timestamp
+            latest_logs = select(
+                log for log in MachineStatusLog 
+                if log.machine_id == machine_id
+                and log.machine_make == machine_make
+                and log.status_name == status_name
+                and log.description == description
+                and log.created_by == created_by
+            ).order_by(lambda log: desc(log.updated_at)).limit(1)
             
-            if log_entry:
-                # Pass only the ID - the notification service will re-query
+            log_entries = list(latest_logs)
+            
+            # Check if we found any matching log
+            if log_entries:
+                log_entry = log_entries[0]
+                # Pass the found log entry to notification service
                 await send_notification(log_entry, "machine")
             else:
-                print(f"Error: Could not find newly created machine log entry")
+                print(f"Error: Could not find newly created machine log entry for machine_id={machine_id}")
     except Exception as e:
         print(f"Error in send_machine_notification: {str(e)}")
 
@@ -789,20 +794,31 @@ async def send_material_notification(material_id, part_number, status_name, desc
     """Send a material notification with direct parameters instead of database entity"""
     try:
         with db_session:
-            # Create a new log entry to get its ID
-            log_entry = RawMaterialStatusLog.get(
-                material_id=material_id,
-                part_number=part_number,
-                status_name=status_name,
-                description=description,
-                created_by=created_by
+            # Build the base query
+            query = select(
+                log for log in RawMaterialStatusLog 
+                if log.material_id == material_id
+                and log.status_name == status_name
+                and log.description == description
+                and log.created_by == created_by
             )
             
-            if log_entry:
-                # Pass only the ID - the notification service will re-query
+            # Add part_number check only if it's provided
+            if part_number:
+                query = query.filter(lambda log: log.part_number == part_number)
+            
+            # Order by most recent and limit to 1
+            latest_logs = query.order_by(lambda log: desc(log.updated_at)).limit(1)
+            
+            log_entries = list(latest_logs)
+            
+            # Check if we found any matching log
+            if log_entries:
+                log_entry = log_entries[0]
+                # Pass the found log entry to notification service
                 await send_notification(log_entry, "material")
             else:
-                print(f"Error: Could not find newly created material log entry")
+                print(f"Error: Could not find newly created material log entry for material_id={material_id}")
     except Exception as e:
         print(f"Error in send_material_notification: {str(e)}")
 
@@ -837,7 +853,11 @@ async def update_machine_status(
                 created_by=created_by,
                 is_acknowledged=False
             )
+            # Get the ID for logging
+            log_id = log_entry.id
             commit()
+            
+            print(f"Created machine notification log with ID {log_id}")
             
             # Add task to send notification asynchronously
             background_tasks.add_task(
@@ -851,7 +871,8 @@ async def update_machine_status(
             
             return {
                 "status": "success", 
-                "message": "Machine status updated and notification sent"
+                "message": "Machine status updated and notification sent",
+                "notification_id": log_id
             }
     
     except Exception as e:
@@ -892,7 +913,11 @@ async def update_material_status(
                 created_by=created_by,
                 is_acknowledged=False
             )
+            # Get the ID for logging
+            log_id = log_entry.id
             commit()
+            
+            print(f"Created material notification log with ID {log_id}")
             
             # Add task to send notification asynchronously
             background_tasks.add_task(
@@ -906,7 +931,8 @@ async def update_material_status(
             
             return {
                 "status": "success", 
-                "message": "Material status updated and notification sent"
+                "message": "Material status updated and notification sent",
+                "notification_id": log_id
             }
     
     except Exception as e:
