@@ -47,6 +47,7 @@ class MachineOperatorToken(BaseModel):
     token_type: str
     role: str
     access_list: List[str]
+    user_id: int
     machine: MachineData
 
 
@@ -238,6 +239,7 @@ async def machine_operator_login(auth_data: MachineOperatorAuth = Body(...)) -> 
                 "token_type": "bearer",
                 "role": role_name,
                 "access_list": access_list,
+                "user_id": user.id,
                 "machine": {
                     "id": machine.id,
                     "type": machine.type,

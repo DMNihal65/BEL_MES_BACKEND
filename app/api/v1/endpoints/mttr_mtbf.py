@@ -1,10 +1,10 @@
 from functools import total_ordering
-
 from fastapi import FastAPI, HTTPException, APIRouter
 from pony.orm import db_session, select, commit, desc
 from datetime import timedelta, datetime
 from typing import Dict, List, Optional
 from starlette import status
+from app.models import Machine
 from app.models.production import MachineDowntimes  # Assuming your model is in models.py
 from collections import defaultdict
 from app.schemas.mttr_mtbf import DowntimeResponse, DowntimeCreate, DowntimeAction
@@ -81,7 +81,12 @@ def get_machine_performance_metrics(machine_id: Optional[int] = None):
         total_between_failures_time += sum(between_failure_times)
         total_failures += len(between_failure_times) if between_failure_times else 0
 
+        machine_obj = Machine.get(id=machine_id)
+        machine_name = f"{machine_obj.make}" if machine_obj else "Unknown"
+
         result[machine_id] = {
+            "machine_id": machine_id,
+            "machine_name": machine_name,
             "mttr": round(mttr, 2),
             "mtbf": round(mtbf, 2),
             "total_failures": len(machine_records),
