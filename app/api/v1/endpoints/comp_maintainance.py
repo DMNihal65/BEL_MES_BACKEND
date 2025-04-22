@@ -15,7 +15,6 @@ from .notification_service import send_notification
 
 router = APIRouter(prefix="/api/v1/maintainance", tags=["maintainance"])
 
-
 # Function to asynchronously send notifications
 async def send_machine_notification(machine_id, machine_make, status_name, description, created_by):
     """Send a machine notification with direct parameters instead of database entity"""
@@ -45,7 +44,6 @@ async def send_machine_notification(machine_id, machine_make, status_name, descr
                 print(f"Error: Could not find newly created machine log entry for machine_id={machine_id}")
     except Exception as e:
         print(f"Error in send_machine_notification: {str(e)}")
-
 
 async def send_material_notification(material_id, part_number, status_name, description, created_by):
     """Send a material notification with direct parameters instead of database entity"""
@@ -78,7 +76,6 @@ async def send_material_notification(material_id, part_number, status_name, desc
                 print(f"Error: Could not find newly created material log entry for material_id={material_id}")
     except Exception as e:
         print(f"Error in send_material_notification: {str(e)}")
-
 
 # Updated endpoint for operators to send machine status updates to supervisors
 @router.post("/operator/machine-update/{machine_id}", response_model=MachineStatusOut)
@@ -194,8 +191,7 @@ async def operator_machine_update(machine_id: int, update: OperatorMachineUpdate
 
 # Updated endpoint for operators to send raw material status updates to supervisors
 @router.post("/operator/raw-material-update/{part_number}", response_model=RawMaterialResponse)
-async def operator_raw_material_update(part_number: str, update: OperatorRawMaterialUpdate,
-                                       background_tasks: BackgroundTasks):
+async def operator_raw_material_update(part_number: str, update: OperatorRawMaterialUpdate, background_tasks: BackgroundTasks):
     """
     Endpoint for operators to send raw material status updates to supervisors.
     Allows operators to mark raw materials as available/unavailable and provide a description.
@@ -629,7 +625,6 @@ async def get_all_statuses():
             detail=f"Error fetching statuses: {str(e)}"
         )
 
-
 @router.put("/machine-status/{machine_id}", response_model=MachineStatusOut)
 async def update_machine_status(machine_id: int, status_update: UpdateMachineStatusRequest):
     """
@@ -678,4 +673,3 @@ async def update_machine_status(machine_id: int, status_update: UpdateMachineSta
             status_code=500,
             detail=f"Error updating machine status: {str(e)}"
         )
-

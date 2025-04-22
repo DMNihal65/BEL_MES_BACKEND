@@ -28,14 +28,15 @@ class MasterBocCreate(MasterBocBase):
 
 class MasterBocResponse(MasterBocBase):
     id: int
+    created_at: datetime
 
     @classmethod
     def from_orm(cls, db_obj):
         """Convert from ORM object to Pydantic model"""
         data = {
             'id': db_obj.id,
-            'order_id': db_obj.order_id,
-            'document_id': db_obj.document_id,
+            'order_id': db_obj.order.id,
+            'document_id': db_obj.document.id,
             'nominal': db_obj.nominal,
             'uppertol': db_obj.uppertol,
             'lowertol': db_obj.lowertol,
@@ -44,7 +45,8 @@ class MasterBocResponse(MasterBocBase):
             'measured_instrument': db_obj.measured_instrument,
             'op_no': db_obj.op_no,
             'bbox': json.loads(db_obj.bbox) if db_obj.bbox else [],
-            'ipid': db_obj.ipid  # Added new field
+            'ipid': db_obj.ipid,
+            'created_at': db_obj.created_at
         }
         return cls(**data)
 
@@ -195,6 +197,23 @@ class ConnectivityCreate(ConnectivityBase):
 class ConnectivityResponse(ConnectivityBase):
     id: int
     created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class FTPBase(BaseModel):
+    """Base schema for FTP"""
+    order_id: int = Field(..., description="Order ID", gt=0)
+    ipid: str = Field(..., description="IPID from master_boc", min_length=1)
+    is_completed: bool = Field(False, description="Whether all stage inspections for this IPID are completed")
+
+class FTPCreate(FTPBase):
+    pass
+
+class FTPResponse(FTPBase):
+    id: int
+    created_at: datetime
+    updated_at: datetime
 
     class Config:
         from_attributes = True

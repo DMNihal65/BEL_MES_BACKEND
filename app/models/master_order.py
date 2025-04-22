@@ -36,6 +36,8 @@ class Machine(db.Entity):
     status = Set('MachineStatus')
     operations = Set('Operation')  # Reverse relationship
     planned_schedule_items = Set('PlannedScheduleItem', reverse='machine')
+    credential = Optional('MachineCredential', reverse='machine')
+
 
 class MachineShift(db.Entity):
     _table_ = ("master_order", "machine_shifts")
@@ -106,6 +108,8 @@ class Order(db.Entity):
     inventory_requests = Set("InventoryRequest")
     documents_v2 = Set('DocumentV2', reverse='production_order')
     order_tools = Set("OrderTool", reverse="order")  # Updated relationship name
+    master_bocs = Set('MasterBoc', reverse='order')  # Add this line for MasterBoc relationship
+
 
 
 class Operation(db.Entity):
@@ -217,3 +221,4 @@ class MPP(db.Entity):
     datum_y = Optional(str)
     datum_z = Optional(str)
     work_instructions = Required(Json, default={"sections": []})
+

@@ -60,3 +60,123 @@ class RawMaterialStatusLog(db.Entity):
             "acknowledged_at": self.acknowledged_at
         }
 
+# PokaYoke Models
+
+class PokaYokeChecklist(db.Entity):
+    """Defines a checklist template that can be assigned to machines"""
+    _table_ = ("logs", "pokayoke_checklists")
+    id = PrimaryKey(int, auto=True)
+    name = Required(str)
+    description = Optional(str)
+    created_at = Required(datetime, default=datetime.now)
+    created_by = Required(str)  # User ID who created the checklist
+    is_active = Required(bool, default=True)
+    items = Set('PokaYokeChecklistItem')
+    machine_assignments = Set('PokaYokeChecklistMachineAssignment')
+    completed_logs = Set('PokaYokeCompletedLog')
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "name": self.name,
+            "description": self.description,
+            "created_at": self.created_at,
+            "created_by": self.created_by,
+            "is_active": self.is_active,
+            "items": [item.to_dict() for item in self.items]
+        }
+
+class PokaYokeChecklistItem(db.Entity):
+    """Individual checklist items within a checklist template"""
+    _table_ = ("logs", "pokayoke_checklist_items")
+    id = PrimaryKey(int, auto=True)
+    checklist = Required(PokaYokeChecklist)
+    item_text = Required(str)  # The instruction or check to perform
+    sequence_number = Required(int)  # Order within the checklist
+    item_type = Required(str)  # e.g., 'boolean', 'numerical', 'text'
+    is_required = Required(bool, default=True)
+    expected_value = Optional(str)  # Expected value or range if applicable
+    created_at = Required(datetime, default=datetime.now)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "item_text": self.item_text,
+            "sequence_number": self.sequence_number,
+            "item_type": self.item_type,
+            "is_required": self.is_required,
+            "expected_value": self.expected_value
+        }
+
+class PokaYokeChecklistMachineAssignment(db.Entity):
+    """Maps checklists to machines (many-to-many relationship)"""
+    _table_ = ("logs", "pokayoke_machine_assignments")
+    id = PrimaryKey(int, auto=True)
+    checklist = Required(PokaYokeChecklist)
+    machine_id = Required(int)  # Reference to Machine table
+    machine_make = Optional(str)
+    assigned_at = Required(datetime, default=datetime.now)
+    assigned_by = Required(str)  # User ID who assigned
+    is_active = Required(bool, default=True)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "checklist_id": self.checklist.id,
+            "checklist_name": self.checklist.name,
+            "machine_id": self.machine_id,
+            "machine_make": self.machine_make,
+            "assigned_at": self.assigned_at,
+            "assigned_by": self.assigned_by,
+            "is_active": self.is_active
+        }
+
+class PokaYokeCompletedLog(db.Entity):
+    """Log of completed checklists by operators"""
+    _table_ = ("logs", "pokayoke_completed_logs")
+    id = PrimaryKey(int, auto=True)
+    checklist = Required(PokaYokeChecklist)
+    machine_id = Required(int)
+    operator_id = Required(str)  # User ID who completed the checklist
+    production_order = Optional(str)  # Production order number
+    part_number = Optional(str)
+    completed_at = Required(datetime, default=datetime.now)
+    all_items_passed = Required(bool)
+    comments = Optional(str)
+    item_responses = Set('PokaYokeItemResponse')
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "checklist_id": self.checklist.id,
+            "checklist_name": self.checklist.name,
+            "machine_id": self.machine_id,
+            "operator_id": self.operator_id,
+            "production_order": self.production_order,
+            "part_number": self.part_number,
+            "completed_at": self.completed_at,
+            "all_items_passed": self.all_items_passed,
+            "comments": self.comments,
+            "responses": [resp.to_dict() for resp in self.item_responses]
+        }
+
+class PokaYokeItemResponse(db.Entity):
+    """Individual item responses within a completed checklist"""
+    _table_ = ("logs", "pokayoke_item_responses")
+    id = PrimaryKey(int, auto=True)
+    completed_log = Required(PokaYokeCompletedLog)
+    item_id = Required(int)  # Reference to ChecklistItem
+    item_text = Required(str)  # Denormalized for historical record
+    response_value = Required(str)  # The actual value/response from the operator
+    is_conforming = Required(bool)  # Whether the response meets requirements
+    timestamp = Required(datetime, default=datetime.now)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "item_id": self.item_id,
+            "item_text": self.item_text,
+            "response_value": self.response_value,
+            "is_conforming": self.is_conforming,
+            "timestamp": self.timestamp
+        }

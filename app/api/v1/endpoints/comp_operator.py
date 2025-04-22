@@ -22,6 +22,7 @@ read_messages: Dict[int, Set[str]] = {}  # Machine ID -> Set of read message tim
 # Add a dictionary to track read status of messages
 message_read_status: Dict[str, bool] = {}
 
+
 router = APIRouter(prefix="/api/v1/operator", tags=["operator"])
 
 
@@ -55,7 +56,6 @@ async def get_operator_machine_status():
             status_code=500,
             detail=f"Error fetching machine status: {str(e)}"
         )
-
 
 @router.put("/machine-status/{machine_id}/request-change")
 async def request_machine_status_change(machine_id: int, status_update: UpdateMachineStatusRequest):
@@ -110,7 +110,6 @@ async def request_machine_status_change(machine_id: int, status_update: UpdateMa
             detail=f"Error submitting change request: {str(e)}"
         )
 
-
 # Update the get-pending-changes endpoint to include description
 @router.get("/pending-changes/")
 async def get_pending_changes():
@@ -146,7 +145,6 @@ async def get_pending_changes():
             detail=f"Error fetching pending changes: {str(e)}"
         )
 
-
 #
 # @router.get("/Machine-status-Notification")
 # async def get_latest_status_message():
@@ -175,6 +173,7 @@ async def get_pending_changes():
 #             status_code=500,
 #             detail=f"Error fetching latest status messages: {str(e)}"
 #         )
+
 
 
 @router.post("/approve-change/{machine_id}")
@@ -223,6 +222,7 @@ async def approve_status_change(machine_id: int):
             status_code=500,
             detail=f"Error approving change: {str(e)}"
         )
+
 
 
 @router.post("/reject-change/{machine_id}")
@@ -763,7 +763,6 @@ def get_machine_operations(
             detail=f"Error retrieving machine operations at step {debug_step}: {str(e)}"
         )
 
-
 # Function to asynchronously send notifications
 async def send_machine_notification(machine_id, machine_make, status_name, description, created_by):
     """Send a machine notification with direct parameters instead of database entity"""
@@ -790,7 +789,6 @@ async def send_machine_notification(machine_id, machine_make, status_name, descr
                 print(f"Error: Could not find newly created machine log entry for machine_id={machine_id}")
     except Exception as e:
         print(f"Error in send_machine_notification: {str(e)}")
-
 
 async def send_material_notification(material_id, part_number, status_name, description, created_by):
     """Send a material notification with direct parameters instead of database entity"""
@@ -824,13 +822,12 @@ async def send_material_notification(material_id, part_number, status_name, desc
     except Exception as e:
         print(f"Error in send_material_notification: {str(e)}")
 
-
 # Example endpoint for operator to update machine status
 @router.post("/machine-status/{machine_id}")
 async def update_machine_status(
-        machine_id: int,
-        status_data: Dict[str, Any],
-        background_tasks: BackgroundTasks
+    machine_id: int,
+    status_data: Dict[str, Any],
+    background_tasks: BackgroundTasks
 ):
     """
     Update machine status and send notification to supervisors
@@ -885,13 +882,12 @@ async def update_machine_status(
             detail=f"Error updating machine status: {str(e)}"
         )
 
-
 # Example endpoint for operator to update raw material status
 @router.post("/material-status/{material_id}")
 async def update_material_status(
-        material_id: int,
-        status_data: Dict[str, Any],
-        background_tasks: BackgroundTasks
+    material_id: int,
+    status_data: Dict[str, Any],
+    background_tasks: BackgroundTasks
 ):
     """
     Update raw material status and send notification to supervisors

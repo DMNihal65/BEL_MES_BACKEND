@@ -3,6 +3,7 @@ from decimal import Decimal
 from pony.orm import Required, Set, PrimaryKey, Optional, composite_key
 from datetime import datetime, time
 from ..database.connection import db
+from .master_order import Operation, Order  # Add these imports
 
 
 class StatusLookup(db.Entity):
@@ -44,6 +45,7 @@ class MachineRawLive(db.Entity):
     prog_status = Optional(int)
     selected_program = Optional(str)
     active_program = Optional(str)
+    # program_number = Optional(str)
     part_count = Optional(int)
     job_status = Optional(int)
     job_in_progress = Optional(int)
@@ -106,6 +108,7 @@ class MachineDowntimes(db.Entity):
 
     id = PrimaryKey(int, auto=True)
     machine_id = Required(int)
+    # status = Required(int)
     priority = Optional(int)
     category = Optional(str, nullable=True)
     description = Optional(str, nullable=True)

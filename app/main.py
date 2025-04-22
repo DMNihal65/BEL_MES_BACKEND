@@ -1,10 +1,14 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .database.connection import connect_to_db
+from .routes import hr_routes, finance_routes, master_order_routes, pokayoke
+from .api.v1.endpoints import document_management, inventoryv1, priority_scheduling
+from .api.v1.endpoints import component_status, programs, daily_production, operator_login, toolsprograms
 from .routes import hr_routes, finance_routes, master_order_routes
 from .api.v1.endpoints import document_management, inventoryv1, priority_scheduling,mttr_mtbf
 from .api.v1.endpoints import component_status, programs, daily_production, operator_login, toolsprograms,notification_service
 from .api.v1.endpoints import auth, planning, mpp, operations, scheduled, dynamic_rescheduling, comp_maintainance, comp_operator, document_management_v2, production_monitoring, production_logs,quality, document_management
+from .api.v1.endpoints import notification_service
 
 
 app = FastAPI(title="BEL MES API")
@@ -45,6 +49,8 @@ app.include_router(dynamic_rescheduling.router)
 app.include_router(programs.router)
 app.include_router(quality.router)
 app.include_router(notification_service.router)
+app.include_router(pokayoke.router)
+
 app.include_router(daily_production.router)
 app.include_router(inventoryv1.router, prefix="/api/v1")
 app.include_router(mttr_mtbf.router)
@@ -62,5 +68,6 @@ def read_root():
 
 
 # uvicorn app.main:app --reload
-# uvicorn app.main:app --host 172.18.7.85 --port 6978 --reload
+# uvicorn app.main:app --host 172.18.7.85 --port 6998 --reload
 # uvicorn app.main:app --host 172.18.7.88 --port 6222 --reload
+# uvicorn app.main:app --host 172.18.7.89 --port 7000 --reload

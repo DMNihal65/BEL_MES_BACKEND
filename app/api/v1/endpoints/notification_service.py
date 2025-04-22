@@ -16,14 +16,12 @@ active_connections: Dict[str, List[WebSocket]] = {
     "material_notifications": []
 }
 
-
 # Custom JSON encoder to handle datetime objects
 class DateTimeEncoder(json.JSONEncoder):
     def default(self, obj):
         if isinstance(obj, datetime):
             return obj.isoformat()
         return super().default(obj)
-
 
 # Function to add a connection to the manager
 async def connect(websocket: WebSocket, connection_type: str):
@@ -33,13 +31,11 @@ async def connect(websocket: WebSocket, connection_type: str):
     else:
         active_connections[connection_type] = [websocket]
 
-
 # Function to remove a connection from the manager
 def disconnect(websocket: WebSocket, connection_type: str):
     if connection_type in active_connections:
         if websocket in active_connections[connection_type]:
             active_connections[connection_type].remove(websocket)
-
 
 # Function to safely convert entity to dict
 def entity_to_dict(entity):
@@ -65,7 +61,6 @@ def entity_to_dict(entity):
                     entity_dict[key] = value
             return entity_dict
     return {}
-
 
 # Function to broadcast a message to all connected clients for a specific type
 async def broadcast(message: Dict[str, Any], connection_type: str):
@@ -106,7 +101,6 @@ async def broadcast(message: Dict[str, Any], connection_type: str):
 
     if successful_connections:
         print(f"Successfully sent message to {successful_connections} clients of type {connection_type}")
-
 
 # WebSocket endpoint for machine notifications
 @router.websocket("/ws/machine-notifications")
@@ -169,8 +163,7 @@ async def machine_notifications_ws(websocket: WebSocket):
 
                             await websocket.send_json({"status": "success", "message": "Notification acknowledged"})
                         else:
-                            await websocket.send_json(
-                                {"status": "error", "message": "Notification not found or already acknowledged"})
+                            await websocket.send_json({"status": "error", "message": "Notification not found or already acknowledged"})
                 else:
                     await websocket.send_json({"status": "error", "message": "Invalid data"})
 
@@ -179,7 +172,6 @@ async def machine_notifications_ws(websocket: WebSocket):
     except Exception as e:
         print(f"WebSocket error: {str(e)}")
         disconnect(websocket, "machine_notifications")
-
 
 # WebSocket endpoint for raw material notifications
 @router.websocket("/ws/material-notifications")
@@ -242,8 +234,7 @@ async def material_notifications_ws(websocket: WebSocket):
 
                             await websocket.send_json({"status": "success", "message": "Notification acknowledged"})
                         else:
-                            await websocket.send_json(
-                                {"status": "error", "message": "Notification not found or already acknowledged"})
+                            await websocket.send_json({"status": "error", "message": "Notification not found or already acknowledged"})
                 else:
                     await websocket.send_json({"status": "error", "message": "Invalid data"})
 
@@ -252,7 +243,6 @@ async def material_notifications_ws(websocket: WebSocket):
     except Exception as e:
         print(f"WebSocket error: {str(e)}")
         disconnect(websocket, "material_notifications")
-
 
 # REST endpoint to acknowledge a machine notification
 @router.post("/machine-notification/acknowledge", status_code=200)
@@ -302,7 +292,6 @@ async def acknowledge_machine_notification(request: NotificationAcknowledgmentRe
         print(f"Error acknowledging notification: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error acknowledging notification: {str(e)}")
 
-
 # REST endpoint to acknowledge a raw material notification
 @router.post("/material-notification/acknowledge", status_code=200)
 async def acknowledge_material_notification(request: NotificationAcknowledgmentRequest):
@@ -351,7 +340,6 @@ async def acknowledge_material_notification(request: NotificationAcknowledgmentR
         print(f"Error acknowledging notification: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error acknowledging notification: {str(e)}")
 
-
 # REST endpoint to get unacknowledged machine notifications
 @router.get("/machine-notifications/unacknowledged")
 async def get_unacknowledged_machine_notifications():
@@ -378,7 +366,6 @@ async def get_unacknowledged_machine_notifications():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching notifications: {str(e)}")
 
-
 # REST endpoint to get unacknowledged raw material notifications
 @router.get("/material-notifications/unacknowledged")
 async def get_unacknowledged_material_notifications():
@@ -404,7 +391,6 @@ async def get_unacknowledged_material_notifications():
             }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching notifications: {str(e)}")
-
 
 # Function to send notification when new log entries are created
 async def send_notification(log_entry, notification_type):
@@ -463,4 +449,3 @@ async def send_notification(log_entry, notification_type):
         print(f"Error sending notification: {str(e)}")
         import traceback
         traceback.print_exc()
-
