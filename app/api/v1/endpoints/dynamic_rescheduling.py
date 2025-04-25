@@ -124,7 +124,10 @@ def propagate_delay_to_dependent_operations(part_number: str, completed_operatio
     updated_items = []
 
     with db_session:
-        order = Order.get(part_number=part_number)
+        # Get the most recent order with this part number instead of assuming there's only one
+        orders = select(o for o in Order if o.part_number == part_number).order_by(lambda o: desc(o.id))
+        order = orders.first()
+
         if not order:
             print(f"Order not found for part number: {part_number}")
             return updated_items
@@ -466,7 +469,11 @@ async def dynamic_reschedule():
             total_completed = 0
             total_rejected = 0
 
-            for (log, operator, version, schedule_item, machine, operation, order) in logs_query:
+            for result in logs_query:
+                if len(result) != 7:
+                    continue  # or log it
+                log, operator, version, schedule_item, machine, operation, order = result
+
                 if log.end_time is None:
                     continue
 
@@ -832,7 +839,8 @@ async def get_combined_schedule():
             # Dictionary to map part numbers to production orders
             orders_map = {}
             for order in Order.select():
-                orders_map[order.part_number] = order.production_order
+                if order.part_number not in orders_map:
+                    orders_map[order.part_number] = order.production_order
 
             # STEP 3: Create the scheduled operations directly from the schedule DataFrame
             # This preserves the original planned schedule

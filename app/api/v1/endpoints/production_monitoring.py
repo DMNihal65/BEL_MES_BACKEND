@@ -1103,7 +1103,7 @@ def calculate_average_cycle_time(production_records):
 async def get_production_summary(
         start_date: datetime = Query(default=None),
         end_date: datetime = Query(default=None)
-):
+, status=None):
     """
     Get overall production summary across all machines
     """
@@ -1298,7 +1298,7 @@ async def get_shift_performance_analysis(
         start_date: datetime = Query(default=None),
         end_date: datetime = Query(default=None),
         machine_id: Optional[int] = Query(None)
-):
+, status=None):
     """
     Get detailed shift-wise performance analysis including:
     - Production metrics per shift
@@ -1395,7 +1395,7 @@ async def get_shift_performance_analysis(
 async def get_production_kpi_dashboard(
         start_date: datetime = Query(default=None),
         end_date: datetime = Query(default=None)
-):
+, status=None):
     """
     Get comprehensive production KPIs including:
     - Overall plant efficiency

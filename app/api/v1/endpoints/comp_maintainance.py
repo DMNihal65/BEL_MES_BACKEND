@@ -363,69 +363,69 @@ class MachineNotificationEntity:
     pass
 
 
-@router.put("/machine-status/{machine_id}", response_model=MachineStatusOut)
-async def update_machine_status(machine_id: int, status_update: UpdateMachineStatusRequest):
-    """
-    Update the status of a specific machine and persist the change to the notification database.
-    """
-    try:
-        with db_session:
-            # Find the existing machine status
-            machine_status = MachineStatus.get(machine=machine_id)
-            if not machine_status:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Machine status not found for machine ID: {machine_id}"
-                )
-
-            # Find the new status
-            new_status = Status.get(id=status_update.status_id)
-            if not new_status:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Status with ID {status_update.status_id} not found"
-                )
-
-            # Update the machine status
-            machine_status.status = new_status
-            if status_update.available_from is not None:
-                machine_status.available_from = status_update.available_from
-
-            # Update description
-            machine_status.description = status_update.description
-
-            # Create response object with updated data
-            updated_status = MachineStatusOut(
-                machine_make=machine_status.machine.make,
-                status_name=new_status.name,
-                available_from=machine_status.available_from,
-                description=machine_status.description
-            )
-
-            # Also add to the notification database when supervisor updates
-            current_time = datetime.now()
-
-            # Create notification in persistent database
-            with db_session:
-                MachineNotificationEntity(
-                    machine_id=machine_id,
-                    machine_make=machine_status.machine.make,
-                    status_name=new_status.name,
-                    description=status_update.description,
-                    updated_at=current_time
-                )
-                commit()  # Ensure the transaction is committed
-
-            return updated_status
-
-    except HTTPException as he:
-        raise he
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error updating machine status: {str(e)}"
-        )
-
+# @router.put("/machine-status/{machine_id}", response_model=MachineStatusOut)
+# async def update_machine_status(machine_id: int, status_update: UpdateMachineStatusRequest):
+#     """
+#     Update the status of a specific machine and persist the change to the notification database.
+#     """
+#     try:
+#         with db_session:
+#             # Find the existing machine status
+#             machine_status = MachineStatus.get(machine=machine_id)
+#             if not machine_status:
+#                 raise HTTPException(
+#                     status_code=404,
+#                     detail=f"Machine status not found for machine ID: {machine_id}"
+#                 )
+#
+#             # Find the new status
+#             new_status = Status.get(id=status_update.status_id)
+#             if not new_status:
+#                 raise HTTPException(
+#                     status_code=404,
+#                     detail=f"Status with ID {status_update.status_id} not found"
+#                 )
+#
+#             # Update the machine status
+#             machine_status.status = new_status
+#             if status_update.available_from is not None:
+#                 machine_status.available_from = status_update.available_from
+#
+#             # Update description
+#             machine_status.description = status_update.description
+#
+#             # Create response object with updated data
+#             updated_status = MachineStatusOut(
+#                 machine_make=machine_status.machine.make,
+#                 status_name=new_status.name,
+#                 available_from=machine_status.available_from,
+#                 description=machine_status.description
+#             )
+#
+#             # Also add to the notification database when supervisor updates
+#             current_time = datetime.now()
+#
+#             # Create notification in persistent database
+#             with db_session:
+#                 MachineNotificationEntity(
+#                     machine_id=machine_id,
+#                     machine_make=machine_status.machine.make,
+#                     status_name=new_status.name,
+#                     description=status_update.description,
+#                     updated_at=current_time
+#                 )
+#                 commit()  # Ensure the transaction is committed
+#
+#             return updated_status
+#
+#     except HTTPException as he:
+#         raise he
+#     except Exception as e:
+#         raise HTTPException(
+#             status_code=500,
+#             detail=f"Error updating machine status: {str(e)}"
+#         )
+#
 
 @router.get("/machine-status/", response_model=MachineStatusResponse)
 async def get_machine_status():
@@ -442,6 +442,7 @@ async def get_machine_status():
             for ms in machine_statuses_raw:
                 machine_status = MachineStatusOut(
                     machine_make=ms.machine.make,
+                    machine_id = ms.machine.id,
                     status_name=ms.status.name,
                     available_from=ms.available_from,
                     description=ms.description  # Added description
@@ -525,6 +526,7 @@ async def update_machine_status(machine_id: int, status_update: UpdateMachineSta
             # Create response object with updated data
             updated_status = MachineStatusOut(
                 machine_make=machine_status.machine.make,
+                machine_id = machine_status.machine.id,
                 status_name=new_status.name,
                 available_from=machine_status.available_from,
                 description=machine_status.description  # Add this line

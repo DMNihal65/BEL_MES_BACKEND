@@ -19,13 +19,14 @@ def fetch_operations():
             op.operation_number,
             op.setup_time,
             op.order.raw_material.id,  # Changed from op.raw_material to op.order.raw_material
-            op.work_center.id
+            op.work_center.id,
+            op.order.production_order
         ) for op in Operation)
 
         df = pd.DataFrame(list(operations), columns=[
             "operation", "machine_id", "machine_name", "time", "partno",
             "operation_id", "operation_number", "setup_time", "raw_material_id",
-            "work_center_id"
+            "work_center_id", "production_order"
         ])
 
         df['sequence'] = df['operation_number']

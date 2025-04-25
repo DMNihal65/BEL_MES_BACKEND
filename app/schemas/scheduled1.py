@@ -113,3 +113,16 @@ class PartProductionResponse(BaseModel):
     items: List[PartProductionTimeline]
     total_parts: int
 
+class MachineUtilization(BaseModel):
+    """Response model for machine utilization data"""
+    machine_id: int
+    machine_type: str
+    machine_make: str
+    machine_model: str
+    work_center_name: Optional[str] = None
+    available_hours: float
+    utilized_hours: float
+    remaining_hours: float
+    utilization_percentage: float
+
+

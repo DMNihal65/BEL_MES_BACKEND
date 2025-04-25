@@ -9,7 +9,8 @@ def fetch_component_quantities() -> Dict[str, int]:
     Fetch launched quantities from Order table
     """
     orders = select(o for o in Order)[:]
-    return {o.part_number: o.launched_quantity for o in orders}
+    return {(o.part_number, o.production_order): o.launched_quantity for o in orders}
+
 
 @db_session
 def insert_component_quantities(quantities: List[ComponentQuantityIn]) -> List[ComponentQuantityOut]:
