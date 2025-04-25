@@ -4,6 +4,7 @@ from pydantic import BaseModel
 
 class MachineStatusBase(BaseModel):
     machine_make: str
+    machine_id : int
     status_name: str
     description: Optional[str] = None
     available_from: Optional[datetime] = None

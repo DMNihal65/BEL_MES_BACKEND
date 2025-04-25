@@ -703,17 +703,30 @@ async def get_combined_schedule_production():
 
 @router.get("/part-production-timeline/", response_model=PartProductionResponse)
 async def get_part_production_timeline():
-    """Retrieve the production timeline for each part number using schedule_versions table"""
+    """Retrieve the production timeline for each part number using schedule_versions table.
+    Only returns parts that are marked as active in PartScheduleStatus."""
     try:
         with db_session:
-            # Get all active ScheduleVersions with related data
+            # First get all active part numbers from PartScheduleStatus
+            active_parts = select(p.part_number for p in PartScheduleStatus if p.status == 'active')[:]
+
+            # If no active parts found, return empty response
+            if not active_parts:
+                return PartProductionResponse(
+                    items=[],
+                    total_parts=0
+                )
+
+            # Get all active ScheduleVersions with related data, filtered by active parts
             versions_query = select((
                                         version,
                                         version.schedule_item,
                                         version.schedule_item.order,
                                         version.schedule_item.operation,
                                         version.schedule_item.machine
-                                    ) for version in ScheduleVersion if version.is_active == True)
+                                    ) for version in ScheduleVersion
+                                    if version.is_active == True and
+                                    version.schedule_item.order.part_number in active_parts)
 
             # Dictionary to store all operations by part number
             part_operations = defaultdict(list)
@@ -809,7 +822,6 @@ async def get_part_production_timeline():
         print(f"Error retrieving part production timeline: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.get("/machine-utilization", response_model=List[MachineUtilization])
 @db_session
 def get_machine_utilization(
@@ -821,8 +833,8 @@ def get_machine_utilization(
     Get machine utilization metrics.
 
     Calculates:
-    - Available hours: working hours (8) * days in month * 12 (months) * 0.85 (efficiency)
-    - Utilized hours: Sum of production time from logs
+    - Available hours: working hours (8) * working days in month * 0.85 (efficiency)
+    - Utilized hours: Sum of scheduled time from planned schedule items, capped at available hours
     - Remaining hours: Available - Utilized
     """
     # Default to current month/year if not specified
@@ -835,17 +847,22 @@ def get_machine_utilization(
     if not 1 <= month <= 12:
         raise HTTPException(status_code=400, detail="Month must be between 1 and 12")
 
-    # Calculate all days in the month (including weekends)
+    # Calculate working days in the month (excluding weekends)
     _, days_in_month = calendar.monthrange(year, month)
+    working_days = 0
+    for day in range(1, days_in_month + 1):
+        weekday = datetime(year, month, day).weekday()
+        # 0-4 are Monday to Friday (working days)
+        if weekday < 5:
+            working_days += 1
 
     # Calculate available hours
-    # Formula: working hours (8) * days in month * 12 (months) * 0.85 (efficiency)
+    # Formula: working hours (8) * working days in month * 0.85 (efficiency)
     efficiency_factor = 0.85
     daily_working_hours = 8
-    months_in_year = 12
 
-    # Annual calculation projected to the current month
-    available_hours = days_in_month * daily_working_hours * months_in_year * efficiency_factor
+    # Monthly calculation based on working days only
+    available_hours = working_days * daily_working_hours * efficiency_factor
 
     # Set date range for the month
     start_date = datetime(year, month, 1)
@@ -863,19 +880,57 @@ def get_machine_utilization(
 
     result = []
     for machine in machines:
-        # Get production logs for this machine in the given month
-        production_logs = select(p for p in ProductionLog
-                                 if p.machine_id == machine.id
-                                 and p.start_time >= start_date
-                                 and p.start_time < end_date
-                                 and p.end_time is not None)
+        # Get planned schedule items for this machine in the given month
+        schedule_items = select(p for p in PlannedScheduleItem
+                                if p.machine.id == machine.id
+                                and ((p.initial_start_time >= start_date and p.initial_start_time < end_date) or
+                                     (p.initial_end_time > start_date and p.initial_end_time <= end_date) or
+                                     (p.initial_start_time <= start_date and p.initial_end_time >= end_date)))
 
-        # Calculate utilized hours from production logs
+        # Calculate utilized hours from planned schedule items
         utilized_hours = 0
-        for log in production_logs:
-            # Calculate duration in hours
-            duration = (log.end_time - log.start_time).total_seconds() / 3600
-            utilized_hours += duration
+        # Track hours used per day to prevent counting more than daily_working_hours per day
+        daily_hours = {}
+
+        for item in schedule_items:
+            # Handle cases where schedule item spans across months
+            actual_start = max(item.initial_start_time, start_date)
+            actual_end = min(item.initial_end_time, end_date)
+
+            # Process each day within the schedule item separately
+            current_day = actual_start.replace(hour=0, minute=0, second=0, microsecond=0)
+            end_day = actual_end.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+
+            while current_day < end_day:
+                day_key = current_day.strftime('%Y-%m-%d')
+
+                # Initialize this day's hours if not already tracked
+                if day_key not in daily_hours:
+                    daily_hours[day_key] = 0
+
+                # Calculate hours for this segment on this day
+                segment_start = max(actual_start, current_day)
+                segment_end = min(actual_end, current_day + timedelta(days=1))
+
+                # Skip if segment end is before or equal to segment start
+                if segment_end <= segment_start:
+                    current_day += timedelta(days=1)
+                    continue
+
+                # Calculate duration of this segment on this day
+                segment_hours = (segment_end - segment_start).total_seconds() / 3600
+
+                # Only count up to the daily working hours limit
+                available_for_day = daily_working_hours - daily_hours[day_key]
+                if available_for_day > 0:
+                    hours_to_add = min(segment_hours, available_for_day)
+                    daily_hours[day_key] += hours_to_add
+                    utilized_hours += hours_to_add
+
+                current_day += timedelta(days=1)
+
+        # Ensure utilized hours don't exceed available hours
+        utilized_hours = min(utilized_hours, available_hours)
 
         # Calculate remaining and utilization percentage
         remaining_hours = max(0, available_hours - utilized_hours)
@@ -899,7 +954,6 @@ def get_machine_utilization(
     return result
 
 
-# Alternative endpoint to get utilization by date range
 @router.get("/machine-utilization/range", response_model=List[MachineUtilization])
 @db_session
 def get_machine_utilization_by_range(
@@ -909,21 +963,34 @@ def get_machine_utilization_by_range(
 ):
     """
     Get machine utilization metrics for a custom date range.
+
+    Calculates:
+    - Available hours: working hours (8) * working days in range * 0.85 (efficiency)
+    - Utilized hours: Sum of scheduled time from planned schedule items, capped at available hours
+    - Remaining hours: Available - Utilized
     """
     if start_date >= end_date:
         raise HTTPException(status_code=400, detail="End date must be after start date")
 
-    # Calculate all days in the range (including weekends)
-    days_in_range = (end_date - start_date).days
+    # Calculate working days in the range (excluding weekends)
+    working_days = 0
+    current_date = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
+    end_day = end_date.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    while current_date < end_day:
+        weekday = current_date.weekday()
+        # 0-4 are Monday to Friday (working days)
+        if weekday < 5:
+            working_days += 1
+        current_date += timedelta(days=1)
 
     # Calculate available hours
-    # Formula: working hours (8) * days in range * 12 (months) * 0.85 (efficiency)
+    # Formula: working hours (8) * working days in range * 0.85 (efficiency)
     efficiency_factor = 0.85
     daily_working_hours = 8
-    months_in_year = 12
 
-    # Annual calculation projected to the current date range
-    available_hours = days_in_range * daily_working_hours * months_in_year * efficiency_factor
+    # Available hours for the date range based on working days only
+    available_hours = working_days * daily_working_hours * efficiency_factor
 
     # Query to fetch machines
     machines_query = select(m for m in Machine)
@@ -934,19 +1001,57 @@ def get_machine_utilization_by_range(
 
     result = []
     for machine in machines:
-        # Get production logs for this machine in the given date range
-        production_logs = select(p for p in ProductionLog
-                                 if p.machine_id == machine.id
-                                 and p.start_time >= start_date
-                                 and p.start_time < end_date
-                                 and p.end_time is not None)
+        # Get planned schedule items for this machine in the given date range
+        schedule_items = select(p for p in PlannedScheduleItem
+                                if p.machine.id == machine.id
+                                and ((p.initial_start_time >= start_date and p.initial_start_time < end_date) or
+                                     (p.initial_end_time > start_date and p.initial_end_time <= end_date) or
+                                     (p.initial_start_time <= start_date and p.initial_end_time >= end_date)))
 
-        # Calculate utilized hours from production logs
+        # Calculate utilized hours from planned schedule items
         utilized_hours = 0
-        for log in production_logs:
-            # Calculate duration in hours
-            duration = (log.end_time - log.start_time).total_seconds() / 3600
-            utilized_hours += duration
+        # Track hours used per day to prevent counting more than daily_working_hours per day
+        daily_hours = {}
+
+        for item in schedule_items:
+            # Handle cases where schedule item spans across the date range boundaries
+            actual_start = max(item.initial_start_time, start_date)
+            actual_end = min(item.initial_end_time, end_date)
+
+            # Process each day within the schedule item separately
+            current_day = actual_start.replace(hour=0, minute=0, second=0, microsecond=0)
+            end_day = actual_end.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+
+            while current_day < end_day:
+                day_key = current_day.strftime('%Y-%m-%d')
+
+                # Initialize this day's hours if not already tracked
+                if day_key not in daily_hours:
+                    daily_hours[day_key] = 0
+
+                # Calculate hours for this segment on this day
+                segment_start = max(actual_start, current_day)
+                segment_end = min(actual_end, current_day + timedelta(days=1))
+
+                # Skip if segment end is before or equal to segment start
+                if segment_end <= segment_start:
+                    current_day += timedelta(days=1)
+                    continue
+
+                # Calculate duration of this segment on this day
+                segment_hours = (segment_end - segment_start).total_seconds() / 3600
+
+                # Only count up to the daily working hours limit
+                available_for_day = daily_working_hours - daily_hours[day_key]
+                if available_for_day > 0:
+                    hours_to_add = min(segment_hours, available_for_day)
+                    daily_hours[day_key] += hours_to_add
+                    utilized_hours += hours_to_add
+
+                current_day += timedelta(days=1)
+
+        # Ensure utilized hours don't exceed available hours
+        utilized_hours = min(utilized_hours, available_hours)
 
         # Calculate remaining and utilization percentage
         remaining_hours = max(0, available_hours - utilized_hours)

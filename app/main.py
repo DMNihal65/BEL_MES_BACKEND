@@ -67,6 +67,7 @@ def read_root():
     return {"message": "BEL MES API"}
 
 
+
 # uvicorn app.main:app --reload
 # uvicorn app.main:app --host 172.18.7.85 --port 6998 --reload
 # uvicorn app.main:app --host 172.18.7.88 --port 6222 --reload
