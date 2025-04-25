@@ -8,7 +8,7 @@ from .api.v1.endpoints import auth, planning, mpp, operations, scheduled, dynami
 
 # from .api.v1.endpoints import document_management  # Comment out v1 endpoint
 from .api.v1.endpoints import inventoryv1
-from .api.v1.endpoints import component_status, programs, daily_production
+from .api.v1.endpoints import component_status, programs, daily_production, mttr_mtbf
 from .api.v1.endpoints import auth, planning, mpp, operations, scheduled, document_management_v2, production_monitoring, pdc
 import logging
 import os
@@ -98,6 +98,7 @@ app.include_router(daily_production.router)
 # Use only v2 document management router
 app.include_router(document_management_v2.router, prefix="/api/v1/document-management", tags=["documents"])
 app.include_router(inventoryv1.router, prefix="/api/v1")
+app.include_router(mttr_mtbf.router)
 
 
 #######
@@ -122,7 +123,7 @@ async def shutdown_event():
     logger.info("----------------------------")
 
 # uvicorn app.main:app --reload
-# uvicorn app.main:app --host 172.18.7.88 --port 3569 --reload
+# uvicorn app.main:app --host 172.18.7.88 --port 3969 --reload
 
 # uvicorn app.main:app --host 172.18.7.88 --port 3282 --reload
 
