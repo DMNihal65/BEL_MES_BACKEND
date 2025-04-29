@@ -51,6 +51,20 @@ class MachineOperatorToken(BaseModel):
     machine: MachineData
 
 
+# Pydantic schema
+class CredentialOut(BaseModel):
+    id: int
+    machine_id: int
+    password: str
+
+    class Config:
+        orm_mode = True
+
+
+class CredentialUpdate(BaseModel):
+    password: str
+
+
 # @router.get("/machines", response_model=List[dict])
 # @db_session
 # def get_machines():
@@ -279,3 +293,46 @@ def register_machine_password(machine_id: int, password: str):
     return {"status": "Password set successfully"}
 
 
+
+
+
+# GET a machine credential
+@router.get("/machine-credentials/{machine_id}", response_model=CredentialOut)
+@db_session
+def get_machine_credential(machine_id: int):
+    credential = select(c for c in MachineCredential if c.machine.id == machine_id).first()
+    if not credential:
+        raise HTTPException(status_code=404, detail="Credential not found")
+    return {
+        "id": credential.id,
+        "machine_id": credential.machine.id,
+        "password": credential.password
+    }
+
+@router.get("/get-machine-credentials", response_model=List[CredentialOut])
+@db_session
+def get_all_machine_credentials():
+    credentials = select(c for c in MachineCredential)[:]
+    return [
+        {
+            "id": c.id,
+            "machine_id": c.machine.id,
+            "password": c.password
+        }
+        for c in credentials
+    ]
+
+# PUT to update a machine credential's password
+@router.put("/machine-credentials/{machine_id}", response_model=CredentialOut)
+@db_session
+def update_machine_credential(machine_id: int, data: CredentialUpdate):
+    credential = select(c for c in MachineCredential if c.machine.id == machine_id).first()
+    if not credential:
+        raise HTTPException(status_code=404, detail="Credential not found")
+
+    credential.password = data.password
+    return {
+        "id": credential.id,
+        "machine_id": credential.machine.id,
+        "password": credential.password
+    }

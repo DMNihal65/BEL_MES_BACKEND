@@ -1,4 +1,5 @@
 from datetime import datetime
+from platform import machine
 from traceback import format_exc
 
 from fastapi import APIRouter, HTTPException, Query, Path
@@ -349,6 +350,7 @@ def get_all_machines():
             MachineResponse(
                 id=machine.id,
                 work_center_id=machine.work_center.id,
+                work_center_boolean = machine.work_center.is_schedulable,
                 type=machine.type,
                 make=machine.make,
                 model=machine.model,
@@ -364,7 +366,8 @@ def get_all_machines():
                     code=machine.work_center.code,
                     plant_id=machine.work_center.plant_id,
                     description=machine.work_center.description,
-                    operation=machine.work_center.work_center_name
+                    operation=machine.work_center.work_center_name,
+                    is_schedulable=machine.work_center.is_schedulable
                 )
             ) for machine in all_machines
         ]

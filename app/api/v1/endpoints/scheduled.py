@@ -282,6 +282,7 @@ def store_schedule(schedule_df, component_status):
         traceback.print_exc()
         raise e
 
+
 @router.get("/schedule-batch/", response_model=ScheduleResponse)
 async def schedule():
     """Generate schedule for active parts and store in database"""
@@ -306,9 +307,17 @@ async def schedule():
                     WorkCenterMachine(
                         work_center_code=work_center.code,
                         work_center_name=work_center.work_center_name or "",
-                        machines=machines_in_wc
+                        machines=machines_in_wc,
+                        is_schedulable=work_center.is_schedulable  # Include the flag in response
                     )
                 )
+
+            # Log schedulable work centers
+            schedulable_work_centers = [wc for wc in WorkCenter.select() if wc.is_schedulable]
+            print(f"Schedulable work centers: {[wc.code for wc in schedulable_work_centers]}")
+
+            # Get list of schedulable work center IDs for filtering
+            schedulable_work_center_ids = {wc.id for wc in schedulable_work_centers}
 
             # Fetch all production orders with active status
             active_production_orders = select(p.production_order for p in PartScheduleStatus if p.status == 'active')[:]
@@ -384,12 +393,15 @@ async def schedule():
                         part_to_pos[part_number].append(po)
 
             # Expand the dataframe to include all active production orders
-            # Expand the dataframe to only include actual operations for (part_number, production_order)
+            # Filter for operations from schedulable work centers and expand the dataframe
             expanded_rows = []
             for (part_number, po), quantity in part_po_to_quantity.items():
                 # Query actual operations for this specific (part_number, production_order)
+                # CRITICAL FIX: Only include operations from work centers that are marked as schedulable
                 matching_ops = Operation.select(
-                    lambda o: o.order.part_number == part_number and o.order.production_order == po
+                    lambda o: o.order.part_number == part_number and
+                              o.order.production_order == po and
+                              o.work_center.is_schedulable == True  # Explicit check for is_schedulable=True
                 )
 
                 for op in matching_ops:
@@ -399,7 +411,8 @@ async def schedule():
                         'machine_id': op.machine.id,
                         'sequence': op.operation_number,
                         'time': float(op.ideal_cycle_time),
-                        'production_order': po
+                        'production_order': po,
+                        'work_center_id': op.work_center.id  # Add work center ID for filtering
                     })
 
             if expanded_rows:
@@ -409,19 +422,44 @@ async def schedule():
 
         # Double check if we have any operations for active production orders
         if df.empty:
-            print("No operations left after filtering for active production orders")
+            print("No operations left after filtering for active production orders and schedulable work centers")
             return ScheduleResponse(
                 scheduled_operations=[],
                 overall_end_time=datetime.utcnow(),
                 overall_time="0",
                 daily_production={},
                 component_status={},
-                partially_completed=["No operations found for active production orders"],
+                partially_completed=["No operations found for active production orders in schedulable work centers"],
                 work_centers=work_centers_data  # Return work centers even if no operations for active orders
             )
 
         # Filter to keep only rows with active production orders
         df = df[df['production_order'].isin(active_production_orders_set)]
+
+        # ADDITIONAL FILTER: Ensure all operations are from schedulable work centers
+        # Create a mapping from machine_id to work_center_id
+        machine_to_wc = {}
+        with db_session:
+            for machine in Machine.select():
+                machine_to_wc[machine.id] = machine.work_center.id
+
+        # Add a column with work center ID for each operation based on its machine
+        df['work_center_id'] = df['machine_id'].map(machine_to_wc)
+
+        # Filter out operations from non-schedulable work centers
+        df = df[df['work_center_id'].isin(schedulable_work_center_ids)]
+
+        if df.empty:
+            print("No operations left after filtering for schedulable work centers")
+            return ScheduleResponse(
+                scheduled_operations=[],
+                overall_end_time=datetime.utcnow(),
+                overall_time="0",
+                daily_production={},
+                component_status={},
+                partially_completed=["All operations are in non-schedulable work centers"],
+                work_centers=work_centers_data
+            )
 
         # Get the active part numbers based on the filtered dataframe
         active_part_numbers_in_df = df['partno'].unique().tolist()

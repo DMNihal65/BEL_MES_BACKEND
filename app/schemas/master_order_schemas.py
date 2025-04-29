@@ -8,6 +8,8 @@ class WorkCenterBase(BaseModel):
     plant_id: str = Field(..., description="Plant ID")
     description: Optional[str] = Field(None, description="Work center description")
     work_center_name: Optional[str] = Field(None, description="Operation type")
+    is_schedulable: bool = Field(..., description="Indicates if the work center can be scheduled")
+
 
 class WorkCenterCreate(WorkCenterBase):
     pass
@@ -55,6 +57,7 @@ class MachineUpdate(BaseModel):
 class MachineResponse(MachineBase):
     id: int
     work_center_id: int  # Make sure this field is here
+    work_center_boolean: bool
     work_center: WorkCenterResponse
 
     class Config:

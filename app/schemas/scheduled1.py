@@ -38,6 +38,7 @@ class WorkCenterInfo(BaseModel):
     work_center_code: str
     work_center_name: str
     machines: List[MachineInfo]
+    is_schedulable: bool = True
 
 
 class ScheduleResponse(BaseModel):
@@ -75,7 +76,7 @@ class CombinedScheduleProductionResponse(BaseModel):
     scheduled_operations: List[ScheduledOperation]
 
 class RescheduleUpdate(BaseModel):
-    item_id: int
+    operation_id: int
     old_version: int
     new_version: int
     completed_qty: int

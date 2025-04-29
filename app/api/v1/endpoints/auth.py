@@ -303,3 +303,12 @@ def get_users(skip: int = 0, limit: int = 100, active_only: bool = True):
             # add other fields as needed
         })
     return result
+
+@router.delete("/users/{user_id}", status_code=204)
+@db_session
+def delete_user(user_id: int):
+    user = User.get(id=user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    user.delete()
+    return

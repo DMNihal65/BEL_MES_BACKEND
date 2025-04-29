@@ -887,6 +887,7 @@ async def search_order(
                             "setup_time": op.setup_time,
                             "ideal_cycle_time": op.ideal_cycle_time,
                             "work_center": op.work_center.code if op.work_center else None,
+                            "boolean": op.work_center.is_schedulable,
                             "primary_machine": {
                                 "id": op.machine.id,
                                 "name": f"{op.machine.make} {op.machine.model}"

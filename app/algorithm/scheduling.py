@@ -45,6 +45,32 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
         print("ERROR: Input DataFrame is empty!")
         return pd.DataFrame(), datetime.now(), 0.0, {}, {}, ["Empty input DataFrame"]
 
+        # Filter operations based on WorkCenter's is_schedulable flag
+        schedulable_work_centers = [wc.id for wc in WorkCenter.select() if wc.is_schedulable]
+
+        print(f"\n==== SCHEDULABLE WORK CENTERS ====")
+        print(f"Schedulable Work Center IDs: {schedulable_work_centers}")
+
+        # Create a lookup of machine_ids to their work_center_ids
+        machine_to_work_center = {}
+        for machine in Machine.select():
+            machine_to_work_center[machine.id] = machine.work_center.id
+
+        # Filter out operations for machines in non-schedulable work centers
+        filtered_df = df[
+            df['machine_id'].apply(lambda m_id: machine_to_work_center.get(m_id) in schedulable_work_centers)]
+
+        print(f"Original DataFrame Shape: {df.shape}, Filtered DataFrame Shape: {filtered_df.shape}")
+
+        # If filtering removed all operations, return empty
+        if filtered_df.empty:
+            print("WARNING: No operations remain after filtering for schedulable work centers!")
+            return pd.DataFrame(), datetime.now(), 0.0, {}, {}, ["No operations in schedulable work centers"]
+
+        # Replace original df with filtered version
+        df = filtered_df
+
+
     # Gather all order and part status information upfront
     part_status_map = {}
     part_activation_times = {}

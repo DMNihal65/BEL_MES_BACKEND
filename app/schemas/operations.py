@@ -25,6 +25,7 @@ class MachineInfo(BaseModel):
 class WorkCenterMachine(BaseModel):
     work_center_code: str
     work_center_name: str
+    is_schedulable:bool
     machines: List[MachineInfo]
 
 class ScheduledOperation(BaseModel):
