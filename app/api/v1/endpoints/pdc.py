@@ -6,8 +6,7 @@ from datetime import datetime
 from app.api.v1.endpoints.dynamic_rescheduling import get_combined_schedule
 from app.models import ScheduleVersion
 
-# Assuming you have a router set up
-router = APIRouter(prefix="/pdc", tags=["pdc"])
+router = APIRouter(prefix="/api/v1/scheduling", tags=["scheduling"])
 
 
 @router.get("/part-production-pdc", response_model=List[Dict[str, Any]])

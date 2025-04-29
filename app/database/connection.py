@@ -34,8 +34,9 @@ def connect_to_db():
         cursor.execute("CREATE SCHEMA IF NOT EXISTS production")
         cursor.execute("CREATE SCHEMA IF NOT EXISTS document_management_v2")
         cursor.execute("CREATE SCHEMA IF NOT EXISTS quality")
+        cursor.execute("CREATE SCHEMA IF NOT EXISTS logs")
         cursor.execute("CREATE SCHEMA IF NOT EXISTS EMS")
-        cursor.execute("CREATE SCHEMA IF NOT EXISTS logs")  # Add the new logs schema
+
 
 
         conn.commit()  # Ensure changes are saved
@@ -50,4 +51,4 @@ def connect_to_db():
     from ..models import logs  # Import the logs models
 
     # Generate mapping after all models are imported
-    db.generate_mapping(create_tables=True)
+    db.generate_mapping(create_tables=True) 

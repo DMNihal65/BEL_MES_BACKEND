@@ -18,6 +18,7 @@ param(
     [string]$RemotePath = "/home/smc/bel",
     [string]$DockerfilePath = "./Dockerfile",
     [string]$BackupDir = "/home/smc/bel/backups",
+    [string]$CurrentDir = "/home/smc/bel/current",
     [string]$ImageName = "bel-fastapi-app",
     [string]$ContainerName = "bel-fastapi",
     [string]$Port = "8002",
@@ -37,11 +38,11 @@ function Write-ColorOutput {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Message,
-        
+
         [Parameter(Mandatory = $false)]
         [string]$ForegroundColor = "White"
     )
-    
+
     Write-Host $Message -ForegroundColor $ForegroundColor
 }
 
@@ -51,7 +52,7 @@ function Test-CommandExists {
         [Parameter(Mandatory = $true)]
         [string]$Command
     )
-    
+
     $exists = $null -ne (Get-Command $Command -ErrorAction SilentlyContinue)
     return $exists
 }
@@ -61,11 +62,11 @@ function Handle-Error {
     param(
         [Parameter(Mandatory = $true)]
         [string]$ErrorMessage,
-        
+
         [Parameter(Mandatory = $false)]
         [string]$ExitCode = "1"
     )
-    
+
     Write-ColorOutput "ERROR: $ErrorMessage" "Red"
     exit $ExitCode
 }
@@ -127,28 +128,28 @@ if ($Password) {
 # Step 1: Build the Docker image
 if (-not $SkipBuild) {
     Write-ColorOutput "Step 1: Building Docker image..." "Green"
-    
+
     # Build the Docker image
     Write-ColorOutput "Building Docker image: $FullImageName" "Yellow"
     docker build -t $FullImageName -f $DockerfilePath .
-    
+
     if ($LASTEXITCODE -ne 0) {
         Handle-Error "Failed to build Docker image."
     }
-    
+
     # Save the Docker image as a tar file
     Write-ColorOutput "Saving Docker image as tar file: $ImageTarName" "Yellow"
     docker save -o $ImageTarName $FullImageName
-    
+
     if ($LASTEXITCODE -ne 0) {
         Handle-Error "Failed to save Docker image as tar file."
     }
-    
+
     Write-ColorOutput "Docker image built and saved successfully!" "Green"
 }
 else {
     Write-ColorOutput "Skipping build step..." "Yellow"
-    
+
     # Check if image tar file exists
     if (-not (Test-Path $ImageTarName)) {
         Handle-Error "Image tar file not found: $ImageTarName. Please build the image first or remove the -SkipBuild flag."
@@ -179,6 +180,7 @@ IMAGE_NAME=${IMAGE_NAME:-"@@IMAGE_NAME@@"}
 CONTAINER_NAME=${CONTAINER_NAME:-"@@CONTAINER_NAME@@"}
 PORT=${PORT:-"@@PORT@@"}
 BACKUP_DIR=${BACKUP_DIR:-"@@BACKUP_DIR@@"}
+CURRENT_DIR=${CURRENT_DIR:-"@@CURRENT_DIR@@"}
 IMAGE_TAR=${IMAGE_TAR:-"@@IMAGE_TAR@@"}
 
 # Print banner
@@ -223,8 +225,9 @@ if ! command_exists docker; then
     print_error "Docker is not installed. Please install Docker first."
 fi
 
-# Create backup directory if it doesn't exist
+# Create backup and current directories if they don't exist
 mkdir -p "$BACKUP_DIR"
+mkdir -p "$CURRENT_DIR"
 
 # Step 1: Check if an existing container is running and stop it
 print_status "Checking for existing containers..."
@@ -243,29 +246,46 @@ for old_container in $(docker ps -a --format '{{.Names}}' | grep "${CONTAINER_NA
     fi
 done
 
-# Step 2: Backup existing Docker image tar files
-print_status "Backing up any existing Docker image tar files..."
-for old_tar in $(find . -name "${IMAGE_NAME%-v*}*.tar" -not -name "$IMAGE_TAR"); do
-    if [ -f "$old_tar" ]; then
-        tar_basename=$(basename "$old_tar")
-        print_status "Moving $tar_basename to backup directory..."
-        mv "$old_tar" "$BACKUP_DIR/" || print_warning "Failed to move $old_tar to backup directory"
-    fi
-done
+# Step 2: Backup existing files from current directory
+print_status "Backing up files from current directory..."
+if [ -d "$CURRENT_DIR" ] && [ "$(ls -A $CURRENT_DIR 2>/dev/null)" ]; then
+    timestamp=$(date +"%Y%m%d-%H%M%S")
+    print_status "Moving current deployment files to backup directory..."
 
-# Step 3: Load the Docker image
-print_status "Loading Docker image from $IMAGE_TAR..."
-if [ ! -f "$IMAGE_TAR" ]; then
+    # Create a subdirectory in the backup folder with timestamp
+    backup_subdir="$BACKUP_DIR/$timestamp"
+    mkdir -p "$backup_subdir"
+
+    # Move all content from current to backup
+    mv $CURRENT_DIR/* $backup_subdir/ 2>/dev/null || print_warning "No files to backup from current directory"
+    print_success "Previous deployment backed up to: $backup_subdir"
+fi
+
+# Step 3: Move new tar file to current directory
+print_status "Moving new tar file to current directory..."
+if [ -f "$IMAGE_TAR" ]; then
+    mv "$IMAGE_TAR" "$CURRENT_DIR/"
+    print_success "New tar file moved to current directory"
+else
     print_error "Docker image file not found: $IMAGE_TAR"
 fi
 
-docker load -i "$IMAGE_TAR"
-if [ $? -ne 0 ]; then
-    print_error "Failed to load Docker image from $IMAGE_TAR"
-fi
-print_success "Docker image loaded successfully: $IMAGE_NAME"
+# Full path to the tar file in current directory
+CURRENT_IMAGE_TAR="$CURRENT_DIR/$(basename $IMAGE_TAR)"
 
-# Step 4: Run the Docker container
+# Step 4: Executing server setup script with environment variables
+Write-Host "Step 4: Executing server setup script..."
+$remoteCommand = @"
+export IMAGE_NAME='$ImageName'
+export CONTAINER_NAME='$ContainerName'
+export IMAGE_TAR='$TarFile'
+export PORT=$Port
+cd /home/smc/bel && sudo -E bash ./server-docker-setup.sh
+"@
+
+sshpass -p $Password ssh $RemoteUser@$RemoteHost "$remoteCommand"
+
+# Step 5: Run the Docker container
 print_status "Starting new container: $CONTAINER_NAME"
 docker run -d \
     --name "$CONTAINER_NAME" \
@@ -284,7 +304,7 @@ else
     print_error "Container $CONTAINER_NAME failed to start"
 fi
 
-# Step 5: Clean up old images
+# Step 6: Clean up old images
 print_status "Cleaning up old images..."
 # Keep only the 3 most recent versions of our images
 image_count=$(docker images | grep "${IMAGE_NAME%-v*}" | wc -l)
@@ -297,13 +317,13 @@ if [ "$image_count" -gt 3 ]; then
     done
 fi
 
-# Step 6: Setup systemd service for automatic startup (if systemd is available)
+# Step 7: Setup systemd service for automatic startup (if systemd is available)
 if command_exists systemctl; then
     print_status "Setting up systemd service for automatic startup..."
-    
+
     SERVICE_NAME="${CONTAINER_NAME}.service"
     SERVICE_FILE="/etc/systemd/system/$SERVICE_NAME"
-    
+
     # Create systemd service file
     cat > "$SERVICE_FILE" << EOL
 [Unit]
@@ -328,6 +348,12 @@ EOL
     print_success "Systemd service created and enabled: $SERVICE_NAME"
 fi
 
+# Create a symbolic link to the latest deployment
+print_status "Creating symbolic link to latest deployment..."
+echo "$IMAGE_NAME" > "$CURRENT_DIR/current_version.txt"
+echo "$CONTAINER_NAME" >> "$CURRENT_DIR/current_version.txt"
+echo "Deployed on: $(date)" >> "$CURRENT_DIR/current_version.txt"
+
 # Print deployment information
 print_success "Backend container deployed successfully!"
 echo ""
@@ -337,6 +363,7 @@ echo -e "${GREEN}============================================${NC}"
 echo -e "Container name: $CONTAINER_NAME"
 echo -e "Image name: $IMAGE_NAME"
 echo -e "Port: $PORT"
+echo -e "Current deployment: $CURRENT_DIR"
 echo -e "Container status: $(docker ps --filter "name=$CONTAINER_NAME" --format "{{.Status}}")"
 echo -e "Logs: Run 'docker logs $CONTAINER_NAME' to view logs"
 echo ""
@@ -350,6 +377,7 @@ $serverSetupContent = $serverSetupContent.Replace("@@IMAGE_NAME@@", $FullImageNa
 $serverSetupContent = $serverSetupContent.Replace("@@CONTAINER_NAME@@", $FullContainerName)
 $serverSetupContent = $serverSetupContent.Replace("@@PORT@@", $Port)
 $serverSetupContent = $serverSetupContent.Replace("@@BACKUP_DIR@@", $BackupDir)
+$serverSetupContent = $serverSetupContent.Replace("@@CURRENT_DIR@@", $CurrentDir)
 $serverSetupContent = $serverSetupContent.Replace("@@IMAGE_TAR@@", $ImageTarName)
 
 # Ensure the server setup script has Unix line endings (LF only)
@@ -365,12 +393,12 @@ Write-ColorOutput "Server setup script created with Unix line endings: $ServerSe
 # Step 3: Transfer files to the server
 if (-not $SkipTransfer) {
     Write-ColorOutput "Step 3: Transferring files to the server..." "Green"
-    
+
     # Create remote directory if it doesn't exist
-    Write-ColorOutput "Creating remote directory..." "Yellow"
-    
-    $sshCommand = "mkdir -p $RemotePath"
-    
+    Write-ColorOutput "Creating remote directory structure..." "Yellow"
+
+    $sshCommand = "mkdir -p $RemotePath $CurrentDir $BackupDir"
+
     if ($Password) {
         # Using password authentication
         $sshProcess = Start-Process -FilePath "ssh" -ArgumentList "${RemoteUser}@${RemoteHost}", $sshCommand -NoNewWindow -Wait -PassThru
@@ -379,15 +407,15 @@ if (-not $SkipTransfer) {
         # Using key-based authentication
         ssh "${RemoteUser}@${RemoteHost}" $sshCommand
     }
-    
+
     if ($LASTEXITCODE -ne 0) {
-        Handle-Error "Failed to create remote directory."
+        Handle-Error "Failed to create remote directory structure."
     }
-    
+
     # Transfer Docker image tar file
     Write-ColorOutput "Transferring Docker image tar file ($ImageTarName)..." "Yellow"
     Write-ColorOutput "This may take some time depending on the image size..." "Yellow"
-    
+
     if ($Password) {
         # Using password authentication
         $scpProcess = Start-Process -FilePath "scp" -ArgumentList $ImageTarName, "${RemoteUser}@${RemoteHost}:${RemotePath}/$ImageTarName" -NoNewWindow -Wait -PassThru
@@ -396,14 +424,14 @@ if (-not $SkipTransfer) {
         # Using key-based authentication
         scp $ImageTarName "${RemoteUser}@${RemoteHost}:${RemotePath}/$ImageTarName"
     }
-    
+
     if ($LASTEXITCODE -ne 0) {
         Handle-Error "Failed to transfer Docker image tar file."
     }
-    
+
     # Transfer server setup script
     Write-ColorOutput "Transferring server setup script..." "Yellow"
-    
+
     if ($Password) {
         # Using password authentication
         $scpProcess = Start-Process -FilePath "scp" -ArgumentList $ServerSetupScript, "${RemoteUser}@${RemoteHost}:${RemotePath}/$ServerSetupScript" -NoNewWindow -Wait -PassThru
@@ -412,11 +440,11 @@ if (-not $SkipTransfer) {
         # Using key-based authentication
         scp $ServerSetupScript "${RemoteUser}@${RemoteHost}:${RemotePath}/$ServerSetupScript"
     }
-    
+
     if ($LASTEXITCODE -ne 0) {
         Handle-Error "Failed to transfer server setup script."
     }
-    
+
     Write-ColorOutput "Files transferred successfully!" "Green"
 }
 else {
@@ -426,11 +454,11 @@ else {
 # Step 4: Execute server setup script
 if (-not $SkipDeploy) {
     Write-ColorOutput "Step 4: Executing server setup script..." "Green"
-    
+
     # First, make the script executable on the server
     Write-ColorOutput "Making script executable..." "Yellow"
     $chmodCommand = "chmod +x ${RemotePath}/${ServerSetupScript}"
-    
+
     if ($Password) {
         # Using password authentication
         $sshProcess = Start-Process -FilePath "ssh" -ArgumentList "${RemoteUser}@${RemoteHost}", $chmodCommand -NoNewWindow -Wait -PassThru
@@ -439,17 +467,17 @@ if (-not $SkipDeploy) {
         # Using key-based authentication
         ssh "${RemoteUser}@${RemoteHost}" $chmodCommand
     }
-    
+
     if ($LASTEXITCODE -ne 0) {
         Handle-Error "Failed to make script executable."
     }
-    
+
     # Now run the script with sudo, using bash explicitly
     Write-ColorOutput "Running server setup script with sudo (password will be required)..." "Yellow"
     $deployCommand = "cd $RemotePath && sudo -S bash ./$ServerSetupScript"
-    
+
     Write-ColorOutput "Command: $deployCommand" "Yellow"
-    
+
     if ($Password) {
         # Using password authentication
         $sshProcess = Start-Process -FilePath "ssh" -ArgumentList "${RemoteUser}@${RemoteHost}", $deployCommand -NoNewWindow -Wait -PassThru
@@ -459,11 +487,11 @@ if (-not $SkipDeploy) {
         Write-ColorOutput "Using key-based authentication. You will be prompted for your sudo password:" "Yellow"
         ssh "${RemoteUser}@${RemoteHost}" $deployCommand
     }
-    
+
     if ($LASTEXITCODE -ne 0) {
         Handle-Error "Failed to execute server setup script."
     }
-    
+
     Write-ColorOutput "Server setup script executed successfully!" "Green"
 }
 else {
@@ -486,11 +514,13 @@ Write-ColorOutput "Your Docker container has been deployed:" "Green"
 Write-ColorOutput "Container: $FullContainerName" "Green"
 Write-ColorOutput "Image: $FullImageName" "Green"
 Write-ColorOutput "Port: $Port" "Green"
-Write-ColorOutput ""
+Write-ColorOutput "Current deployment: $CurrentDir" "Green"
+Write-Host "Deployment completed." -ForegroundColor Green
 Write-ColorOutput "To customize the deployment, you can use these parameters:" "Yellow"
 Write-ColorOutput "-RemoteUser          : SSH username (default: $RemoteUser)" "Yellow"
 Write-ColorOutput "-RemoteHost          : Server hostname or IP (default: $RemoteHost)" "Yellow"
 Write-ColorOutput "-RemotePath          : Remote path for deployment files (default: $RemotePath)" "Yellow"
+Write-ColorOutput "-CurrentDir          : Directory for current deployment (default: $CurrentDir)" "Yellow"
 Write-ColorOutput "-DockerfilePath      : Path to Dockerfile (default: $DockerfilePath)" "Yellow"
 Write-ColorOutput "-BackupDir           : Directory for backups (default: $BackupDir)" "Yellow"
 Write-ColorOutput "-ImageName           : Base name for Docker image (default: $ImageName)" "Yellow"

@@ -825,7 +825,12 @@ async def search_order(
             if not production_order:
                 return {"orders": []}
 
-            orders = select(o for o in Order if production_order.lower() in o.production_order.lower())[:]
+            # Exact match search - change from substring match to exact match
+            orders = select(o for o in Order if o.production_order == production_order)[:]
+
+            if not orders:
+                # If no exact match found, fall back to partial match as a secondary option
+                orders = select(o for o in Order if production_order.lower() in o.production_order.lower())[:]
 
             if not orders:
                 return {"orders": []}
@@ -906,7 +911,6 @@ async def search_order(
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
-
 
 
 @router.post("/upload-pdf")

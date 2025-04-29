@@ -4,7 +4,7 @@ from pony.orm import db_session, select
 import json
 from ....config.settings import settings
 from ....core.security import create_access_token
-from ....models.user import User
+from ....models.user import User, MachineCredential
 from ....models.master_order import Machine
 from pydantic import BaseModel
 from typing import Optional, List, Any
@@ -47,6 +47,7 @@ class MachineOperatorToken(BaseModel):
     token_type: str
     role: str
     access_list: List[str]
+    user_id: int
     machine: MachineData
 
 
@@ -133,8 +134,9 @@ async def machine_operator_login(auth_data: MachineOperatorAuth = Body(...)) -> 
 
             print(f"Found machine: {machine.make} {machine.model} (ID: {machine.id})")
 
-            # TEMPORARY: Using hardcoded password "1234" for all machines
-            if auth_data.machine_password != "1234":
+
+            credential = MachineCredential.get(machine=machine)
+            if not credential or auth_data.machine_password != credential.password:
                 print(f"Machine password verification failed")
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
@@ -238,6 +240,7 @@ async def machine_operator_login(auth_data: MachineOperatorAuth = Body(...)) -> 
                 "token_type": "bearer",
                 "role": role_name,
                 "access_list": access_list,
+                "user_id": user.id,
                 "machine": {
                     "id": machine.id,
                     "type": machine.type,
@@ -258,3 +261,21 @@ async def machine_operator_login(auth_data: MachineOperatorAuth = Body(...)) -> 
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Login failed: {str(e)}"
         )
+
+
+@router.post("/register-machine-password")
+@db_session
+def register_machine_password(machine_id: int, password: str):
+    machine = Machine.get(id=machine_id)
+    if not machine:
+        raise HTTPException(status_code=404, detail="Machine not found")
+
+    # Check if password entry already exists
+    existing = MachineCredential.get(machine=machine)
+    if existing:
+        existing.password = password  # update
+    else:
+        MachineCredential(machine=machine, password=password)
+    return {"status": "Password set successfully"}
+
+

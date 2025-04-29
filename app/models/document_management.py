@@ -4,6 +4,7 @@ from ..database.connection import db
 from .user import User
 from .master_order import Order
 
+
 class DocFolder(db.Entity):
     _table_ = ("document_management", "doc_folders")
     id = PrimaryKey(int, auto=True)
@@ -15,6 +16,7 @@ class DocFolder(db.Entity):
     is_active = Required(bool, default=True)
     documents = Set('Document')
 
+
 class DocType(db.Entity):
     _table_ = ("document_management", "doc_types")
     id = PrimaryKey(int, auto=True)
@@ -24,11 +26,12 @@ class DocType(db.Entity):
     is_active = Required(bool, default=True)
     documents = Set('Document')
 
+
 class Document(db.Entity):
     _table_ = ("document_management", "documents")
     id = PrimaryKey(int, auto=True)
     folder = Required(DocFolder)
-    part_number_id = Required(Order,)  # Changed column name to match
+    part_number_id = Required(Order)  # Link to Order model
     doc_type = Required(DocType)
     document_name = Required(str)
     description = Optional(str)
@@ -40,7 +43,7 @@ class Document(db.Entity):
     versions = Set('DocumentVersion', reverse='document')
     mpps = Set('MPP')
     access_logs = Set('DocumentAccessLog', reverse='document')
-    
+
 
 class DocumentVersion(db.Entity):
     _table_ = ("document_management", "document_versions")
@@ -56,6 +59,7 @@ class DocumentVersion(db.Entity):
     created_by = Required(User)
     status = Required(str)
     access_logs = Set('DocumentAccessLog', reverse='version')
+
 
 class DocumentAccessLog(db.Entity):
     _table_ = ("document_management", "document_access_logs")

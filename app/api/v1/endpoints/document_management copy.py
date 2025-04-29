@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from typing import List, Optional
-from pony.orm import db_session, select,flush
+from pony.orm import db_session, select, flush
 from ....services.minio_service import MinioService
 from ....models.document_management import DocFolder, DocType, Document, DocumentVersion
 from ....models.user import User
@@ -14,18 +14,19 @@ import hashlib
 router = APIRouter(prefix="/documents", tags=["Document Management"])
 minio_service = MinioService()
 
+
 # Document Type endpoints
 @router.post("/types/", response_model=DocTypeResponse)
 async def create_doc_type(
-    doc_type: DocTypeCreate, 
-    current_user: User = Depends(get_current_admin_user)
+        doc_type: DocTypeCreate,
+        current_user: User = Depends(get_current_admin_user)
 ):
     """Create a new document type"""
     with db_session:
         existing = DocType.get(type_name=doc_type.type_name)
         if existing:
             raise HTTPException(status_code=400, detail="Document type already exists")
-        
+
         db_doc_type = DocType(
             type_name=doc_type.type_name,
             description=doc_type.description,
@@ -34,17 +35,18 @@ async def create_doc_type(
         )
         return db_doc_type
 
+
 # Folder endpoints
 @router.post("/folders/", response_model=FolderResponse)
 async def create_folder(
-    folder: FolderCreate, 
-    current_user: User = Depends(get_current_user)
+        folder: FolderCreate,
+        current_user: User = Depends(get_current_user)
 ):
     """Create a new folder"""
     with db_session:
         try:
             parent_path = ""
-            
+
             # Handle parent folder
             if folder.parent_folder_id:
                 if folder.parent_folder_id == 0:  # Root folder
@@ -54,17 +56,17 @@ async def create_folder(
                     if not parent:
                         raise HTTPException(status_code=404, detail="Parent folder not found")
                     parent_path = parent.folder_path
-            
+
             folder_path = f"{parent_path}/{folder.folder_name}".lstrip("/")
-            
+
             # Check if folder path already exists
             existing_folder = DocFolder.get(folder_path=folder_path)
             if existing_folder:
                 raise HTTPException(
-                    status_code=400, 
+                    status_code=400,
                     detail="A folder with this path already exists"
                 )
-            
+
             db_folder = DocFolder(
                 parent_folder=folder.parent_folder_id if folder.parent_folder_id and folder.parent_folder_id != 0 else None,
                 folder_name=folder.folder_name,
@@ -72,10 +74,10 @@ async def create_folder(
                 created_by=current_user.id,
                 is_active=folder.is_active
             )
-            
+
             # Flush to ensure the folder is created
             flush()
-            
+
             # Convert to dict before the session ends
             return {
                 "id": db_folder.id,
@@ -86,7 +88,7 @@ async def create_folder(
                 "created_by": db_folder.created_by,
                 "is_active": db_folder.is_active
             }
-            
+
         except HTTPException:
             raise
         except Exception as e:
@@ -95,13 +97,14 @@ async def create_folder(
                 detail=f"Failed to create folder: {str(e)}"
             )
 
+
 # Document endpoints
 @router.post("/upload/", response_model=DocumentResponse)
 async def upload_document(
-    file: UploadFile = File(...),
-    document: DocumentCreate = Depends(),
-    version: DocumentVersionCreate = Depends(),
-    current_user: User = Depends(get_current_user)
+        file: UploadFile = File(...),
+        document: DocumentCreate = Depends(),
+        version: DocumentVersionCreate = Depends(),
+        current_user: User = Depends(get_current_user)
 ):
     """Upload a new document with initial version"""
     try:
@@ -119,12 +122,12 @@ async def upload_document(
             doc_type = DocType.get(id=document.doc_type_id)
             if not doc_type:
                 raise HTTPException(status_code=404, detail="Document type not found")
-            
+
             # Validate file extension
             file_ext = file.filename.split('.')[-1].lower()
             if file_ext not in [ext.lower().strip('.') for ext in doc_type.file_extensions]:
                 raise HTTPException(
-                    status_code=400, 
+                    status_code=400,
                     detail=f"File type .{file_ext} not allowed for this document type"
                 )
 
@@ -137,10 +140,10 @@ async def upload_document(
                 description=document.description,
                 created_by=current_user.id
             )
-            
+
             # Flush to get document ID
             flush()
-            
+
             # Generate MinIO object path
             object_name = minio_service.generate_object_path(
                 str(document.part_number_id),
@@ -148,7 +151,7 @@ async def upload_document(
                 db_document.id,
                 1  # First version
             )
-            
+
             try:
                 # Upload to MinIO
                 minio_result = minio_service.upload_file(
@@ -161,7 +164,7 @@ async def upload_document(
                     status_code=500,
                     detail=f"Failed to upload file to storage: {str(e)}"
                 )
-            
+
             # Create version record
             db_version = DocumentVersion(
                 document=db_document,
@@ -173,10 +176,10 @@ async def upload_document(
                 created_by=current_user.id,
                 status="active"
             )
-            
+
             # Set as latest version
             db_document.latest_version = db_version
-            
+
             # Convert to dict before session ends
             return {
                 "id": db_document.id,
@@ -224,4 +227,4 @@ async def upload_document(
 # - Creating new versions
 # - Managing folders
 # - Document search
-# - Access logs 
+# - Access logs

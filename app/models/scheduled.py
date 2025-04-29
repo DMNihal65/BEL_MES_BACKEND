@@ -68,6 +68,7 @@ class ProductionLog(db.Entity):
     _table_ = ("scheduling", "production_logs")
     id = PrimaryKey(int, auto=True)
     machine_id = Optional(int)
+    operation = Required(Operation, reverse='production_logs')
     schedule_version = Optional(ScheduleVersion)
     operator = Optional(User)
     start_time = Optional(datetime)
@@ -75,3 +76,4 @@ class ProductionLog(db.Entity):
     quantity_completed = Optional(int)
     quantity_rejected = Optional(int)
     notes = Optional(str)
+

@@ -8,8 +8,8 @@ from app.schemas.scheduled import ScheduledOperation, ProductionLogResponse, Com
 from fastapi import APIRouter, HTTPException, Query, Path, Depends, status, WebSocket
 from pony.orm import db_session, select, avg, count, desc
 from app.schemas.scheduled import ScheduledOperation, ScheduleResponse, ProductionMetrics, MachineStatus, ProductionKPI, \
-    ShiftSummary
-from app.models import Order, Operation, Machine, PartScheduleStatus, PlannedScheduleItem, ScheduleVersion
+    ShiftSummary, ProductionTrend, QualityMetrics, ResourceUtilization
+from app.models import Order, Operation, Machine, PartScheduleStatus, PlannedScheduleItem, ScheduleVersion, Program
 from app.crud.operation import fetch_operations
 from app.crud.component_quantities import fetch_component_quantities
 from app.crud.leadtime import fetch_lead_times
@@ -699,10 +699,17 @@ async def get_live_machine_status():
                     if live_data:
                         print(f"Processing machine {machine.id}")  # Debug log
 
+                        # Ensure the work_center attribute exists before accessing it
+                        if not hasattr(machine, 'work_center'):
+                            print(f"Warning: Machine {machine.id} has no work_center attribute")
+                            machine_name = f"Unknown-{machine.id}"
+                        else:
+                            machine_name = f"{machine.work_center.code}-{machine.make}"
+
                         # Base machine data
                         machine_data = {
                             "machine_id": machine.id,
-                            "machine_name": f"{machine.work_center.code}-{machine.make}",
+                            "machine_name": machine_name,
                             "status": live_data.status.status_name,
                             "program_number": live_data.selected_program or "",
                             "active_program": live_data.active_program or "",
@@ -721,15 +728,19 @@ async def get_live_machine_status():
                             "operation_description": None
                         }
 
-                        # Get order details if job is in progress
-                        if live_data.job_in_progress:
-                            print(f"Getting order details for job {live_data.job_in_progress}")  # Debug log
-                            order_details = live_data.get_order_details()
-                            if order_details:
-                                print(f"Found order details: {order_details}")  # Debug log
-                                machine_data.update(order_details)
-                            else:
-                                print(f"No order details found for job {live_data.job_in_progress}")
+                        # Get order details using the enhanced method
+                        if live_data.job_in_progress or live_data.active_program:
+                            try:
+                                order_details = live_data.get_order_details()
+                                if order_details:
+                                    print(f"Found order details for machine {machine.id}")
+                                    machine_data.update(order_details)
+                                else:
+                                    print(f"No order details found for machine {machine.id}")
+                            except Exception as e:
+                                print(f"Error getting order details for machine {machine.id}: {str(e)}")
+                                import traceback
+                                print(traceback.format_exc())
 
                         live_statuses.append(MachineLiveStatus(**machine_data))
                         print(f"Successfully added machine {machine.id} to response")  # Debug log
@@ -768,9 +779,32 @@ async def websocket_live_status(websocket: WebSocket):
                     response_data = []
                     for status in machine_statuses:
                         try:
+                            # First make sure this machine exists in the database
                             machine = Machine.get(id=status.machine_id)
                             if not machine:
                                 print(f"Machine not found for ID: {status.machine_id}")
+                                # Still include this machine in the response with basic info
+                                machine_data = {
+                                    "machine_id": status.machine_id,
+                                    "machine_name": f"Unknown-{status.machine_id}",
+                                    "status": status.status.status_name,
+                                    "program_number": status.selected_program or "",
+                                    "active_program": status.active_program or "",
+                                    "selected_program": status.selected_program or "",
+                                    "part_count": status.part_count or 0,
+                                    "job_status": status.job_status,
+                                    "last_updated": status.timestamp.isoformat() if status.timestamp else None,
+                                    "job_in_progress": status.job_in_progress,
+                                    # Initialize order details with default values
+                                    "production_order": None,
+                                    "part_number": None,
+                                    "part_description": None,
+                                    "required_quantity": None,
+                                    "launched_quantity": None,
+                                    "operation_number": None,
+                                    "operation_description": None
+                                }
+                                response_data.append(machine_data)
                                 continue
 
                             # Base machine data
@@ -796,42 +830,17 @@ async def websocket_live_status(websocket: WebSocket):
                             }
 
                             # Get order details if job is in progress
-                            if status.job_in_progress:
+                            if status.job_in_progress or status.active_program:
                                 try:
-                                    print(
-                                        f"\n=== Debug: Looking up details for schedule item ID {status.job_in_progress} ===")
-
-                                    # Get the schedule item directly by ID
-                                    schedule_item = PlannedScheduleItem.get(id=status.job_in_progress)
-                                    if schedule_item:
-                                        print(f"Found schedule item: ID={schedule_item.id}")
-                                        operation = schedule_item.operation
-                                        order = schedule_item.order
-
-                                        if operation:
-                                            print(
-                                                f"Found operation: ID={operation.id}, Number={operation.operation_number}, Description={operation.operation_description}")
-
-                                        if order:
-                                            print(f"Found order: PO={order.production_order}, Part={order.part_number}")
-                                            machine_data.update({
-                                                'production_order': order.production_order,
-                                                'part_number': order.part_number,
-                                                'part_description': order.part_description,
-                                                'required_quantity': order.required_quantity,
-                                                'launched_quantity': order.launched_quantity,
-                                                'operation_number': operation.operation_number if operation else None,
-                                                'operation_description': operation.operation_description if operation else None
-                                            })
-                                            print(f"Successfully updated machine data with order details")
-                                        else:
-                                            print(f"No order found for schedule item {status.job_in_progress}")
+                                    # Use the enhanced method in MachineRawLive that now handles both approaches
+                                    order_details = status.get_order_details()
+                                    if order_details:
+                                        print(f"Successfully found order details via get_order_details")
+                                        machine_data.update(order_details)
                                     else:
-                                        print(f"No schedule item found with ID {status.job_in_progress}")
-
-                                except Exception as op_error:
-                                    print(f"Error getting schedule details: {str(op_error)}")
-                                    print("Full traceback:")
+                                        print(f"No order details found for machine {machine.id}")
+                                except Exception as detail_error:
+                                    print(f"Error getting order details: {str(detail_error)}")
                                     import traceback
                                     print(traceback.format_exc())
 
@@ -894,9 +903,9 @@ async def get_machine_history(
             # Get all records for the time period
             history_records = select(r for r in MachineRaw
                                      if r.machine_id == machine_id
-                                     and r.time_stamp >= start_date
-                                     and r.time_stamp <= end_date
-                                     ).order_by(lambda r: r.time_stamp)[:]
+                                     and r.timestamp >= start_date
+                                     and r.timestamp <= end_date
+                                     ).order_by(lambda r: r.timestamp)[:]
 
             # Initialize data structures
             status_changes = []
@@ -911,13 +920,13 @@ async def get_machine_history(
                 # Track status changes with duration
                 if current_status != record.status.status_name:
                     if current_status and status_start_time:
-                        duration = (record.time_stamp - status_start_time).total_seconds() / 3600  # hours
+                        duration = (record.timestamp - status_start_time).total_seconds() / 3600  # hours
                         status_duration[current_status] += duration
 
                     current_status = record.status.status_name
-                    status_start_time = record.time_stamp
+                    status_start_time = record.timestamp
                     status_changes.append(StatusChange(
-                        timestamp=record.time_stamp,
+                        timestamp=record.timestamp,
                         status=record.status.status_name,
                         program=record.active_program
                     ))
@@ -925,23 +934,23 @@ async def get_machine_history(
                 # Track part count changes
                 if record.part_count is not None:
                     part_counts.append(PartCount(
-                        timestamp=record.time_stamp,
+                        timestamp=record.timestamp,
                         count=record.part_count
                     ))
                     # Add to hourly production
-                    hour_key = record.time_stamp.replace(minute=0, second=0, microsecond=0)
+                    hour_key = record.timestamp.replace(minute=0, second=0, microsecond=0)
                     hourly_production[hour_key] = record.part_count
 
                 # Track program changes
                 if record.active_program:
                     programs.append(ProgramChange(
-                        timestamp=record.time_stamp,
+                        timestamp=record.timestamp,
                         program=record.active_program
                     ))
 
             # Calculate final status duration if needed
             if current_status and status_start_time and history_records:
-                duration = (history_records[-1].time_stamp - status_start_time).total_seconds() / 3600
+                duration = (history_records[-1].timestamp - status_start_time).total_seconds() / 3600
                 status_duration[current_status] += duration
 
             return MachineStatusHistory(
@@ -987,9 +996,9 @@ async def get_production_analytics(
                     # Get all records for the machine within time range
                     machine_records = list(select(r for r in MachineRaw
                                                   if r.machine_id == machine.id
-                                                  and r.time_stamp >= start_date
-                                                  and r.time_stamp <= end_date
-                                                  ).order_by(lambda r: r.time_stamp)[:])
+                                                  and r.timestamp >= start_date
+                                                  and r.timestamp <= end_date
+                                                  ).order_by(lambda r: r.timestamp)[:])
 
                     # Calculate status distribution
                     status_counts = defaultdict(int)
@@ -1009,7 +1018,7 @@ async def get_production_analytics(
                     for record in machine_records:
                         if record and hasattr(record, 'part_count') and record.part_count is not None:
                             production_data.append({
-                                'timestamp': record.time_stamp,
+                                'timestamp': record.timestamp,
                                 'part_count': record.part_count
                             })
 
@@ -1085,7 +1094,7 @@ def calculate_average_cycle_time(production_records):
                     record.part_count is not None):
 
                 if record.part_count > prev_record.part_count:
-                    time_diff = (record.time_stamp - prev_record.time_stamp).total_seconds()
+                    time_diff = (record.timestamp - prev_record.timestamp).total_seconds()
                     part_diff = record.part_count - prev_record.part_count
                     if part_diff > 0:
                         cycle_times.append(time_diff / part_diff)
@@ -1123,8 +1132,8 @@ async def get_production_summary(
                 # Corrected records query
                 records = select(r for r in MachineRaw
                                  if r.machine_id == machine.id
-                                 and r.time_stamp >= start_date
-                                 and r.time_stamp <= end_date
+                                 and r.timestamp >= start_date
+                                 and r.timestamp <= end_date
                                  )[:]
 
                 # Calculate machine-specific metrics
@@ -1352,13 +1361,13 @@ async def get_shift_performance_analysis(
                     if machine_id:
                         machine_records = select(r for r in MachineRaw if
                                                  r.machine_id == machine_id and
-                                                 r.time_stamp >= shift_start and
-                                                 r.time_stamp <= shift_end)[:]
+                                                 r.timestamp >= shift_start and
+                                                 r.timestamp <= shift_end)[:]
 
                         status_duration = defaultdict(int)
                         for i in range(len(machine_records) - 1):
-                            duration = (machine_records[i + 1].time_stamp - machine_records[
-                                i].time_stamp).total_seconds()
+                            duration = (machine_records[i + 1].timestamp - machine_records[
+                                i].timestamp).total_seconds()
                             status_duration[machine_records[i].status.status_name] += duration
 
                         total_time = sum(status_duration.values())
@@ -1435,12 +1444,12 @@ async def get_production_kpi_dashboard(
                 # Calculate machine utilization
                 machine_records = select(r for r in MachineRaw if
                                          r.machine_id == machine.id and
-                                         r.time_stamp >= start_date and
-                                         r.time_stamp <= end_date)[:]
+                                         r.timestamp >= start_date and
+                                         r.timestamp <= end_date)[:]
 
                 status_duration = defaultdict(int)
                 for i in range(len(machine_records) - 1):
-                    duration = (machine_records[i + 1].time_stamp - machine_records[i].time_stamp).total_seconds()
+                    duration = (machine_records[i + 1].timestamp - machine_records[i].timestamp).total_seconds()
                     status_duration[machine_records[i].status.status_name] += duration
 
                 total_time = sum(status_duration.values())
@@ -1741,9 +1750,9 @@ async def get_machine_status_timeline(
             # Get machine status records for the time period
             records = select(r for r in MachineRaw
                              if r.machine_id == machine_id
-                             and r.time_stamp >= start_date
-                             and r.time_stamp <= end_date
-                             ).order_by(lambda r: r.time_stamp)[:]
+                             and r.timestamp >= start_date
+                             and r.timestamp <= end_date
+                             ).order_by(lambda r: r.timestamp)[:]
 
             # Track status changes
             status_changes = []
@@ -1752,14 +1761,14 @@ async def get_machine_status_timeline(
             for i, record in enumerate(records):
                 # Add status change
                 status_changes.append({
-                    "timestamp": record.time_stamp.isoformat(),
+                    "timestamp": record.timestamp.isoformat(),
                     "status": record.status.status_name,
                     "program": record.active_program
                 })
 
                 # Calculate duration for status distribution
                 if i < len(records) - 1:
-                    duration = (records[i + 1].time_stamp - record.time_stamp).total_seconds()
+                    duration = (records[i + 1].timestamp - record.timestamp).total_seconds()
                     status_duration[record.status.status_name] += duration
 
             # Calculate status distribution percentages
@@ -2047,9 +2056,9 @@ async def get_all_machines_status_timeline(
                     # Get all records for this machine in chronological order
                     records = select(r for r in MachineRaw
                                      if r.machine_id == machine.id
-                                     and r.time_stamp >= start_date
-                                     and r.time_stamp <= end_date
-                                     ).order_by(MachineRaw.time_stamp)[:]
+                                     and r.timestamp >= start_date
+                                     and r.timestamp <= end_date
+                                     ).order_by(MachineRaw.timestamp)[:]
 
                     print(f"Found {len(records)} records for machine {machine.id}")
 
@@ -2076,14 +2085,14 @@ async def get_all_machines_status_timeline(
                                     "machine_id": machine.id,
                                     "machine_name": f"{machine.work_center.code}-{machine.make}",
                                     "start_time": status_start,
-                                    "end_time": record.time_stamp,
+                                    "end_time": record.timestamp,
                                     "status": current_status,
                                     "program": record.program_number if hasattr(record, 'program_number') else None
                                 })
 
                             # Start new status period
                             current_status = record.status.status_name
-                            status_start = record.time_stamp
+                            status_start = record.timestamp
 
                         # Handle the last record
                         if i == len(records) - 1:

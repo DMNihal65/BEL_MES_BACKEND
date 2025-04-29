@@ -50,6 +50,7 @@ class DocumentV2(db.Entity):
     latest_version = Optional('DocumentVersionV2', nullable=True, reverse='latest_of', column='latest_version_id_v2')
     versions = Set('DocumentVersionV2', reverse='document')
     access_logs = Set('DocumentAccessLogV2')
+    master_bocs = Set('MasterBoc', reverse='document')
 
 class DocumentVersionV2(db.Entity):
     """Stores version information for documents"""
