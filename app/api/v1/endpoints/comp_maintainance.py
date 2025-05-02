@@ -173,6 +173,7 @@ async def operator_machine_update(machine_id: int, update: OperatorMachineUpdate
             # Create response object with updated data
             updated_status = MachineStatusOut(
                 machine_make=machine.make,
+                machine_id= machine.id,
                 status_name=new_status.name,
                 available_from=current_time,  # Ensure this is not null
                 description=update.description

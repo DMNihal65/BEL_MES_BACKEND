@@ -121,6 +121,7 @@ class MachineUtilization(BaseModel):
     machine_make: str
     machine_model: str
     work_center_name: Optional[str] = None
+    work_center_bool: bool
     available_hours: float
     utilized_hours: float
     remaining_hours: float

@@ -56,6 +56,7 @@ class CredentialOut(BaseModel):
     id: int
     machine_id: int
     password: str
+    machine_name: str  # New field
 
     class Config:
         orm_mode = True
@@ -306,7 +307,8 @@ def get_machine_credential(machine_id: int):
     return {
         "id": credential.id,
         "machine_id": credential.machine.id,
-        "password": credential.password
+        "password": credential.password,
+        "machine_name": f"{credential.machine.make}"
     }
 
 @router.get("/get-machine-credentials", response_model=List[CredentialOut])
@@ -317,7 +319,8 @@ def get_all_machine_credentials():
         {
             "id": c.id,
             "machine_id": c.machine.id,
-            "password": c.password
+            "password": c.password,
+            "machine_name": f"{c.machine.make}"  # Customize as needed
         }
         for c in credentials
     ]
@@ -334,5 +337,6 @@ def update_machine_credential(machine_id: int, data: CredentialUpdate):
     return {
         "id": credential.id,
         "machine_id": credential.machine.id,
-        "password": credential.password
+        "password": credential.password,
+        "machine_name": f"{credential.machine.make}"
     }

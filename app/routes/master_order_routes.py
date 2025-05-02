@@ -30,7 +30,8 @@ def create_work_center(work_center: WorkCenterCreate):
             code=work_center.code,
             plant_id=work_center.plant_id,
             description=work_center.description,
-            work_center_name=work_center.work_center_name
+            work_center_name=work_center.work_center_name,
+            is_schedulable=work_center.is_schedulable
         )
         commit()
         return db_work_center
@@ -65,16 +66,17 @@ def get_work_center(
         raise HTTPException(status_code=404, detail="Work center not found")
     return work_center
 
+
 @router.put("/workcenters/{work_center_id}", response_model=WorkCenterResponse)
 @db_session
 def update_work_center(
-    work_center_id: int,
-    work_center: WorkCenterUpdate
+        work_center_id: int,
+        work_center: WorkCenterUpdate
 ):
     db_work_center = WorkCenter.get(id=work_center_id)
     if not db_work_center:
         raise HTTPException(status_code=404, detail="Work center not found")
-    
+
     try:
         # Update only provided fields
         if work_center.code is not None:
@@ -83,13 +85,16 @@ def update_work_center(
             db_work_center.plant_id = work_center.plant_id
         if work_center.description is not None:
             db_work_center.description = work_center.description
-        if work_center.operation is not None:
-            db_work_center.operation = work_center.operation
-        
+        if work_center.work_center_name is not None:
+            db_work_center.work_center_name = work_center.work_center_name
+        if work_center.is_schedulable is not None:
+            db_work_center.is_schedulable = work_center.is_schedulable
+
         commit()
         return db_work_center
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.delete("/workcenters/{work_center_id}")
 @db_session
@@ -171,16 +176,19 @@ def create_machine(machine: MachineCreate):
             "cnc_controller_series": db_machine.cnc_controller_series,
             "remarks": db_machine.remarks,
             "calibration_date": db_machine.calibration_date,
-            "calibration_due_date": db_machine.calibration_due_date,  # Added this field
+            "calibration_due_date": db_machine.calibration_due_date,
             "last_maintenance_date": db_machine.last_maintenance_date,
+            "work_center_boolean": True,  # Add the missing field
             "work_center": {
                 "id": work_center.id,
                 "code": work_center.code,
                 "plant_id": work_center.plant_id,
                 "description": work_center.description,
-                "operation": work_center.work_center_name
+                "operation": work_center.work_center_name,
+                "is_schedulable": work_center.is_schedulable  # Adding this required field from WorkCenterResponse
             }
         }
+
     except Exception as e:
         # Rollback in case of any error
         rollback()
@@ -288,39 +296,40 @@ def update_machine(
         raise HTTPException(status_code=404, detail="Machine not found")
 
     try:
-        # Update only provided fields
+        # Update only the fields provided in the request
         for field, value in machine.dict(exclude_unset=True).items():
             setattr(db_machine, field, value)
 
         commit()
 
-        # Prepare response data within the database session
-        response_data = {
-            "id": db_machine.id,
-            "work_center_id": db_machine.work_center.id,
-            "type": db_machine.type,
-            "make": db_machine.make,
-            "model": db_machine.model,
-            "year_of_installation": db_machine.year_of_installation,
-            "cnc_controller": db_machine.cnc_controller,
-            "cnc_controller_series": db_machine.cnc_controller_series,
-            "remarks": db_machine.remarks,
-            "calibration_date": db_machine.calibration_date,
-            "calibration_due_date": db_machine.calibration_due_date,  # Added this field
-            "last_maintenance_date": db_machine.last_maintenance_date,
-            "work_center": {
-                "id": db_machine.work_center.id,
-                "code": db_machine.work_center.code,
-                "plant_id": db_machine.work_center.plant_id,
-                "description": db_machine.work_center.description,
-                "operation": db_machine.work_center.work_center_name
-            }
-        }
-
-        return response_data
+        # Manually construct the full response matching MachineResponse
+        return MachineResponse(
+            id=db_machine.id,
+            work_center_id=db_machine.work_center.id,
+            type=db_machine.type,
+            make=db_machine.make,
+            model=db_machine.model,
+            year_of_installation=db_machine.year_of_installation,
+            cnc_controller=db_machine.cnc_controller,
+            cnc_controller_series=db_machine.cnc_controller_series,
+            remarks=db_machine.remarks,
+            calibration_date=db_machine.calibration_date,
+            calibration_due_date=db_machine.calibration_due_date,
+            last_maintenance_date=db_machine.last_maintenance_date,
+            work_center_boolean=bool(db_machine.work_center),  # Adjust logic if needed
+            work_center=WorkCenterResponse(
+                id=db_machine.work_center.id,
+                code=db_machine.work_center.code,
+                plant_id=db_machine.work_center.plant_id,
+                description=db_machine.work_center.description,
+                work_center_name=db_machine.work_center.work_center_name,
+                is_schedulable=db_machine.work_center.is_schedulable
+            )
+        )
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 
 @router.delete("/machines/{machine_id}")

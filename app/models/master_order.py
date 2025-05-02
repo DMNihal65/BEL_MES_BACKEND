@@ -13,7 +13,7 @@ class WorkCenter(db.Entity):
     plant_id = Required(str)
     work_center_name = Optional(str)  # Renamed from 'operation'
     description = Optional(str)
-    is_schedulable = Optional(bool, default=True)  # New field to determine if scheduling is allowed
+    is_schedulable = Optional(bool, default=False)  # New field to determine if scheduling is allowed
     machines = Set('Machine')
     operations = Set('Operation')
 
