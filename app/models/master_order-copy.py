@@ -131,8 +131,8 @@ class Operation(db.Entity):
     planned_schedule_items = Set('PlannedScheduleItem', reverse='operation')
     order_tools = Set('OrderTool', reverse='operation')
     production_logs = Set('ProductionLog', reverse='operation')
-    machine_raw_live_1 = Set('MachineRawLive', reverse='scheduled_job')
-    machine_raw_live_2 = Set('MachineRawLive', reverse='actual_job')
+    machine_raw_live = Set('MachineRawLive', reverse='operation')
+
 
     inventory_requests = Set("InventoryRequest")
 

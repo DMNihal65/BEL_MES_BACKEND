@@ -51,8 +51,8 @@ class MachineRawLive(db.Entity):
     job_status = Optional(int)
     job_in_progress = Optional(int)
     program_number = Optional(int)
-    scheduled_job = Optional(Operation, reverse='machine_raw_live_1')
-    actual_job = Optional(Operation, reverse='machine_raw_live_2')
+    scheduled_job = Optional(Operation, reverse='production_logs')
+    actual_job = Optional(Operation, reverse='production_logs')
 
     def get_order_details(self):
         """Get associated order details through job_in_progress (operation_id) or by matching program name"""

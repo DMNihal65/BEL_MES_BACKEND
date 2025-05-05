@@ -286,8 +286,8 @@ def get_login_logs():
 
 @router.get("/api/v1/auth/users-get")
 @db_session
-def get_users(skip: int = 0, limit: int = 100, active_only: bool = True):
-    users = select(u for u in User if (not active_only) or u.is_active).limit(limit, offset=skip)[:]
+def get_users( active_only: bool = True):
+    users = select(u for u in User if (not active_only) or u.is_active)
 
     result = []
     for user in users:
