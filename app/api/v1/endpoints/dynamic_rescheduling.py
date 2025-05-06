@@ -10,6 +10,8 @@ from app.models import PlannedScheduleItem, ScheduleVersion, ProductionLog, Orde
 from app.schemas.scheduled1 import CombinedScheduleResponse, WorkCenterInfo
 from app.models.master_order import WorkCenter, MachineStatus, Machine
 from app.schemas.scheduled1 import ProductionLogResponse, ScheduledOperation
+import re
+import hashlib
 
 router = APIRouter(prefix="/api/v1/rescheduling", tags=["rescheduling"])
 
@@ -36,26 +38,22 @@ def calculate_shift_aware_duration(start_time: datetime, operation: Operation, q
     shift_minutes_per_day = (shift_end_hour - shift_start_hour) * 60  # 480 minutes
 
     while remaining_minutes > 0:
-        # Calculate minutes until end of current shift
         current_hour = current_time.hour
         current_minute = current_time.minute
         minutes_until_shift_end = ((shift_end_hour - current_hour) * 60) - current_minute
 
         if minutes_until_shift_end <= 0:
-            # Move to next day's shift
             current_time = (current_time + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
             continue
 
-        # Allocate as many minutes as possible in the current shift
         minutes_to_allocate = min(remaining_minutes, minutes_until_shift_end)
         remaining_minutes -= minutes_to_allocate
         current_time += timedelta(minutes=minutes_to_allocate)
 
         if remaining_minutes > 0:
-            # Move to next day's shift
             current_time = (current_time + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
 
-    end_time = adjust_to_shift_hours(current_time)
+    end_time = current_time
     total_duration = timedelta(minutes=total_minutes)
     return end_time, total_duration
 
@@ -67,20 +65,14 @@ def check_machine_status(machine_id: int, time: datetime) -> Tuple[bool, datetim
                                 if ms.machine.id == machine_id and
                                 ms.status == s).first()
 
-        print(f"\nChecking Machine ID: {machine_id}")
         if not machine_status:
-            print(f"No status found for Machine ID {machine_id}. Assuming unavailable.")
             return False, None
 
         ms, status = machine_status
-        print(f"Machine Status Details: {status.name}")
-
         if status.name.upper() == 'OFF':
-            print(f"Machine {machine_id} is OFF")
             return False, None
 
         if ms.available_from and time < ms.available_from:
-            print(f"Machine {machine_id} not available before {ms.available_from}")
             return False, ms.available_from
 
         return True, time
@@ -160,15 +152,11 @@ def propagate_delay_to_dependent_operations(part_number: str, completed_operatio
             print(f"Operation {completed_operation_number} not found or is the last operation in the sequence")
             return updated_items
 
-        print(f"Found operation at index {completed_op_index} out of {len(operations)} operations")
-
-        current_start_time = actual_end_time
-        remaining_qty = total_qty  # Use total_qty for subsequent operations
+        current_start_time = adjust_to_shift_hours(actual_end_time)
+        remaining_qty = total_qty - completed_qty
 
         for i in range(completed_op_index + 1, len(operations)):
             dependent_op = operations[i]
-            print(f"Processing dependent operation {dependent_op.operation_number}")
-
             schedule_items = list(select(item for item in PlannedScheduleItem
                                          if item.operation == dependent_op)[:])
 
@@ -187,13 +175,9 @@ def propagate_delay_to_dependent_operations(part_number: str, completed_operatio
                 print(f"No active version found for operation {dependent_op.operation_number}")
                 continue
 
-            # Calculate shift-aware duration
-            new_end_time, operation_duration = calculate_shift_aware_duration(current_start_time, dependent_op, remaining_qty)
+            new_end_time, operation_duration = calculate_shift_aware_duration(current_start_time, dependent_op,
+                                                                              total_qty)
             new_start_time = adjust_to_shift_hours(current_start_time)
-
-            print(f"Rescheduling operation {dependent_op.operation_number}:")
-            print(f"  - Original: {current_version.planned_start_time} to {current_version.planned_end_time}")
-            print(f"  - New: {new_start_time} to {new_end_time}")
 
             new_version_number = current_version.version_number + 1
             new_version = ScheduleVersion(
@@ -203,13 +187,14 @@ def propagate_delay_to_dependent_operations(part_number: str, completed_operatio
                 planned_end_time=new_end_time,
                 planned_quantity=total_qty,
                 completed_quantity=0,
-                remaining_quantity=remaining_qty,
+                remaining_quantity=total_qty,
                 is_active=True,
                 created_at=datetime.utcnow()
             )
 
             current_version.is_active = False
             latest_item.current_version = new_version_number
+            latest_item.remaining_quantity = total_qty
 
             dependent_ops = select(o for o in Operation
                                    if o.order == latest_item.order
@@ -222,7 +207,7 @@ def propagate_delay_to_dependent_operations(part_number: str, completed_operatio
                 'old_version': current_version.version_number,
                 'new_version': new_version_number,
                 'completed_qty': 0,
-                'remaining_qty': remaining_qty,
+                'remaining_qty': total_qty,
                 'start_time': new_start_time.isoformat(),
                 'end_time': new_end_time.isoformat(),
                 'machine_id': latest_item.machine.id,
@@ -281,6 +266,7 @@ async def dynamic_reschedule():
             cascade_updates = []
             valid_part_numbers = set()
             grouped_items = {}
+            processed_operations = set()
 
             for item in schedule_items:
                 versions = select(v for v in ScheduleVersion
@@ -299,8 +285,6 @@ async def dynamic_reschedule():
                     if logs:
                         valid_part_numbers.add(item.order.part_number)
 
-            print(f"Valid part numbers with production logs: {valid_part_numbers}")
-
             for item in schedule_items:
                 if item.order.part_number in valid_part_numbers:
                     key = (item.machine.id, item.operation.operation_number, item.order.part_number)
@@ -313,6 +297,10 @@ async def dynamic_reschedule():
             for (machine_id, operation_number, part_number), items in grouped_items.items():
                 try:
                     if not items:
+                        continue
+
+                    operation_key = (part_number, operation_number)
+                    if operation_key in processed_operations:
                         continue
 
                     items.sort(key=lambda x: x.id)
@@ -354,84 +342,151 @@ async def dynamic_reschedule():
                     if part_number not in completed_operations:
                         completed_operations[part_number] = []
 
-                    # Calculate quantities from production logs
                     last_item_logs = []
                     for log in all_group_logs:
-                        if hasattr(log, 'schedule_version') and log.schedule_version and log.schedule_version.schedule_item == last_item:
+                        if hasattr(log,
+                                   'schedule_version') and log.schedule_version and log.schedule_version.schedule_item == last_item:
                             last_item_logs.append(log)
                         elif log.operation == last_item.operation:
                             last_item_logs.append(log)
 
-                    completed_qty = sum(log.quantity_completed for log in last_item_logs if log.quantity_completed is not None)
-                    total_qty = last_item.total_quantity
-                    if completed_qty > total_qty:
-                        completed_qty = total_qty  # Cap completed_qty to total_qty
+                    # Calculate quantities from production logs
+                    completed_qty = sum(
+                        log.quantity_completed for log in last_item_logs if log.quantity_completed is not None)
+                    # Determine total quantity from the order or logs 24 (based on production logs and schedule)
+                    total_qty = last_item.total_quantity if last_item.total_quantity else max(
+                        [log.quantity_completed for log in last_item_logs if log.quantity_completed is not None])
                     remaining_qty = max(0, total_qty - completed_qty)
 
-                    # Use production log's end time for completed operations
-                    group_end_time = max(valid_end_times) if remaining_qty == 0 else group_start_time + calculate_shift_aware_duration(group_start_time, last_item.operation, completed_qty)[1]
-                    group_end_time = adjust_to_shift_hours(group_end_time)
+                    # Use actual production log times
+                    group_start_time = min(log.start_time for log in last_item_logs if log.start_time)
+                    group_end_time = max(log.end_time for log in last_item_logs if log.end_time)
 
-                    completed_operations[part_number].append((operation_number, group_end_time, completed_qty, total_qty))
-
+                    operation_id = last_item.operation.id if last_item.operation else last_item.id
                     dependent_ops = select(o for o in Operation
                                            if o.order == last_item.order
                                            ).order_by(lambda o: o.operation_number)[:]
                     last_available_idx = find_last_available_operation(list(dependent_ops), group_start_time)
 
-                    new_version_number = current_version.version_number + 1
-                    new_version = ScheduleVersion(
-                        schedule_item=last_item,
-                        version_number=new_version_number,
-                        planned_start_time=group_start_time,
-                        planned_end_time=group_end_time,
-                        planned_quantity=total_qty,
-                        completed_quantity=completed_qty,
-                        remaining_quantity=remaining_qty,
-                        is_active=True,
-                        created_at=datetime.utcnow()
-                    )
+                    # Handle completed or partially completed operations
+                    if completed_qty > 0:
+                        new_version_number = current_version.version_number + 1
+                        new_version = ScheduleVersion(
+                            schedule_item=last_item,
+                            version_number=new_version_number,
+                            planned_start_time=group_start_time,
+                            planned_end_time=group_end_time,
+                            planned_quantity=completed_qty,
+                            completed_quantity=completed_qty,
+                            remaining_quantity=0,
+                            is_active=True,
+                            created_at=datetime.utcnow()
+                        )
 
-                    current_version.is_active = False
-                    last_item.current_version = new_version_number
-                    last_item.remaining_quantity = remaining_qty
-                    last_item.status = 'scheduled' if remaining_qty > 0 else 'completed'
+                        current_version.is_active = False
+                        last_item.current_version = new_version_number
+                        last_item.remaining_quantity = remaining_qty
+                        last_item.status = 'completed' if remaining_qty == 0 else 'scheduled'
 
-                    operation_id = last_item.operation.id if last_item.operation else last_item.id
+                        updates.append({
+                            'item_id': last_item.id,
+                            'operation_id': operation_id,
+                            'old_version': current_version.version_number,
+                            'new_version': new_version_number,
+                            'completed_qty': completed_qty,
+                            'remaining_qty': remaining_qty,
+                            'start_time': group_start_time.isoformat(),
+                            'end_time': group_end_time.isoformat(),
+                            'machine_id': machine_id,
+                            'raw_material_status': 'Available',
+                            'operation_number': operation_number,
+                            'last_available_operation': last_available_idx,
+                            'part_number': part_number,
+                            'production_order': last_item.order.production_order
+                        })
 
-                    updates.append({
-                        'item_id': last_item.id,
-                        'operation_id': operation_id,
-                        'old_version': current_version.version_number,
-                        'new_version': new_version_number,
-                        'completed_qty': completed_qty,
-                        'remaining_qty': remaining_qty,
-                        'start_time': group_start_time.isoformat(),
-                        'end_time': group_end_time.isoformat(),
-                        'machine_id': machine_id,
-                        'raw_material_status': 'Available',
-                        'operation_number': operation_number,
-                        'last_available_operation': last_available_idx,
-                        'part_number': part_number,
-                        'production_order': last_item.order.production_order
-                    })
+                    # Schedule remaining quantity if any
+                    if remaining_qty > 0:
+                        remaining_start_time = adjust_to_shift_hours(group_end_time)
+                        remaining_end_time, _ = calculate_shift_aware_duration(remaining_start_time,
+                                                                               last_item.operation, remaining_qty)
+
+                        new_version_number = (new_version.version_number if completed_qty > 0 else current_version.version_number) + 1
+                        new_version = ScheduleVersion(
+                            schedule_item=last_item,
+                            version_number=new_version_number,
+                            planned_start_time=remaining_start_time,
+                            planned_end_time=remaining_end_time,
+                            planned_quantity=remaining_qty,
+                            completed_quantity=0,
+                            remaining_quantity=remaining_qty,
+                            is_active=True,
+                            created_at=datetime.utcnow()
+                        )
+
+                        if completed_qty > 0:
+                            # If there was a completed portion, the previous new_version is already created
+                            pass
+                        else:
+                            current_version.is_active = False
+                        last_item.current_version = new_version_number
+                        last_item.remaining_quantity = remaining_qty
+                        last_item.status = 'scheduled'
+
+                        last_available_idx = find_last_available_operation(list(dependent_ops), remaining_start_time)
+
+                        updates.append({
+                            'item_id': last_item.id,
+                            'operation_id': operation_id,
+                            'old_version': new_version_number - 1,
+                            'new_version': new_version_number,
+                            'completed_qty': 0,
+                            'remaining_qty': remaining_qty,
+                            'start_time': remaining_start_time.isoformat(),
+                            'end_time': remaining_end_time.isoformat(),
+                            'machine_id': machine_id,
+                            'raw_material_status': 'Available',
+                            'operation_number': operation_number,
+                            'last_available_operation': last_available_idx,
+                            'part_number': part_number,
+                            'production_order': last_item.order.production_order
+                        })
+
+                        group_end_time = remaining_end_time
+
+                    completed_operations[part_number].append(
+                        (operation_number, group_end_time, completed_qty, total_qty))
+                    processed_operations.add(operation_key)
 
                 except Exception as group_error:
-                    print(f"Error processing group for machine {machine_id}, operation {operation_number}: {str(group_error)}")
+                    print(
+                        f"Error processing group for machine {machine_id}, operation {operation_number}: {str(group_error)}")
                     continue
 
+            # Propagate delays to all dependent operations
             for part_number, operations in completed_operations.items():
                 operations.sort(key=lambda x: x[0])
-                for op_num, end_time, completed_qty, total_qty in operations:
-                    if end_time:
-                        cascade_results = propagate_delay_to_dependent_operations(
-                            part_number, op_num, end_time, completed_qty, total_qty)
-                        if cascade_results:
-                            print(f"Propagated changes for part {part_number}, operation {op_num}: {len(cascade_results)} operations affected")
-                            cascade_updates.extend(cascade_results)
+                max_end_time = max(op[1] for op in operations)
+                max_op_num = max(op[0] for op in operations)
+                completed_qty = max(op[2] for op in operations)
+                total_qty = max(op[3] for op in operations)
+                cascade_results = propagate_delay_to_dependent_operations(
+                    part_number, max_op_num, max_end_time, completed_qty, total_qty)
+                if cascade_results:
+                    cascade_updates.extend(cascade_results)
 
             all_updates = updates + cascade_updates
-            all_updates.sort(key=lambda x: (x['part_number'], x['operation_number']))
+            all_updates.sort(key=lambda x: (x['part_number'], x['operation_number'], x['start_time']))
+
+            # Deduplicate updates, keeping the latest version
+            final_updates = []
+            seen_operations = {}
+            for update in all_updates:
+                op_key = (update['part_number'], update['operation_number'], update['start_time'])
+                if op_key not in seen_operations or update['new_version'] > seen_operations[op_key]['new_version']:
+                    seen_operations[op_key] = update
+            final_updates = list(seen_operations.values())
+            final_updates.sort(key=lambda x: (x['part_number'], x['operation_number'], x['start_time']))
 
             logs_query = []
             for log in ProductionLog.select():
@@ -567,7 +622,6 @@ async def dynamic_reschedule():
                     today_qty = 1
 
                     if "Process" in quantity_str:
-                        import re
                         match = re.search(r'Process\((\d+)/(\d+)pcs, Today: (\d+)pcs\)', quantity_str)
                         if match:
                             current_qty = int(match.group(1))
@@ -652,19 +706,19 @@ async def dynamic_reschedule():
                     )
                 )
 
-            for update in all_updates:
-                if 'operation_id' not in update or update['operation_id'] is None or not isinstance(update['operation_id'], int):
+            for update in final_updates:
+                if 'operation_id' not in update or update['operation_id'] is None or not isinstance(
+                        update['operation_id'], int):
                     if 'item_id' in update and update['item_id'] is not None:
                         update['operation_id'] = update['item_id']
                     else:
-                        import hashlib
                         hash_input = f"{update.get('part_number', '')}:{update.get('operation_number', '')}"
                         hash_value = int(hashlib.md5(hash_input.encode()).hexdigest(), 16)
                         update['operation_id'] = hash_value % 1000000
 
             return CombinedScheduleResponse(
-                reschedule=all_updates,
-                total_updates=len(all_updates),
+                reschedule=final_updates,
+                total_updates=len(final_updates),
                 production_logs=production_logs,
                 scheduled_operations=scheduled_operations,
                 overall_end_time=overall_end_time,

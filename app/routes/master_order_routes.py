@@ -217,6 +217,7 @@ def get_machines(work_center_code: Optional[str] = None):
             MachineResponse(
                 id=machine.id,
                 work_center_id=machine.work_center.id,
+                work_center_boolean=machine.work_center.is_schedulable,
                 type=machine.type,
                 make=machine.make,
                 model=machine.model,
@@ -232,7 +233,8 @@ def get_machines(work_center_code: Optional[str] = None):
                     code=machine.work_center.code,
                     plant_id=machine.work_center.plant_id,
                     description=machine.work_center.description,
-                    operation=machine.work_center.work_center_name
+                    operation=machine.work_center.work_center_name,
+                    is_schedulable=machine.work_center.is_schedulable
                 )
             ) for machine in machines
         ]
@@ -258,6 +260,7 @@ def get_machine(
         return MachineResponse(
             id=machine.id,
             work_center_id=machine.work_center.id,
+            work_center_boolean=machine.work_center.is_schedulable,
             type=machine.type,
             make=machine.make,
             model=machine.model,
@@ -273,7 +276,8 @@ def get_machine(
                 code=machine.work_center.code,
                 plant_id=machine.work_center.plant_id,
                 description=machine.work_center.description,
-                operation=machine.work_center.work_center_name
+                operation=machine.work_center.work_center_name,
+                is_schedulable=machine.work_center.is_schedulable
             )
         )
 

@@ -34,6 +34,9 @@ class MachineRaw(db.Entity):
     job_in_progress = Optional(int)
     part_status = Optional(int)
 
+    scheduled_job = Optional(Operation, reverse='machine_raw_1')
+    actual_job = Optional(Operation, reverse='machine_raw_2')
+
 
 class MachineRawLive(db.Entity):
     """Entity class for machine_raw table in livedata schema"""

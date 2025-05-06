@@ -2,8 +2,9 @@ from pydantic import BaseModel
 from datetime import datetime
 from typing import Optional
 from fastapi import APIRouter, HTTPException
-from pony.orm import db_session, commit
+from pony.orm import db_session, commit, select
 from app.models import ProductionLog, User, Operation
+from app.models.production import MachineRawLive
 
 
 class ProductionLogCreate(BaseModel):
@@ -71,3 +72,32 @@ def create_production_log(log_data: ProductionLogCreate):
         quantity_rejected=new_log.quantity_rejected,
         notes=new_log.notes
     )
+
+
+
+
+# Pydantic model for request body
+class MachineStatusInput(BaseModel):
+    machine_id: int
+    operation_id: int
+
+@router.post("/machine-raw-live/")
+@db_session
+def update_machine_status(data: MachineStatusInput):
+
+    # Check if the operation exists
+    operation = Operation.get(id=data.operation_id)
+    if not operation:
+        raise HTTPException(status_code=404, detail="Operation not found")
+
+    # Check if machine exists in MachineRawLive
+    machine_entry = MachineRawLive.get(machine_id=data.machine_id)
+    if not machine_entry:
+        raise HTTPException(status_code=404, detail="Machine not found in MachineRawLive")
+
+    # Update only if machine exists
+    machine_entry.actual_job = operation
+    # machine_entry.status = 1  # plain text status
+    machine_entry.timestamp = datetime.utcnow()
+
+    return {"message": "Machine status updated successfully"}
