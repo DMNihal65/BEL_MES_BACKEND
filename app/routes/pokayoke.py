@@ -3,6 +3,7 @@ from typing import List, Optional
 from pony.orm import db_session, select, commit, desc
 from datetime import datetime
 
+from ..models import User
 from ..models.logs import (
     PokaYokeChecklist, 
     PokaYokeChecklistItem, 
@@ -196,6 +197,7 @@ def get_checklist_logs(
 ):
     """Get logs of completed checklists with various filters for supervisors"""
     query = select(log for log in PokaYokeCompletedLog)
+    print("++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++")
     
     # Apply filters
     if machine_id:
@@ -210,12 +212,22 @@ def get_checklist_logs(
         query = query.filter(lambda log: log.completed_at >= from_date)
     if to_date:
         query = query.filter(lambda log: log.completed_at <= to_date)
-    
+
     # Pagination
     offset = (page - 1) * page_size
     logs = query.order_by(lambda log: desc(log.completed_at)).limit(page_size, offset=offset)
-    
-    return [log.to_dict() for log in logs]
+
+    result = []
+    for log in logs:
+        log_dict = log.to_dict()
+        operator = User.get(id=log.operator_id)
+        print("++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++")
+        print(operator)
+        log_dict['operator_id'] = operator.username if operator else "Unknown"
+
+        result.append(log_dict)
+
+    return result
 
 @router.get("/logs/{log_id}", response_model=ChecklistLogResponse)
 @db_session

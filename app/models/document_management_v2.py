@@ -28,6 +28,7 @@ class DocumentTypeV2(db.Entity):
     allowed_extensions = Required(Json)  # e.g., [".pdf", ".dwg", ".dxf"]
     is_active = Required(bool, default=True)
     documents = Set('DocumentV2')
+    master_bocs = Set('MasterBoc', reverse='document')
 
 class DocumentV2(db.Entity):
     """Main document entity that can be linked to folders, part numbers, or production orders"""
@@ -50,7 +51,6 @@ class DocumentV2(db.Entity):
     latest_version = Optional('DocumentVersionV2', nullable=True, reverse='latest_of', column='latest_version_id_v2')
     versions = Set('DocumentVersionV2', reverse='document')
     access_logs = Set('DocumentAccessLogV2')
-    master_bocs = Set('MasterBoc', reverse='document')
 
 class DocumentVersionV2(db.Entity):
     """Stores version information for documents"""

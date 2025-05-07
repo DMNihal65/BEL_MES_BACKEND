@@ -135,7 +135,6 @@ class Operation(db.Entity):
     machine_raw_live_2 = Set('MachineRawLive', reverse='actual_job')
     machine_raw_1 = Set('MachineRaw', reverse='scheduled_job')
     machine_raw_2 = Set('MachineRaw', reverse='actual_job')
-
     inventory_requests = Set("InventoryRequest")
 
 

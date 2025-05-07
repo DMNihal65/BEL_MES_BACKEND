@@ -728,8 +728,8 @@ async def get_live_machine_status():
                             "operation_description": None
                         }
 
-                        # Get order details using the enhanced method
-                        if live_data.job_in_progress or live_data.active_program:
+                        # Get order details if any of the job references are available
+                        if live_data.actual_job or live_data.scheduled_job or live_data.job_in_progress:
                             try:
                                 order_details = live_data.get_order_details()
                                 if order_details:
@@ -829,13 +829,13 @@ async def websocket_live_status(websocket: WebSocket):
                                 "operation_description": None
                             }
 
-                            # Get order details if job is in progress
-                            if status.job_in_progress or status.active_program:
+                            # Get order details if any of the job references are available
+                            if status.actual_job or status.scheduled_job or status.job_in_progress:
                                 try:
-                                    # Use the enhanced method in MachineRawLive that now handles both approaches
+                                    # Use the updated method in MachineRawLive that now prioritizes actual_job and scheduled_job
                                     order_details = status.get_order_details()
                                     if order_details:
-                                        print(f"Successfully found order details via get_order_details")
+                                        print(f"Successfully found order details for machine {machine.id}")
                                         machine_data.update(order_details)
                                     else:
                                         print(f"No order details found for machine {machine.id}")
@@ -877,7 +877,6 @@ async def websocket_live_status(websocket: WebSocket):
         if websocket in manager.active_connections:
             manager.disconnect(websocket)
             print("Cleaned up WebSocket connection")
-
 
 # Machine History and Analytics
 @router.get("/machine-history/{machine_id}", response_model=MachineStatusHistory)

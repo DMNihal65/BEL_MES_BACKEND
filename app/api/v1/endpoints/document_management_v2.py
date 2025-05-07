@@ -4215,3 +4215,83 @@ async def get_cnc_program_document_type(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error retrieving CNC program document type: {str(e)}"
         )
+
+@router.get("/documents/download-version/{document_id}/{version_number}")
+async def download_document_by_version(
+        document_id: int = Path(..., description="Document ID"),
+        version_number: str = Path(..., description="Version number to download"),
+        current_user: User = Depends(get_current_user)
+):
+    """
+    Download a specific version of a document.
+
+    Parameters:
+    - document_id: ID of the document
+    - version_number: Specific version number to download
+
+    Returns:
+    - File stream response with the requested version
+    """
+    try:
+        with db_session:
+            # Get the document
+            document = DocumentV2.get(id=document_id)
+            if not document:
+                raise HTTPException(status_code=404, detail="Document not found")
+
+            # Get the specific version
+            version = select(v for v in DocumentVersionV2
+                             if v.document == document
+                             and v.version_number == version_number
+                             and v.is_active).first()
+
+            if not version:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Version {version_number} not found for document {document_id}"
+                )
+
+            # Log access
+            DocumentAccessLogV2(
+                document=document,
+                version=version,
+                user=User.get(id=current_user.id),
+                action_type=DocumentAction.DOWNLOAD,
+                ip_address="0.0.0.0"
+            )
+            commit()
+
+            try:
+                # Get file from MinIO
+                file_stream = minio.get_file(version.minio_path)
+
+                # Get file extension from minio path
+                file_extension = os.path.splitext(version.minio_path)[1]
+                if not file_extension:
+                    file_extension = '.pdf'  # Default to .pdf if no extension found
+
+                # Determine content type based on file extension
+                content_type = "application/pdf" if file_extension.lower() == '.pdf' else "application/octet-stream"
+
+                # Generate filename with version number
+                filename = f"{document.name}_v{version.version_number}{file_extension}"
+
+                return StreamingResponse(
+                    file_stream,
+                    media_type=content_type,
+                    headers={
+                        "Content-Disposition": f'attachment; filename="{filename}"',
+                        "Content-Length": str(version.file_size)
+                    }
+                )
+            except Exception as e:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Error retrieving file from storage: {str(e)}"
+                )
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error downloading document version: {str(e)}"
+        )

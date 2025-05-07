@@ -15,9 +15,20 @@ class MasterBocBase(BaseModel):
     dimension_type: str = Field(..., description="Type of dimension", min_length=1)
     measured_instrument: str = Field(..., description="Measuring instrument used", min_length=1)
     op_no: int = Field(..., description="Operation number", gt=0)
-    bbox: List[float] = Field(..., description="Bounding box coordinates")
+    bbox: List[float] = Field(
+        ...,
+        description="Bounding box coordinates [x1, y1, x2, y2, x3, y3, x4, y4]",
+        min_items=8,
+        max_items=8
+    )
     ipid: str = Field(..., description="IP ID", min_length=1)
 
+    @model_validator(mode='after')
+    def validate_bbox_values(self) -> 'MasterBocBase':
+        """Validate that bbox contains exactly 8 values"""
+        if len(self.bbox) != 8:
+            raise ValueError("bbox must contain exactly 8 values [x1, y1, x2, y2, x3, y3, x4, y4]")
+        return self
 
 class MasterBocCreate(MasterBocBase):
     def to_db_dict(self) -> dict:
@@ -66,10 +77,10 @@ class StageInspectionBase(BaseModel):
     measured_3: float = Field(..., description="Third measurement")
     measured_mean: float = Field(..., description="Mean of measurements")
     measured_instrument: str = Field(..., description="Measuring instrument used")
+    used_inst: str = Field(..., description="Instrument used for measurement", min_length=1)
     op_no: int = Field(..., description="Operation number", gt=0)
     order_id: int = Field(..., description="Order ID", gt=0)
     quantity_no: Optional[int] = Field(None, description="Quantity number")
-    is_done: bool = Field(False, description="Indicates if this inspection is completed")
 
 class StageInspectionCreate(StageInspectionBase):
     pass
@@ -102,10 +113,10 @@ class StageInspectionDetail(BaseModel):
     measured_3: float
     measured_mean: float
     measured_instrument: str
+    used_inst: str
     op_no: int
     order_id: int
     quantity_no: Optional[int] = None
-    is_done: bool
     created_at: datetime
 
 
@@ -131,7 +142,7 @@ class StageInspectionWithOperator(BaseModel):
     measured_3: float
     measured_mean: float
     measured_instrument: str
-    is_done: bool
+    used_inst: str
     quantity_no: Optional[int] = None
     created_at: datetime
     operator: OperatorInfo

@@ -318,12 +318,11 @@ async def dynamic_reschedule():
                         item_logs_with_version = select(l for l in ProductionLog
                                                         for v in ScheduleVersion
                                                         if v.schedule_item == item and
-                                                        l.schedule_version == v and
-                                                        l.operation.id == item.operation.id
+                                                        l.schedule_version == v
                                                         ).order_by(lambda l: l.start_time)[:]
                         item_logs_without_version = select(l for l in ProductionLog
                                                            if l.schedule_version is None and
-                                                           l.operation.id == item.operation.id
+                                                           l.operation == item.operation
                                                            ).order_by(lambda l: l.start_time)[:]
                         all_group_logs.extend(item_logs_with_version)
                         all_group_logs.extend(item_logs_without_version)
@@ -352,12 +351,13 @@ async def dynamic_reschedule():
                             last_item_logs.append(log)
 
                     # Calculate quantities from production logs
-                    # Ensure we're counting only logs for this specific schedule item and operation
-                    # Ensure we're counting only logs for this specific schedule item and operation
                     completed_qty = sum(
                         log.quantity_completed for log in last_item_logs if log.quantity_completed is not None)
-                    total_qty = last_item.total_quantity if last_item.total_quantity else completed_qty
-
+                    # Total quantity is the maximum completed quantity from logs, or fallback to schedule
+                    total_qty = max(
+                        [log.quantity_completed for log in last_item_logs if log.quantity_completed is not None],
+                        default=last_item.total_quantity if last_item.total_quantity else completed_qty
+                    )
                     remaining_qty = max(0, total_qty - completed_qty)
 
                     # Use actual production log times
