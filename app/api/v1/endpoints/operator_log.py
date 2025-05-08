@@ -206,11 +206,10 @@ def get_operation_quantities(
         operation_id: int
 ):
     """
-    Get completed and remaining quantities for a specific operation on a specific machine,
-    considering only schedule versions with planned_start_time <= current time.
+    Get completed and remaining quantities for a specific operation on a specific machine.
+    Returns data from the latest schedule version of all matching schedule items, and
+    calculates quantities based on the current time.
     """
-    now = datetime.utcnow()
-
     # Check if machine exists
     machine = Machine.get(id=machine_id)
     if not machine:
@@ -221,7 +220,7 @@ def get_operation_quantities(
     if not operation:
         raise HTTPException(status_code=404, detail=f"Operation with ID {operation_id} not found")
 
-    # Find matching PlannedScheduleItems
+    # Find all PlannedScheduleItems for this machine and operation
     schedule_items = select(item for item in PlannedScheduleItem
                             if item.machine.id == machine_id and item.operation.id == operation_id)
 
@@ -232,31 +231,47 @@ def get_operation_quantities(
         )
 
     result_data = []
+    current_time = datetime.now()
 
     for schedule_item in schedule_items:
-        # Filter schedule versions that are active and started in the past
-        valid_versions = select(sv for sv in schedule_item.schedule_versions
-                                if sv.is_active and sv.planned_start_time <= now).order_by(
-            desc(ScheduleVersion.version_number))
+        # Get the latest active schedule version for each item
+        latest_version = select(sv for sv in schedule_item.schedule_versions
+                                if sv.is_active == True
+                                ).order_by(desc(ScheduleVersion.version_number)).first()
 
-        latest_valid_version = valid_versions.first()
+        if latest_version:
+            # Calculate quantities based on current time
+            if current_time < latest_version.planned_start_time:
+                # If current time is before the planned start time, no work has been done
+                completed_quantity = 0
+                remaining_quantity = latest_version.planned_quantity
+            elif current_time >= latest_version.planned_end_time:
+                # If current time is after the planned end time, all work is completed
+                completed_quantity = latest_version.planned_quantity
+                remaining_quantity = 0
+            else:
+                # If current time is between start and end, calculate in-progress quantities
+                elapsed_time = (current_time - latest_version.planned_start_time).total_seconds()
+                planned_duration = (latest_version.planned_end_time - latest_version.planned_start_time).total_seconds()
+                completion_ratio = elapsed_time / planned_duration
+                completed_quantity = int(latest_version.planned_quantity * completion_ratio)
+                remaining_quantity = latest_version.planned_quantity - completed_quantity
 
-        if latest_valid_version:
             result_data.append(OperationQuantityDetailResponse(
                 operation_id=operation.id,
                 machine_id=machine.id,
-                completed_quantity=latest_valid_version.completed_quantity,
-                remaining_quantity=latest_valid_version.remaining_quantity,
-                planned_start_time=latest_valid_version.planned_start_time,
-                planned_end_time=latest_valid_version.planned_end_time,
-                version_number=latest_valid_version.version_number,
-                is_active=latest_valid_version.is_active
+                completed_quantity=completed_quantity,
+                remaining_quantity=remaining_quantity,
+                planned_start_time=latest_version.planned_start_time,
+                planned_end_time=latest_version.planned_end_time,
+                version_number=latest_version.version_number,
+                is_active=latest_version.is_active
             ))
 
     if not result_data:
         raise HTTPException(
             status_code=404,
-            detail=f"No active schedule versions found for machine ID {machine_id} and operation ID {operation_id} up to current time"
+            detail=f"No active schedule versions found for machine ID {machine_id} and operation ID {operation_id}"
         )
 
     return result_data
