@@ -186,3 +186,77 @@ def get_machine_schedule_quantities(
         data=result_data
     )
 
+
+class OperationQuantityDetailResponse(BaseModel):
+    """Response model for operation details"""
+    operation_id: int
+    machine_id: int
+    completed_quantity: int
+    remaining_quantity: int
+    planned_start_time: datetime
+    planned_end_time: datetime
+    version_number: int
+    is_active: bool
+
+
+@router.get("/api/operation-quantities", response_model=List[OperationQuantityDetailResponse])
+@db_session
+def get_operation_quantities(
+        machine_id: int,
+        operation_id: int
+):
+    """
+    Get completed and remaining quantities for a specific operation on a specific machine,
+    considering only schedule versions with planned_start_time <= current time.
+    """
+    now = datetime.utcnow()
+
+    # Check if machine exists
+    machine = Machine.get(id=machine_id)
+    if not machine:
+        raise HTTPException(status_code=404, detail=f"Machine with ID {machine_id} not found")
+
+    # Check if operation exists
+    operation = Operation.get(id=operation_id)
+    if not operation:
+        raise HTTPException(status_code=404, detail=f"Operation with ID {operation_id} not found")
+
+    # Find matching PlannedScheduleItems
+    schedule_items = select(item for item in PlannedScheduleItem
+                            if item.machine.id == machine_id and item.operation.id == operation_id)
+
+    if not schedule_items:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No schedule found for machine ID {machine_id} and operation ID {operation_id}"
+        )
+
+    result_data = []
+
+    for schedule_item in schedule_items:
+        # Filter schedule versions that are active and started in the past
+        valid_versions = select(sv for sv in schedule_item.schedule_versions
+                                if sv.is_active and sv.planned_start_time <= now).order_by(
+            desc(ScheduleVersion.version_number))
+
+        latest_valid_version = valid_versions.first()
+
+        if latest_valid_version:
+            result_data.append(OperationQuantityDetailResponse(
+                operation_id=operation.id,
+                machine_id=machine.id,
+                completed_quantity=latest_valid_version.completed_quantity,
+                remaining_quantity=latest_valid_version.remaining_quantity,
+                planned_start_time=latest_valid_version.planned_start_time,
+                planned_end_time=latest_valid_version.planned_end_time,
+                version_number=latest_valid_version.version_number,
+                is_active=latest_valid_version.is_active
+            ))
+
+    if not result_data:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No active schedule versions found for machine ID {machine_id} and operation ID {operation_id} up to current time"
+        )
+
+    return result_data

@@ -10,7 +10,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Create .env file with the provided settings
-RUN echo "DB_HOST=172.18.7.155" > .env && \
+RUN echo "DB_HOST=172.16.0.203" > .env && \
     echo "DB_PORT=5432" >> .env && \
     echo "DB_NAME=BEL_DEMO2" >> .env && \
     echo "DB_USER=cmtismc" >> .env && \
@@ -19,7 +19,7 @@ RUN echo "DB_HOST=172.18.7.155" > .env && \
     echo "ALGORITHM=HS256" >> .env && \
     echo "ACCESS_TOKEN_EXPIRE_MINUTES=30" >> .env && \
     echo "REFRESH_TOKEN_EXPIRE_DAYS=7" >> .env && \
-    echo "MINIO_ENDPOINT=172.18.7.155:9000" >> .env && \
+    echo "MINIO_ENDPOINT=172.16.0.203:9000" >> .env && \
     echo "MINIO_ACCESS_KEY=MrKxgiZXGyBArDz8bEnl" >> .env && \
     echo "MINIO_SECRET_KEY=DJnTcMpypd6x75DlQfCM2MocFIjRON0jU06OgKnn" >> .env && \
     echo "MINIO_BUCKET_NAME=documents" >> .env && \
