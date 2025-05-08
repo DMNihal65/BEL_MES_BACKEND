@@ -231,6 +231,34 @@ def propagate_delay_to_dependent_operations(part_number: str, completed_operatio
     return updated_items
 
 
+def determine_work_center_schedulability(work_center: WorkCenter) -> bool:
+    """
+    Determine if a work center is schedulable based on machine availability
+    and scheduled operations
+    """
+    with db_session:
+        # Check if the work center has at least one machine
+        if not work_center.machines:
+            return False
+
+        # Check if at least one machine in the work center is available
+        for machine in work_center.machines:
+            machine_status = select(ms for ms in MachineStatus
+                                    if ms.machine == machine).first()
+
+            if machine_status:
+                status = machine_status.status
+                if status and status.name.upper() != 'OFF':
+                    # Check if there are any scheduled operations for this machine
+                    scheduled_items = select(p for p in PlannedScheduleItem
+                                             if p.machine == machine).first()
+
+                    if scheduled_items:
+                        return True
+
+        return False
+
+
 @router.post("/dynamic-reschedule")
 async def dynamic_reschedule():
     """Dynamically reschedule operations based on production logs with improved cascade effect"""
@@ -254,7 +282,8 @@ async def dynamic_reschedule():
                         WorkCenterInfo(
                             work_center_code=work_center.code,
                             work_center_name=work_center.work_center_name or "",
-                            machines=machines_in_wc
+                            machines=machines_in_wc,
+                            is_schedulable=work_center.is_schedulable  # Use the actual value from the database
                         )
                     )
                 return CombinedScheduleResponse(
@@ -271,6 +300,7 @@ async def dynamic_reschedule():
                     work_centers=empty_work_centers
                 )
 
+            # Rest of the function remains the same...
             updates = []
             cascade_updates = []
             valid_part_numbers = set()
@@ -709,6 +739,7 @@ async def dynamic_reschedule():
                         )
                     )
 
+            # Modified this section to preserve the is_schedulable flag from the database
             work_center_data = []
             for work_center in WorkCenter.select():
                 machines_in_wc = []
@@ -723,7 +754,8 @@ async def dynamic_reschedule():
                     WorkCenterInfo(
                         work_center_code=work_center.code,
                         work_center_name=work_center.work_center_name or "",
-                        machines=machines_in_wc
+                        machines=machines_in_wc,
+                        is_schedulable=work_center.is_schedulable  # Use the actual value from the database
                     )
                 )
 
