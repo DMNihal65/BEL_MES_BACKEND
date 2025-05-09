@@ -1115,3 +1115,50 @@ async def get_project_priorities():
             status_code=500,
             detail=f"Error retrieving project priorities: {str(e)}"
         )
+
+
+@router.delete("/orders/{order_id}", status_code=200)
+@db_session
+def delete_order(order_id: int):
+    order = Order.get(id=order_id)
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    # Save references to foreign keys only after confirming order exists
+    raw_material_ref = order.raw_material
+    project_ref = order.project
+
+    # Delete all related child entities
+    for op in order.operations:
+        op.delete()
+    for doc in order.documents:
+        doc.delete()
+    for tool in order.tools:
+        tool.delete()
+    for jig in order.jigs_fixtures:
+        jig.delete()
+    for mpp in order.mpps:
+        mpp.delete()
+    for psi in order.planned_schedule_items:
+        psi.delete()
+    for req in order.inventory_requests:
+        req.delete()
+    for docv2 in order.documents_v2:
+        docv2.delete()
+    for ot in order.order_tools:
+        ot.delete()
+    for boc in order.master_bocs:
+        boc.delete()
+
+    # Delete the order
+    order.delete()
+
+    # Delete raw_material and project only if no more orders reference them
+    if not raw_material_ref.orders:
+        raw_material_ref.delete()
+
+    if not project_ref.orders:
+        project_ref.delete()
+
+    commit()
+    return {"message": "Order and related entities deleted successfully."}

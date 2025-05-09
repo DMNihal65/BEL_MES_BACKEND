@@ -17,6 +17,7 @@ class DowntimeAction(BaseModel):
 class DowntimeResponse(BaseModel):
     id: int
     machine_id: int
+    machine_name: Optional[str] = None
     category: Optional[str] = None
     description: Optional[str] = None
     priority: Optional[int] = None

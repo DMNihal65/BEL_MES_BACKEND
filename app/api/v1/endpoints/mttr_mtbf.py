@@ -119,9 +119,13 @@ def downtime_to_response(downtime) -> DowntimeResponse:
     elif downtime.inprogress_dt:
         status = "in_progress"
 
+    machine = Machine.get(id=downtime.machine_id)
+    machine_name = machine.make if machine else "Unknown"
+
     return DowntimeResponse(
         id=downtime.id,
         machine_id=downtime.machine_id,
+        machine_name=machine_name,
         category=downtime.category,
         description=downtime.description,
         priority=downtime.priority,

@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, List, Any, Dict
 from fastapi import APIRouter, HTTPException, Query
 from pony.orm import db_session, commit, select, desc
@@ -209,6 +209,7 @@ def get_operation_quantities(
     Get completed and remaining quantities for a specific operation on a specific machine.
     Returns data from the latest schedule version of all matching schedule items, and
     calculates quantities based on the current time.
+    Only returns information for operations relevant to the current date.
     """
     # Check if machine exists
     machine = Machine.get(id=machine_id)
@@ -220,9 +221,16 @@ def get_operation_quantities(
     if not operation:
         raise HTTPException(status_code=404, detail=f"Operation with ID {operation_id} not found")
 
+    # Get current date and time
+    current_time = datetime.now()
+    current_date = current_time.replace(hour=0, minute=0, second=0, microsecond=0)
+    tomorrow_date = current_date + timedelta(days=1)
+
     # Find all PlannedScheduleItems for this machine and operation
+    # that are relevant to the current date (scheduled for today or in progress)
     schedule_items = select(item for item in PlannedScheduleItem
-                            if item.machine.id == machine_id and item.operation.id == operation_id)
+                            if item.machine.id == machine_id and
+                            item.operation.id == operation_id)
 
     if not schedule_items:
         raise HTTPException(
@@ -231,7 +239,6 @@ def get_operation_quantities(
         )
 
     result_data = []
-    current_time = datetime.now()
 
     for schedule_item in schedule_items:
         # Get the latest active schedule version for each item
@@ -240,6 +247,25 @@ def get_operation_quantities(
                                 ).order_by(desc(ScheduleVersion.version_number)).first()
 
         if latest_version:
+            # Only include operations that are relevant to today:
+            # 1. Operations that start today
+            # 2. Operations that end today
+            # 3. Operations that are in progress (started before today and end after today)
+            # 4. Operations that started earlier but are still in progress today
+            version_start_date = latest_version.planned_start_time.replace(hour=0, minute=0, second=0, microsecond=0)
+            version_end_date = latest_version.planned_end_time.replace(hour=0, minute=0, second=0, microsecond=0)
+
+            is_relevant_to_today = (
+                    (version_start_date == current_date) or  # Starts today
+                    (version_end_date == current_date) or  # Ends today
+                    (version_start_date < current_date and version_end_date > current_date) or  # Spans across today
+                    (version_start_date <= current_date and latest_version.planned_end_time >= current_time)
+            # Started and still in progress
+            )
+
+            if not is_relevant_to_today:
+                continue
+
             # Calculate quantities based on current time
             if current_time < latest_version.planned_start_time:
                 # If current time is before the planned start time, no work has been done
@@ -253,7 +279,14 @@ def get_operation_quantities(
                 # If current time is between start and end, calculate in-progress quantities
                 elapsed_time = (current_time - latest_version.planned_start_time).total_seconds()
                 planned_duration = (latest_version.planned_end_time - latest_version.planned_start_time).total_seconds()
-                completion_ratio = elapsed_time / planned_duration
+
+                # Handle edge case where planned duration is very small or zero
+                if planned_duration <= 0:
+                    completion_ratio = 1.0  # Consider it complete
+                else:
+                    completion_ratio = elapsed_time / planned_duration
+
+                completion_ratio = min(max(0.0, completion_ratio), 1.0)  # Clamp between 0 and 1
                 completed_quantity = int(latest_version.planned_quantity * completion_ratio)
                 remaining_quantity = latest_version.planned_quantity - completed_quantity
 
@@ -271,7 +304,7 @@ def get_operation_quantities(
     if not result_data:
         raise HTTPException(
             status_code=404,
-            detail=f"No active schedule versions found for machine ID {machine_id} and operation ID {operation_id}"
+            detail=f"No active schedule versions found for today for machine ID {machine_id} and operation ID {operation_id}"
         )
 
     return result_data
