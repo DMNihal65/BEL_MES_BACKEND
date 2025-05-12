@@ -73,7 +73,7 @@ def read_root():
 # uvicorn app.main:app --host 172.18.7.88 --port 3424 --reload
 # uvicorn app.main:app --host 172.18.7.88 --port 3425 --reload
 # uvicorn app.main:app --host 172.18.7.88 --port 2327 --reload
-# uvicorn app.main:app --host 172.18.7.88 --port 7679 --reload
+# uvicorn app.main:app --host 172.18.7.88 --port 6588 --reload
 
 # uvicorn app.main:app --host 172.18.7.88 --port 7668 --reload
 

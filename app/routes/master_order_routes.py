@@ -5,7 +5,7 @@ from traceback import format_exc
 from fastapi import APIRouter, HTTPException, Query, Path
 from typing import List, Optional
 from pony.orm import db_session, commit, select, rollback
-from ..models.master_order import WorkCenter, Machine, MachineStatus, Status
+from ..models.master_order import WorkCenter, Machine, MachineStatus, Status, Operation
 from ..schemas.master_order_schemas import (
     WorkCenterCreate, WorkCenterUpdate, WorkCenterResponse,
     MachineCreate, MachineUpdate, MachineResponse, UpdateSchedulable
@@ -415,18 +415,18 @@ def update_machine(
 
 
 
-@router.delete("/machines/{machine_id}")
-@db_session
-def delete_machine(machine_id: int):
-    machine = Machine.get(id=machine_id)
-    if not machine:
-        raise HTTPException(status_code=404, detail="Machine not found")
-    
-    try:
-        machine.delete()
-        return {"message": "Machine deleted successfully"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+# @router.delete("/machines/{machine_id}")
+# @db_session
+# def delete_machine(machine_id: int):
+#     machine = Machine.get(id=machine_id)
+#     if not machine:
+#         raise HTTPException(status_code=404, detail="Machine not found")
+#
+#     try:
+#         machine.delete()
+#         return {"message": "Machine deleted successfully"}
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/all-machines/", response_model=List[MachineResponse])
@@ -471,6 +471,7 @@ def get_all_machines():
         )
 
 
+
 @router.delete("/machines/{machine_id}", status_code=200)
 @db_session
 def delete_machine(machine_id: int):
@@ -479,17 +480,29 @@ def delete_machine(machine_id: int):
         if not machine:
             raise HTTPException(status_code=404, detail="Machine not found")
 
+        # Get operations using this machine with their associated production orders
+        operations_using_machine = select(op for op in Operation if op.machine.id == machine_id)
+
+        if operations_using_machine:
+            # Create a list of production orders for the operations using this machine
+            production_orders = [{op.order.production_order, op.operation_description} for op in operations_using_machine]
+
+            # Return error message with production order details
+            return {
+                # "status": "error",
+                "message": f"Cannot delete machine: It is being used in operations.",
+                "operation_description and production_orders": production_orders
+            }
+
         # Delete associated credential if present
         if machine.credential:
             machine.credential.delete()
 
-        # You can similarly delete other related objects here if needed
-        # for status in machine.status:
-        #     status.delete()
-
+        # Delete the machine since it's not used in operations
         machine.delete()
         commit()
-        return {"message": "Machine deleted successfully"}
+
+        return {"status": "success", "message": "Machine deleted successfully"}
 
     except Exception as e:
         rollback()
