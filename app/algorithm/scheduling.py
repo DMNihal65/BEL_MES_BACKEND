@@ -244,30 +244,47 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
     part_status = {}
     partially_completed = []
 
-    def check_machine_status(machine_id: int, time: datetime) -> Tuple[bool, datetime]:
-        """Check if a machine is available at a given time"""
-        machine_status = machine_statuses.get(machine_id, {})
+    def check_machine_status(machine_id: int, current_time: datetime) -> Tuple[bool, datetime]:
+        """
+        Determines if a machine is available at the given time.
+        Returns (is_available: bool, next_available_time: datetime)
+        """
+        statuses = list(
+            MachineStatus.select(lambda ms: ms.machine.id == machine_id).order_by(lambda ms: ms.available_from))
 
-        print(f"\nChecking Machine ID: {machine_id}")
-        print(f"Machine Status Details: {machine_status}")
+        for status in statuses:
+            status_name = status.status.name.upper()
+            from_time = status.available_from
+            to_time = status.available_to
 
-        if not machine_status:
-            print(f"No status found for Machine ID {machine_id}. Assuming unavailable.")
-            return False, None
+            if status_name == "OFF" and from_time and to_time:
+                if from_time <= current_time < to_time:
+                    # Machine is currently OFF during this range
+                    print(f"Machine {machine_id} is OFF from {from_time} to {to_time}")
+                    return False, to_time  # Resume scheduling after the OFF period ends
 
-        if machine_status.get('status_name', '').upper() == 'OFF':
-            print(f"Machine {machine_id} is OFF")
-            return False, None
+            elif status_name == "ON" and from_time:
+                if current_time < from_time:
+                    # Not yet ON
+                    print(f"Machine {machine_id} will be ON from {from_time}")
+                    return False, from_time
 
-        available_from = machine_status.get('available_from')
-        if available_from:
-            # Assume the timestamp is in IST or convert if needed
-            # No automatic timezone conversion, use the timestamp as-is
-            if time < available_from:
-                print(f"Machine {machine_id} not available before {available_from}")
-                return False, available_from
+                # Check if there is an upcoming OFF period that blocks scheduling
+                next_off = next((
+                    s.available_from for s in statuses
+                    if s.status.name.upper() == "OFF" and s.available_from and s.available_from > current_time
+                ), None)
 
-        return True, time
+                if next_off and current_time >= from_time and current_time < next_off:
+                    print(f"Machine {machine_id} is ON, but will go OFF at {next_off}")
+                    return True, current_time  # OK to schedule for now
+
+                elif not next_off or current_time < next_off:
+                    print(f"Machine {machine_id} is ON from {from_time}")
+                    return True, current_time  # OK to schedule
+
+        print(f"No valid status found for Machine {machine_id} at {current_time}. Assuming available.")
+        return True, current_time  # Default fallback: assume available
 
     def find_last_available_operation(operations: List[dict], current_time: datetime) -> int:
         """Find the last operation that can be performed in sequence"""

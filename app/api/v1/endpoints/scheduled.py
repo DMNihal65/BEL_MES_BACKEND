@@ -1349,7 +1349,7 @@ def get_machine_utilization_by_range(
         utilization_percentage = (utilized_hours / available_hours * 100) if available_hours > 0 else 0
 
         # Get the work center name from the related work center
-        work_center_name = machine.work_center.work_center_name if machine.work_center else None
+        work_center_name = machine.work_center.code if machine.work_center else None
 
         result.append(MachineUtilization(
             machine_id=machine.id,

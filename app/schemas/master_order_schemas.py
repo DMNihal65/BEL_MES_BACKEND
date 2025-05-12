@@ -62,3 +62,7 @@ class MachineResponse(MachineBase):
 
     class Config:
         from_attributes = True
+
+
+class UpdateSchedulable(BaseModel):
+    is_schedulable: bool

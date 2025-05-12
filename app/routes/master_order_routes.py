@@ -8,7 +8,7 @@ from pony.orm import db_session, commit, select, rollback
 from ..models.master_order import WorkCenter, Machine, MachineStatus, Status
 from ..schemas.master_order_schemas import (
     WorkCenterCreate, WorkCenterUpdate, WorkCenterResponse,
-    MachineCreate, MachineUpdate, MachineResponse
+    MachineCreate, MachineUpdate, MachineResponse, UpdateSchedulable
 )
 
 router = APIRouter(prefix="/api/v1/master-order", tags=["Master Order"])
@@ -116,7 +116,84 @@ def delete_work_center(work_center_id: int):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# Machine Routes
+# # Machine Routes
+# @router.post("/machines/", response_model=MachineResponse)
+# @db_session
+# def create_machine(machine: MachineCreate):
+#     try:
+#         # Check if work center exists
+#         work_center = WorkCenter.get(id=machine.work_center_id)
+#         if not work_center:
+#             raise HTTPException(
+#                 status_code=404,
+#                 detail="Work center not found"
+#             )
+#
+#         # Get the "ON" status from status table
+#         on_status = Status.get(name="ON")
+#         if not on_status:
+#             # If "ON" status doesn't exist, create it
+#             on_status = Status(
+#                 name="ON",
+#                 description="Machine is operational and available"
+#             )
+#             commit()  # Commit the status creation
+#
+#         # Create the machine
+#         db_machine = Machine(
+#             work_center=work_center,
+#             type=machine.type,
+#             make=machine.make,
+#             model=machine.model,
+#             year_of_installation=machine.year_of_installation,
+#             cnc_controller=machine.cnc_controller,
+#             cnc_controller_series=machine.cnc_controller_series,
+#             remarks=machine.remarks,
+#             calibration_date=machine.calibration_date,
+#             calibration_due_date=machine.calibration_due_date,  # Added this field
+#             last_maintenance_date=machine.last_maintenance_date
+#         )
+#         commit()  # Commit the machine creation
+#
+#         # Create machine status entry
+#         machine_status = MachineStatus(
+#             machine=db_machine,
+#             status=on_status,
+#             description="Initial status",
+#             available_from=datetime(2025, 1, 21, 11, 41, 20, 417587)
+#         )
+#         commit()  # Commit the machine status creation
+#
+#         # Return response that matches MachineResponse schema
+#         return {
+#             "id": db_machine.id,
+#             "work_center_id": work_center.id,
+#             "type": db_machine.type,
+#             "make": db_machine.make,
+#             "model": db_machine.model,
+#             "year_of_installation": db_machine.year_of_installation,
+#             "cnc_controller": db_machine.cnc_controller,
+#             "cnc_controller_series": db_machine.cnc_controller_series,
+#             "remarks": db_machine.remarks,
+#             "calibration_date": db_machine.calibration_date,
+#             "calibration_due_date": db_machine.calibration_due_date,
+#             "last_maintenance_date": db_machine.last_maintenance_date,
+#             "work_center_boolean": True,  # Add the missing field
+#             "work_center": {
+#                 "id": work_center.id,
+#                 "code": work_center.code,
+#                 "plant_id": work_center.plant_id,
+#                 "description": work_center.description,
+#                 "operation": work_center.work_center_name,
+#                 "is_schedulable": work_center.is_schedulable  # Adding this required field from WorkCenterResponse
+#             }
+#         }
+#
+#     except Exception as e:
+#         # Rollback in case of any error
+#         rollback()
+#         raise HTTPException(status_code=500, detail=str(e))
+
 @router.post("/machines/", response_model=MachineResponse)
 @db_session
 def create_machine(machine: MachineCreate):
@@ -124,20 +201,24 @@ def create_machine(machine: MachineCreate):
         # Check if work center exists
         work_center = WorkCenter.get(id=machine.work_center_id)
         if not work_center:
+            raise HTTPException(status_code=404, detail="Work center not found")
+
+        # ✅ Check if a machine with the same model and work_center_id already exists
+        existing_machine = Machine.get(model=machine.model, work_center=work_center)
+        if existing_machine:
             raise HTTPException(
-                status_code=404,
-                detail="Work center not found"
+                status_code=400,
+                detail="This machine already exists in the specified work center"
             )
 
-        # Get the "ON" status from status table
+        # Get the "ON" status
         on_status = Status.get(name="ON")
         if not on_status:
-            # If "ON" status doesn't exist, create it
             on_status = Status(
                 name="ON",
                 description="Machine is operational and available"
             )
-            commit()  # Commit the status creation
+            commit()
 
         # Create the machine
         db_machine = Machine(
@@ -150,21 +231,20 @@ def create_machine(machine: MachineCreate):
             cnc_controller_series=machine.cnc_controller_series,
             remarks=machine.remarks,
             calibration_date=machine.calibration_date,
-            calibration_due_date=machine.calibration_due_date,  # Added this field
+            calibration_due_date=machine.calibration_due_date,
             last_maintenance_date=machine.last_maintenance_date
         )
-        commit()  # Commit the machine creation
+        commit()
 
-        # Create machine status entry
+        # Create machine status
         machine_status = MachineStatus(
             machine=db_machine,
             status=on_status,
             description="Initial status",
             available_from=datetime(2025, 1, 21, 11, 41, 20, 417587)
         )
-        commit()  # Commit the machine status creation
+        commit()
 
-        # Return response that matches MachineResponse schema
         return {
             "id": db_machine.id,
             "work_center_id": work_center.id,
@@ -178,19 +258,18 @@ def create_machine(machine: MachineCreate):
             "calibration_date": db_machine.calibration_date,
             "calibration_due_date": db_machine.calibration_due_date,
             "last_maintenance_date": db_machine.last_maintenance_date,
-            "work_center_boolean": True,  # Add the missing field
+            "work_center_boolean": True,
             "work_center": {
                 "id": work_center.id,
                 "code": work_center.code,
                 "plant_id": work_center.plant_id,
                 "description": work_center.description,
                 "operation": work_center.work_center_name,
-                "is_schedulable": work_center.is_schedulable  # Adding this required field from WorkCenterResponse
+                "is_schedulable": work_center.is_schedulable
             }
         }
 
     except Exception as e:
-        # Rollback in case of any error
         rollback()
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -390,3 +469,59 @@ def get_all_machines():
             status_code=500,
             detail=f"Error fetching all machines: {str(e)}"
         )
+
+
+@router.delete("/machines/{machine_id}", status_code=200)
+@db_session
+def delete_machine(machine_id: int):
+    try:
+        machine = Machine.get(id=machine_id)
+        if not machine:
+            raise HTTPException(status_code=404, detail="Machine not found")
+
+        # Delete associated credential if present
+        if machine.credential:
+            machine.credential.delete()
+
+        # You can similarly delete other related objects here if needed
+        # for status in machine.status:
+        #     status.delete()
+
+        machine.delete()
+        commit()
+        return {"message": "Machine deleted successfully"}
+
+    except Exception as e:
+        rollback()
+        raise HTTPException(status_code=500, detail=f"Error deleting machine: {str(e)}")
+
+
+@router.get("/workcenters", response_model=List[dict])
+@db_session
+def get_all_workcenters():
+    workcenters = select(wc for wc in WorkCenter)[:]
+    return [
+        {
+            "id": wc.id,
+            "code": wc.code,
+            "plant_id": wc.plant_id,
+            "work_center_name": wc.work_center_name,
+            "description": wc.description,
+            "is_schedulable": wc.is_schedulable
+        }
+        for wc in workcenters
+    ]
+
+
+
+@router.put("/workcenters/{workcenter_id}", status_code=200)
+@db_session
+def update_workcenter_schedulable(workcenter_id: int, payload: UpdateSchedulable):
+    workcenter = WorkCenter.get(id=workcenter_id)
+    if not workcenter:
+        raise HTTPException(status_code=404, detail="WorkCenter not found")
+
+    workcenter.is_schedulable = payload.is_schedulable
+    commit()
+
+    return {"message": f"WorkCenter {workcenter_id} updated successfully"}

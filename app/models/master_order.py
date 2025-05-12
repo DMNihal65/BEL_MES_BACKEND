@@ -37,7 +37,7 @@ class Machine(db.Entity):
     status = Set('MachineStatus')
     operations = Set('Operation')  # Reverse relationship
     planned_schedule_items = Set('PlannedScheduleItem', reverse='machine')
-    credential = Optional('MachineCredential', reverse='machine')
+    credential = Optional('MachineCredential', reverse='machine', cascade_delete=True)
 
 
 class MachineShift(db.Entity):
@@ -72,7 +72,9 @@ class MachineStatus(db.Entity):
     machine = Required(Machine)
     status = Required(Status)
     description = Optional(str)
-    available_from = Optional(datetime)  # New column
+    available_from = Optional(datetime)  # Start of status period
+    available_to = Optional(datetime)    # ⬅️ NEW: End of status period (needed for range checking)
+
 
 
 class Project(db.Entity):
