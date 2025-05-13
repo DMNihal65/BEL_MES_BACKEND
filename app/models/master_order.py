@@ -72,8 +72,8 @@ class MachineStatus(db.Entity):
     machine = Required(Machine)
     status = Required(Status)
     description = Optional(str)
-    available_from = Optional(datetime)  # Start of status period
-    available_to = Optional(datetime)    # ⬅️ NEW: End of status period (needed for range checking)
+    available_from = Optional(datetime)  # New column  # Start of status period
+    # available_to = Optional(datetime)    # ⬅️ NEW: End of status period (needed for range checking)
 
 
 
