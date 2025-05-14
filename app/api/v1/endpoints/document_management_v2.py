@@ -4216,82 +4216,455 @@ async def get_cnc_program_document_type(
             detail=f"Error retrieving CNC program document type: {str(e)}"
         )
 
-@router.get("/documents/download-version/{document_id}/{version_number}")
-async def download_document_by_version(
-        document_id: int = Path(..., description="Document ID"),
-        version_number: str = Path(..., description="Version number to download"),
+
+# General Document Management Deletion Endpoints
+@router.delete("/folders/{folder_id}", status_code=200)
+async def delete_folder(
+        folder_id: int,
         current_user: User = Depends(get_current_user)
 ):
     """
-    Download a specific version of a document.
-
-    Parameters:
-    - document_id: ID of the document
-    - version_number: Specific version number to download
-
-    Returns:
-    - File stream response with the requested version
+    Soft delete a folder and all its contents (documents and subfolders).
+    Sets is_active=False rather than actually deleting records.
     """
     try:
         with db_session:
-            # Get the document
+            user = User.get(id=current_user.id)
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+
+            folder = FolderV2.get(id=folder_id)
+            if not folder:
+                raise HTTPException(status_code=404, detail="Folder not found")
+
+            if not folder.is_active:
+                return {"message": f"Folder '{folder.name}' is already deleted"}
+
+            # Function to recursively mark folder and all its contents as inactive
+            def mark_folder_inactive(target_folder):
+                # Mark all documents in the folder as inactive
+                documents = select(d for d in DocumentV2 if d.folder == target_folder and d.is_active)
+                for doc in documents:
+                    doc.is_active = False
+
+                    # Log deletion
+                    DocumentAccessLogV2(
+                        document=doc,
+                        version=doc.latest_version,
+                        user=user,
+                        action_type=DocumentAction.DELETE,
+                        ip_address="0.0.0.0"
+                    )
+
+                # Recursively mark all subfolders and their contents as inactive
+                subfolders = select(f for f in FolderV2 if f.parent_folder == target_folder and f.is_active)
+                for subfolder in subfolders:
+                    mark_folder_inactive(subfolder)
+
+                # Finally mark the folder itself as inactive
+                target_folder.is_active = False
+
+            # Execute the recursive deletion
+            mark_folder_inactive(folder)
+            commit()
+
+            return {"message": f"Folder '{folder.name}' and all its contents have been deleted"}
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An error occurred: {str(e)}"
+        )
+
+
+@router.delete("/documents/{document_id}", status_code=200)
+async def delete_document(
+        document_id: int,
+        current_user: User = Depends(get_current_user)
+):
+    """
+    Soft delete a document.
+    Sets is_active=False rather than actually deleting the record.
+    """
+    try:
+        with db_session:
+            user = User.get(id=current_user.id)
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+
             document = DocumentV2.get(id=document_id)
             if not document:
                 raise HTTPException(status_code=404, detail="Document not found")
 
-            # Get the specific version
-            version = select(v for v in DocumentVersionV2
-                             if v.document == document
-                             and v.version_number == version_number
-                             and v.is_active).first()
+            if not document.is_active:
+                return {"message": f"Document '{document.name}' is already deleted"}
 
+            # Mark document as inactive
+            document.is_active = False
+
+            # Log deletion
+            DocumentAccessLogV2(
+                document=document,
+                version=document.latest_version,
+                user=user,
+                action_type=DocumentAction.DELETE,
+                ip_address="0.0.0.0"
+            )
+
+            commit()
+
+            return {"message": f"Document '{document.name}' has been deleted"}
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An error occurred: {str(e)}"
+        )
+
+
+@router.delete("/document-versions/{version_id}", status_code=200)
+async def delete_document_version(
+        version_id: int,
+        current_user: User = Depends(get_current_user)
+):
+    """
+    Soft delete a document version.
+    Sets is_active=False rather than actually deleting the record.
+    If this is the latest version, updates the document's latest_version to the next most recent active version.
+    """
+    try:
+        with db_session:
+            user = User.get(id=current_user.id)
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+
+            version = DocumentVersionV2.get(id=version_id)
             if not version:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Version {version_number} not found for document {document_id}"
-                )
+                raise HTTPException(status_code=404, detail="Version not found")
 
-            # Log access
+            if not version.is_active:
+                return {"message": f"Version {version.version_number} is already deleted"}
+
+            document = version.document
+            is_latest = document.latest_version == version
+
+            # Mark version as inactive
+            version.is_active = False
+
+            # Log deletion
             DocumentAccessLogV2(
                 document=document,
                 version=version,
-                user=User.get(id=current_user.id),
-                action_type=DocumentAction.DOWNLOAD,
+                user=user,
+                action_type=DocumentAction.DELETE,
                 ip_address="0.0.0.0"
             )
+
+            # If this was the latest version, update the document's latest_version
+            if is_latest:
+                # Find the next most recent active version
+                next_latest = select(v for v in DocumentVersionV2
+                                     if v.document == document and
+                                     v.is_active and
+                                     v.id != version_id
+                                     ).order_by(desc(DocumentVersionV2.created_at)).first()
+                document.latest_version = next_latest
+
             commit()
 
-            try:
-                # Get file from MinIO
-                file_stream = minio.get_file(version.minio_path)
-
-                # Get file extension from minio path
-                file_extension = os.path.splitext(version.minio_path)[1]
-                if not file_extension:
-                    file_extension = '.pdf'  # Default to .pdf if no extension found
-
-                # Determine content type based on file extension
-                content_type = "application/pdf" if file_extension.lower() == '.pdf' else "application/octet-stream"
-
-                # Generate filename with version number
-                filename = f"{document.name}_v{version.version_number}{file_extension}"
-
-                return StreamingResponse(
-                    file_stream,
-                    media_type=content_type,
-                    headers={
-                        "Content-Disposition": f'attachment; filename="{filename}"',
-                        "Content-Length": str(version.file_size)
-                    }
-                )
-            except Exception as e:
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Error retrieving file from storage: {str(e)}"
-                )
-
+            return {"message": f"Version {version.version_number} has been deleted" +
+                               (", document latest_version has been updated" if is_latest else "")}
     except Exception as e:
         raise HTTPException(
-            status_code=500,
-            detail=f"Error downloading document version: {str(e)}"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An error occurred: {str(e)}"
+        )
+
+
+@router.delete("/document-types/{doc_type_id}", status_code=200)
+async def delete_document_type(
+        doc_type_id: int,
+        force: bool = Query(False, description="If true, will delete even if documents exist with this type"),
+        current_user: User = Depends(get_current_user)
+):
+    """
+    Soft delete a document type.
+    By default, will not delete if there are active documents using this type unless force=True.
+    """
+    try:
+        with db_session:
+            user = User.get(id=current_user.id)
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+
+            doc_type = DocumentTypeV2.get(id=doc_type_id)
+            if not doc_type:
+                raise HTTPException(status_code=404, detail="Document type not found")
+
+            if not doc_type.is_active:
+                return {"message": f"Document type '{doc_type.name}' is already deleted"}
+
+            # Check if there are active documents using this type
+            active_docs_count = select(d for d in DocumentV2
+                                       if d.doc_type == doc_type and d.is_active).count()
+
+            if active_docs_count > 0 and not force:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Cannot delete document type '{doc_type.name}' as it is used by {active_docs_count} active documents. Use 'force=true' to delete anyway."
+                )
+
+            # If forced, mark all related documents as inactive
+            if force and active_docs_count > 0:
+                active_docs = select(d for d in DocumentV2 if d.doc_type == doc_type and d.is_active)
+                for doc in active_docs:
+                    doc.is_active = False
+                    # Log document deletion
+                    DocumentAccessLogV2(
+                        document=doc,
+                        version=doc.latest_version,
+                        user=user,
+                        action_type=DocumentAction.DELETE,
+                        ip_address="0.0.0.0"
+                    )
+
+            # Mark document type as inactive
+            doc_type.is_active = False
+            commit()
+
+            return {"message": f"Document type '{doc_type.name}' has been deleted" +
+                               (
+                                   f" along with {active_docs_count} related documents" if force and active_docs_count > 0 else "")}
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An error occurred: {str(e)}"
+        )
+
+
+@router.post("/documents/{document_id}/restore", status_code=200)
+async def restore_document(
+        document_id: int,
+        current_user: User = Depends(get_current_user)
+):
+    """
+    Restore a previously deleted document by setting is_active back to True.
+    """
+    try:
+        with db_session:
+            user = User.get(id=current_user.id)
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+
+            document = DocumentV2.get(id=document_id)
+            if not document:
+                raise HTTPException(status_code=404, detail="Document not found")
+
+            if document.is_active:
+                return {"message": f"Document '{document.name}' is already active"}
+
+            # Check if the document's folder is active
+            if not document.folder.is_active:
+                # Restore the folder first
+                folder = document.folder
+                folder.is_active = True
+                # Also restore parent folders if needed
+                while folder.parent_folder and not folder.parent_folder.is_active:
+                    folder.parent_folder.is_active = True
+                    folder = folder.parent_folder
+
+            # Restore the document
+            document.is_active = True
+
+            # Log restoration
+            DocumentAccessLogV2(
+                document=document,
+                version=document.latest_version,
+                user=user,
+                action_type=DocumentAction.UPDATE,
+                ip_address="0.0.0.0"
+            )
+
+            commit()
+
+            return {"message": f"Document '{document.name}' has been restored"}
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An error occurred: {str(e)}"
+        )
+
+
+@router.post("/folders/{folder_id}/restore", status_code=200)
+async def restore_folder(
+        folder_id: int,
+        restore_contents: bool = Query(True,
+                                       description="If true, will also restore all documents and subfolders within this folder"),
+        current_user: User = Depends(get_current_user)
+):
+    """
+    Restore a previously deleted folder by setting is_active back to True.
+    Optionally also restores all contents (documents and subfolders).
+    """
+    try:
+        with db_session:
+            user = User.get(id=current_user.id)
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+
+            folder = FolderV2.get(id=folder_id)
+            if not folder:
+                raise HTTPException(status_code=404, detail="Folder not found")
+
+            if folder.is_active:
+                return {"message": f"Folder '{folder.name}' is already active"}
+
+            # Check if parent folders are active, and restore them if not
+            current_folder = folder
+            while current_folder.parent_folder and not current_folder.parent_folder.is_active:
+                current_folder.parent_folder.is_active = True
+                current_folder = current_folder.parent_folder
+
+            # Restore this folder
+            folder.is_active = True
+
+            # If requested, restore all contents too
+            restored_doc_count = 0
+            restored_folder_count = 1  # Count this folder
+
+            if restore_contents:
+                # Function to recursively restore folder contents
+                def restore_folder_contents(target_folder):
+                    nonlocal restored_doc_count, restored_folder_count
+
+                    # Restore all documents in the folder
+                    inactive_docs = select(d for d in DocumentV2 if d.folder == target_folder and not d.is_active)
+                    for doc in inactive_docs:
+                        doc.is_active = True
+                        restored_doc_count += 1
+
+                        # Log restoration
+                        DocumentAccessLogV2(
+                            document=doc,
+                            version=doc.latest_version,
+                            user=user,
+                            action_type=DocumentAction.UPDATE,
+                            ip_address="0.0.0.0"
+                        )
+
+                    # Recursively restore all subfolders and their contents
+                    inactive_subfolders = select(
+                        f for f in FolderV2 if f.parent_folder == target_folder and not f.is_active)
+                    for subfolder in inactive_subfolders:
+                        subfolder.is_active = True
+                        restored_folder_count += 1
+                        restore_folder_contents(subfolder)
+
+                # Execute the recursive restoration
+                restore_folder_contents(folder)
+
+            commit()
+
+            return {
+                "message": f"Folder '{folder.name}' has been restored",
+                "restored_folders": restored_folder_count,
+                "restored_documents": restored_doc_count
+            }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An error occurred: {str(e)}"
+        )
+
+
+@router.get("/trash/documents", response_model=DocumentListResponse)
+async def list_deleted_documents(
+        folder_id: int | None = None,
+        page: int = Query(1, ge=1),
+        page_size: int = Query(10, ge=1, le=100),
+        current_user=Depends(get_current_user)
+):
+    """List soft-deleted documents with optional filters and pagination"""
+    try:
+        with db_session:
+            # Start with base query for inactive documents
+            base_query = DocumentV2.select(lambda d: not d.is_active)
+
+            # Apply folder filter if provided
+            if folder_id:
+                base_query = base_query.filter(lambda d: d.folder.id == folder_id)
+
+            # Get total count
+            total = base_query.count()
+
+            # Apply pagination and ordering
+            documents = list(base_query
+                             .order_by(lambda d: desc(d.created_at))
+                             .limit(page_size, offset=(page - 1) * page_size))
+
+            # Format response
+            return {
+                "total": total,
+                "items": [
+                    {
+                        "id": doc.id,
+                        "name": doc.name,
+                        "folder_id": doc.folder.id,
+                        "doc_type_id": doc.doc_type.id,
+                        "description": doc.description,
+                        "part_number": doc.part_number,
+                        "production_order_id": doc.production_order.id if doc.production_order else None,
+                        "created_at": doc.created_at,
+                        "created_by_id": doc.created_by.id,
+                        "is_active": doc.is_active,
+                        "latest_version": {
+                            "id": doc.latest_version.id,
+                            "document_id": doc.latest_version.document.id,
+                            "version_number": doc.latest_version.version_number,
+                            "minio_path": doc.latest_version.minio_path,
+                            "file_size": doc.latest_version.file_size,
+                            "checksum": doc.latest_version.checksum,
+                            "created_at": doc.latest_version.created_at,
+                            "created_by_id": doc.latest_version.created_by.id,
+                            "is_active": doc.latest_version.is_active,
+                            "metadata": doc.latest_version.metadata
+                        } if doc.latest_version else None
+                    }
+                    for doc in documents
+                ]
+            }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An error occurred: {str(e)}"
+        )
+
+
+@router.get("/trash/folders", response_model=List[FolderResponse])
+async def list_deleted_folders(
+        parent_id: int | None = None,
+        current_user=Depends(get_current_user)
+):
+    """List soft-deleted folders, optionally filtered by parent folder"""
+    try:
+        with db_session:
+            if parent_id:
+                folders = list(FolderV2.select(lambda f: not f.is_active and f.parent_folder.id == parent_id))
+            else:
+                folders = list(FolderV2.select(lambda f: not f.is_active))
+
+            return [
+                {
+                    "id": f.id,
+                    "name": f.name,
+                    "path": f.path,
+                    "parent_folder_id": f.parent_folder.id if f.parent_folder else None,
+                    "created_at": f.created_at,
+                    "created_by_id": f.created_by.id,
+                    "is_active": f.is_active
+                }
+                for f in folders
+            ]
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An error occurred: {str(e)}"
         )
