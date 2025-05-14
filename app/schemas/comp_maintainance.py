@@ -4,10 +4,11 @@ from pydantic import BaseModel
 
 class MachineStatusBase(BaseModel):
     machine_make: str
-    machine_id : int
+    machine_id: int
     status_name: str
     description: Optional[str] = None
     available_from: Optional[datetime] = None
+    available_to: Optional[datetime] = None
 
 class MachineStatusOut(MachineStatusBase):
     pass
@@ -20,6 +21,7 @@ class UpdateMachineStatusRequest(BaseModel):
     status_id: int
     description: Optional[str] = None
     available_from: Optional[datetime] = None
+    available_to: Optional[datetime] = None
 
 # Models for operator updates
 class OperatorMachineUpdate(BaseModel):

@@ -7,7 +7,7 @@ from .api.v1.endpoints import component_status, programs, daily_production, oper
 from .routes import hr_routes, finance_routes, master_order_routes
 from .api.v1.endpoints import document_management, inventoryv1, priority_scheduling,mttr_mtbf
 from .api.v1.endpoints import component_status, programs, daily_production, operator_login, toolsprograms,notification_service
-from .api.v1.endpoints import auth, planning, mpp, operations, scheduled, dynamic_rescheduling, comp_maintainance, comp_operator, document_management_v2, production_monitoring, production_logs,quality, document_management
+from .api.v1.endpoints import auth, planning, mpp, operations, scheduled, dynamic_rescheduling, comp_maintainance, comp_operator, document_management_v2, production_monitoring, production_logs,quality, document_management, energymonitoring
 from .api.v1.endpoints import notification_service
 
 
@@ -56,6 +56,8 @@ app.include_router(pokayoke.router)
 app.include_router(daily_production.router)
 app.include_router(inventoryv1.router, prefix="/api/v1")
 app.include_router(mttr_mtbf.router)
+app.include_router(energymonitoring.router)
+
 
 #######
 app.include_router(document_management_v2.router, prefix="/api/v1/document-management", tags=["documents"])
@@ -70,14 +72,14 @@ def read_root():
 
 
 # uvicorn app.main:app --reload
-# uvicorn app.main:app --host 172.18.7.88 --port 4455 --reload
-# uvicorn app.main:app --host 172.18.7.88 --port 5599 --reload
-# uvicorn app.main:app --host 172.18.7.88 --port 5456 --reload
-# uvicorn app.main:app --host 172.18.7.88 --port 3423 --reload
+# uvicorn app.main:app --host 172.18.7.88 --port 5467 --reload
+# uvicorn app.main:app --host 172.18.7.88 --port 4567 --reload
+# uvicorn app.main:app --host 172.18.7.88 --port 5698 --reload
+# uvicorn app.main:app --host 172.18.7.88 --port 4343 --reload
 
 # uvicorn app.main:app --host 172.18.7.88 --port 1717 --reload
 
 
-# uvicorn app.main:app --host 172.18.7.88 --port 6523 --reload
+# uvicorn app.main:app --host 172.18.7.88 --port 6767 --reload
 
-# uvicorn app.main:app --host 172.18.7.88 --port 3289 --reload
+# uvicorn app.main:app --host 172.18.7.88 --port 4470 --reload

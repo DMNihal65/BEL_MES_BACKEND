@@ -580,6 +580,7 @@ async def get_machine_status():
                     machine_id = ms.machine.id,
                     status_name=ms.status.name,
                     available_from=ms.available_from,
+                    available_to=ms.available_to,
                     description=ms.description  # Added description
                 )
                 machine_statuses.append(machine_status)
@@ -627,10 +628,12 @@ async def get_all_statuses():
             detail=f"Error fetching statuses: {str(e)}"
         )
 
+
 @router.put("/machine-status/{machine_id}", response_model=MachineStatusOut)
 async def update_machine_status(machine_id: int, status_update: UpdateMachineStatusRequest):
     """
     Update the status of a specific machine.
+    Can update status, description, available_from, and available_to date.
     """
     try:
         with db_session:
@@ -652,19 +655,34 @@ async def update_machine_status(machine_id: int, status_update: UpdateMachineSta
 
             # Update the machine status
             machine_status.status = new_status
+
+            # Update date range if provided
             if status_update.available_from is not None:
                 machine_status.available_from = status_update.available_from
 
-            # Update description - add this line
+            # Update available_to date if provided
+            if status_update.available_to is not None:
+                machine_status.available_to = status_update.available_to
+
+            # Validate the date range if both dates are provided
+            if machine_status.available_from and machine_status.available_to:
+                if machine_status.available_from > machine_status.available_to:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="available_from date cannot be after available_to date"
+                    )
+
+            # Update description
             machine_status.description = status_update.description
 
             # Create response object with updated data
             updated_status = MachineStatusOut(
                 machine_make=machine_status.machine.make,
-                machine_id = machine_status.machine.id,
+                machine_id=machine_status.machine.id,
                 status_name=new_status.name,
                 available_from=machine_status.available_from,
-                description=machine_status.description  # Add this line
+                available_to=machine_status.available_to,  # Added available_to
+                description=machine_status.description
             )
 
             return updated_status

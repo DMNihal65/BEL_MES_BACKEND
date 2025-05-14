@@ -36,6 +36,7 @@ def connect_to_db():
         cursor.execute("CREATE SCHEMA IF NOT EXISTS quality")
         cursor.execute("CREATE SCHEMA IF NOT EXISTS logs")
         cursor.execute("CREATE SCHEMA IF NOT EXISTS EMS")
+        # cursor.execute("CREATE SCHEMA IF NOT EXISTS energymonitoring")
 
 
 
