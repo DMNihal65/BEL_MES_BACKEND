@@ -4668,3 +4668,149 @@ async def list_deleted_folders(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"An error occurred: {str(e)}"
         )
+
+
+@router.get("/ipid/structure/{po_number}")
+async def get_ipid_folder_structure(
+        po_number: str,
+        current_user: User = Depends(get_current_user)
+):
+    """Get the complete folder structure and documents under IPID folder for a specific PO number"""
+    try:
+        with db_session:
+            # Get IPID document type
+            doc_type = DocumentTypeV2.get(name=DocumentTypes.IPID.value)
+            if not doc_type:
+                raise HTTPException(status_code=404, detail="IPID document type not found")
+
+            # Find the root IPID folder
+            root_folder = FolderV2.get(lambda f: f.name == "IPID"
+                                                 and f.parent_folder.name == "Document Types"
+                                                 and f.is_active == True)
+            if not root_folder:
+                raise HTTPException(status_code=404, detail="IPID root folder not found")
+
+            # Find the PO folder
+            po_folder = FolderV2.get(lambda f: f.name == po_number
+                                               and f.parent_folder == root_folder
+                                               and f.is_active == True)
+            if not po_folder:
+                raise HTTPException(status_code=404, detail=f"No folder found for PO: {po_number}")
+
+            def get_folder_structure(folder):
+                # Get all active documents in this folder with complete details
+                docs = select(d for d in DocumentV2
+                              if d.folder == folder
+                              and d.doc_type == doc_type
+                              and d.is_active == True).order_by(lambda d: desc(d.created_at))[:]
+
+                documents = []
+                for doc in docs:
+                    if not doc.latest_version:
+                        continue
+
+                    # Get all versions for this document
+                    versions = select(v for v in DocumentVersionV2
+                                      if v.document == doc
+                                      and v.is_active == True
+                                      ).order_by(lambda v: desc(v.created_at))[:]
+
+                    # Format all versions
+                    formatted_versions = []
+                    for version in versions:
+                        # Extract operation number from metadata if available
+                        operation_number = None
+                        if version.metadata and isinstance(version.metadata, dict):
+                            operation_number = version.metadata.get("operation_number")
+
+                        formatted_versions.append({
+                            "id": version.id,
+                            "version_number": version.version_number,
+                            "minio_path": version.minio_path,
+                            "file_size": version.file_size,
+                            "checksum": version.checksum,
+                            "created_at": version.created_at.isoformat() if version.created_at else None,
+                            "created_by_id": version.created_by.id,
+                            "is_active": version.is_active,
+                            "metadata": {
+                                **(version.metadata or {}),
+                                "operation_number": operation_number
+                            }
+                        })
+
+                    documents.append({
+                        "id": doc.id,
+                        "name": doc.name,
+                        "folder_id": doc.folder.id,
+                        "folder_path": doc.folder.path,
+                        "doc_type_id": doc.doc_type.id,
+                        "description": doc.description,
+                        "part_number": doc.part_number,
+                        "production_order_id": doc.production_order.id if doc.production_order else None,
+                        "created_at": doc.created_at.isoformat() if doc.created_at else None,
+                        "created_by_id": doc.created_by.id,
+                        "is_active": doc.is_active,
+                        "latest_version": formatted_versions[0] if formatted_versions else None,
+                        "all_versions": formatted_versions,
+                        "version_count": len(formatted_versions)
+                    })
+
+                # Get all active subfolders
+                subfolders = select(f for f in FolderV2
+                                    if f.parent_folder == folder
+                                    and f.is_active == True
+                                    ).order_by(lambda f: f.name)
+
+                # Build folder structure
+                result = {
+                    "folder_info": {
+                        "id": folder.id,
+                        "name": folder.name,
+                        "path": folder.path,
+                        "created_at": folder.created_at.isoformat() if folder.created_at else None,
+                        "is_active": folder.is_active,
+                        "document_count": len(documents),
+                        "total_versions": sum(doc["version_count"] for doc in documents)
+                    },
+                    "documents": documents,
+                    "subfolders": {},
+                    "total_documents_recursive": len(documents)  # Will be updated below
+                }
+
+                # Recursively process subfolders
+                for subfolder in subfolders:
+                    subfolder_structure = get_folder_structure(subfolder)
+                    result["subfolders"][subfolder.name] = subfolder_structure
+                    # Add subfolder's documents to total count
+                    result["total_documents_recursive"] += subfolder_structure["total_documents_recursive"]
+
+                return result
+
+            # Get the complete structure starting from PO folder
+            structure = get_folder_structure(po_folder)
+
+            # Calculate totals
+            total_documents = structure["total_documents_recursive"]
+            total_versions = structure["folder_info"]["total_versions"]
+            for subfolder in structure["subfolders"].values():
+                total_versions += subfolder["folder_info"]["total_versions"]
+
+            return {
+                "po_number": po_number,
+                "structure": structure,
+                "summary": {
+                    "total_documents": total_documents,
+                    "total_versions": total_versions,
+                    "folder_count": 1 + sum(1 for _ in FolderV2.select(
+                        lambda f: f.path.startswith(po_folder.path + "/")
+                                  and f.is_active == True
+                    ))
+                }
+            }
+
+    except Exception as e:
+        print(f"Error retrieving IPID folder structure: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error retrieving IPID folder structure: {str(e)}"
+        )
