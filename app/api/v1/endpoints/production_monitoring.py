@@ -594,23 +594,53 @@ async def get_combined_schedule_production(
                         if machine and hasattr(machine, 'work_center'):
                             machine_name = f"{machine.work_center.code}-{machine.make}"
 
-                    schedule_info = log.schedule_version
+                    # Extract operation details directly from the operation relationship
                     part_number = None
+                    operation_id = None
                     operation_description = None
                     version_number = None
                     scheduled_item_id = None
                     production_order = None
 
-                    if schedule_info:
-                        schedule_item = schedule_info.schedule_item
+                    # Get operation details directly from the operation relationship
+                    if log.operation:
+                        operation_id = log.operation.id
+                        operation_description = log.operation.operation_description
+
+                        # If the operation is linked to a part, get the part number
+                        if hasattr(log.operation, 'part') and log.operation.part:
+                            part_number = log.operation.part.part_number
+
+                        # Check for planned schedule items linked to this operation
+                        planned_items = select(psi for psi in PlannedScheduleItem if psi.operation == log.operation)[:]
+                        if planned_items:
+                            # Get the first planned item (most relevant)
+                            planned_item = planned_items[0]
+                            if planned_item.order:
+                                # Only use part_number from order if not already set from operation
+                                if not part_number:
+                                    part_number = planned_item.order.part_number
+                                production_order = planned_item.order.production_order
+
+                    # Check if we need to get production order from PartScheduleStatus if it wasn't found
+                    if not production_order and part_number:
+                        # Try to find a matching part schedule status
+                        part_status = select(ps for ps in PartScheduleStatus if ps.part_number == part_number).first()
+                        if part_status:
+                            production_order = part_status.production_order
+
+                    # We can still check schedule info for additional data if needed
+                    if log.schedule_version:
+                        schedule_item = log.schedule_version.schedule_item
                         if schedule_item:
                             scheduled_item_id = schedule_item.id
                             if schedule_item.order:
-                                part_number = schedule_item.order.part_number
-                                production_order = schedule_item.order.production_order
-                            if schedule_item.operation:
-                                operation_description = schedule_item.operation.operation_description
-                        version_number = schedule_info.version_number
+                                # Only use part_number from order if not already set from operation
+                                if not part_number:
+                                    part_number = schedule_item.order.part_number
+                                if not production_order:
+                                    production_order = schedule_item.order.production_order
+                        version_number = log.schedule_version.version_number
 
                     logs_data.append(ProductionLogResponse(
                         id=log.id,
@@ -621,6 +651,7 @@ async def get_combined_schedule_production(
                         quantity_completed=log.quantity_completed or 0,
                         quantity_rejected=log.quantity_rejected or 0,
                         part_number=part_number,
+                        operation_id=operation_id,
                         operation_description=operation_description,
                         machine_name=machine_name,
                         notes=log.notes,
@@ -680,7 +711,6 @@ async def get_combined_schedule_production(
                 "error": str(e)
             }
         )
-
 
 # Live Machine Status Endpoint
 @router.get("/live-status/", response_model=List[MachineLiveStatus])

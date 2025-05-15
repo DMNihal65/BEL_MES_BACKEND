@@ -69,3 +69,8 @@ class ShiftwiseEnergyModel(BaseModel):
 class ShiftWiseEnergyRequest(BaseModel):
     machine_id: int
     column_name: str
+
+class ShiftwiseEnergyResponse(BaseModel):
+    """Response model for shiftwise energy history data"""
+    data: List[Dict[str, Any]]
+    timestamp: str

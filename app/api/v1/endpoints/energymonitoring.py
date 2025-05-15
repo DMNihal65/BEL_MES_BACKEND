@@ -22,7 +22,8 @@ from typing import Dict, Set, Literal
 from fastapi import WebSocket
 
 # from app.models.energymonitoring import MachineEMSLive
-from app.schemas.energymonitoring import MachineDetailsResponse, EMSDataModel, ShiftwiseEnergyModel
+from app.schemas.energymonitoring import MachineDetailsResponse, EMSDataModel, ShiftwiseEnergyModel, \
+    ShiftwiseEnergyResponse
 
 # Create router
 # router = APIRouter(prefix="/ems", tags=["EMS"])
@@ -1732,7 +1733,63 @@ def get_shiftwise_energy_live(
     return result
 
 
+@router.get("/shiftwise_energy_history_by_date", response_model=ShiftwiseEnergyResponse)
+async def get_shiftwise_energy_history_by_date(
+        date: str = Query(..., description="Date in YYYY-MM-DD format")
+):
+    """
+    Get shiftwise energy history data for a specific date
 
+    Returns all energy history records for the specified date only.
+    """
+    try:
+        # Parse the date (without time)
+        try:
+            date_parsed = datetime.strptime(date, "%Y-%m-%d")
+            # Create the next day date to use in the query for filtering exact date
+            next_day = date_parsed + timedelta(days=1)
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid date format. Please use YYYY-MM-DD format."
+            )
 
+        # Get historical data for the specific date only
+        with db_session:
+            # Using SQL directly to get data for the specific date only
+            query = """
+            SELECT timestamp, first_shift, second_shift, third_shift, total_energy, machine_id
+            FROM ems.shiftwise_energy_history 
+            WHERE timestamp >= $date_start AND timestamp < $date_end
+            ORDER BY timestamp ASC
+            """
 
+            # Execute raw SQL with parameters
+            history_data = db.execute(query, {'date_start': date_parsed, 'date_end': next_day})
 
+            # Convert raw result to proper dictionaries
+            column_names = [desc[0] for desc in history_data.description]
+            result = []
+
+            for row in history_data:
+                record = {}
+                for i, value in enumerate(row):
+                    # Convert datetime objects to string for JSON serialization
+                    if isinstance(value, datetime):
+                        record[column_names[i]] = value.isoformat()
+                    else:
+                        record[column_names[i]] = value
+                result.append(record)
+
+        # Return the data
+        return {
+            "data": result,
+            "timestamp": datetime.now().isoformat()
+        }
+
+    except Exception as e:
+        logging.error(f"Error processing request: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error occurred: {str(e)}"
+        )

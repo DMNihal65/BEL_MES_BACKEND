@@ -1,5 +1,8 @@
 from pony.orm import *
-from datetime import datetime
+from datetime import datetime, date
+
+from . import Machine
+from .inventoryv1 import CalibrationSchedule
 from ..database.connection import db  # Import the shared db instance
 
 # Define the database entities in the logs schema
@@ -160,6 +163,7 @@ class PokaYokeCompletedLog(db.Entity):
             "responses": [resp.to_dict() for resp in self.item_responses]
         }
 
+
 class PokaYokeItemResponse(db.Entity):
     """Individual item responses within a completed checklist"""
     _table_ = ("logs", "pokayoke_item_responses")
@@ -180,3 +184,20 @@ class PokaYokeItemResponse(db.Entity):
             "is_conforming": self.is_conforming,
             "timestamp": self.timestamp
         }
+
+
+class MachineCalibrationLog(db.Entity):
+    _table_ = ("logs", "machine_calibration_logs")
+    id = PrimaryKey(int, auto=True)
+    timestamp = Required(datetime, default=datetime.now)
+    calibration_due_date = Optional(date)
+    machine_id = Optional(Machine)
+
+
+class InstrumentCalibrationLog(db.Entity):
+    _table_ = ("logs", "instrument_calibration_logs")
+    id = PrimaryKey(int, auto=True)
+    timestamp = Required(datetime, default=datetime.now)
+    calibration_due_date = Optional(date)
+    instrument_id = Optional(CalibrationSchedule)
+

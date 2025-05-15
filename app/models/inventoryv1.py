@@ -3,6 +3,7 @@ from pony.orm import *
 from decimal import Decimal
 from ..database.connection import db  # Import the shared db instance
 
+
 class InventoryCategory(db.Entity):
     """Main categories like Tools, Gauges, Fixtures, etc."""
     _table_ = ("inventoryv1", "categories")
@@ -12,6 +13,7 @@ class InventoryCategory(db.Entity):
     subcategories = Set('InventorySubCategory', reverse='category')
     created_at = Required(datetime, default=datetime.utcnow)
     created_by = Required('User', reverse='inventory_categories')
+
 
 class InventorySubCategory(db.Entity):
     """Sub-categories like EndMills, Drills, Inserts, etc."""
@@ -24,6 +26,7 @@ class InventorySubCategory(db.Entity):
     items = Set('InventoryItem', reverse='subcategory')
     created_at = Required(datetime, default=datetime.utcnow)
     created_by = Required('User', reverse='inventory_subcategories')
+
 
 class InventoryItem(db.Entity):
     """Individual inventory items with dynamic fields"""
@@ -43,6 +46,7 @@ class InventoryItem(db.Entity):
     updated_at = Required(datetime)
     created_by = Required('User', reverse='inventory_items')
 
+
 class CalibrationSchedule(db.Entity):
     """Calibration schedule for items"""
     _table_ = ("inventoryv1", "calibration_schedules")
@@ -57,6 +61,8 @@ class CalibrationSchedule(db.Entity):
     updated_at = Required(datetime)
     created_by = Required('User', reverse='calibration_schedules')
     calibration_history = Set('CalibrationHistory', reverse='calibration_schedule')
+    notification = Set('InstrumentCalibrationLog')
+
 
 class CalibrationHistory(db.Entity):
     """History of calibrations performed"""
@@ -70,6 +76,7 @@ class CalibrationHistory(db.Entity):
     remarks = Optional(str)
     next_due_date = Required(datetime)
     created_at = Required(datetime, default=datetime.utcnow)
+
 
 class InventoryRequest(db.Entity):
     """Request for inventory items"""
@@ -90,6 +97,7 @@ class InventoryRequest(db.Entity):
     created_at = Required(datetime, default=datetime.utcnow)
     updated_at = Required(datetime)
     transactions = Set('InventoryTransaction', reverse='reference_request')
+
 
 class InventoryTransaction(db.Entity):
     """Track all inventory movements"""

@@ -65,6 +65,7 @@ class ProductionLogResponse(BaseModel):
     version_number: Optional[int] = None
     scheduled_item_id: Optional[int] = None
     production_order: Optional[str] = None
+    operation_id: Optional[int] = None
 
     class Config:
         from_attributes = True
