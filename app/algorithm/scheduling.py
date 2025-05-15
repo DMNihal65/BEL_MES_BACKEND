@@ -197,7 +197,7 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
     }
 
     # Fetch machine statuses with their status details
-    machine_statuses_query = select((m, ms, s, ms.available_from)
+    machine_statuses_query = select((m, ms, s, ms.available_from, ms.available_to)
                                     for m in Machine
                                     for ms in m.status
                                     for s in Status if ms.status == s)
@@ -208,8 +208,9 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
             'status_name': s.name,
             'status_description': s.description,
             'machine_status_description': ms.description,
-            'available_from': ms.available_from  # Keep the raw timestamp without automatic timezone conversion
-        } for m, ms, s, available_from in machine_statuses_query
+            'available_from': ms.available_from,  # status start
+            'available_to': ms.available_to  # status end (may be None)
+        } for m, ms, s, _, _ in machine_statuses_query
     }
 
     part_operations = {
@@ -244,86 +245,72 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
     part_status = {}
     partially_completed = []
 
-    def check_machine_status(machine_id: int, current_time: datetime) -> Tuple[bool, datetime]:
+    def check_machine_status(machine_id: int, time: datetime) -> Tuple[bool, datetime]:
         """
-        Determines if a machine is available at the given time.
-        Returns (is_available: bool, next_available_time: datetime)
+        Check if a machine is available at a given time.
 
-        Comprehensive Machine Status Logic:
-        1. OFF Periods:
-           - No scheduling allowed within OFF periods
-           - Must wait until available_to of OFF period
-        2. ON Periods:
-           - Scheduling allowed from available_from
-           - Stops at the available_from of the next OFF status
+        Returns (is_available, next_possible_time).
+        If not available and we know when it becomes available, next_possible_time is that datetime;
+        otherwise next_possible_time is None.
         """
-        # Get all statuses for this machine, ordered by available_from
-        statuses = list(
-            MachineStatus.select(lambda ms: ms.machine.id == machine_id).order_by(lambda ms: ms.available_from)
-        )
+        ms = machine_statuses.get(machine_id)
+        if not ms:
+            # No status record → assume machine is available (default)
+            return True, time
 
-        if not statuses:
-            print(f"⚠️ No status records found for Machine {machine_id}. Assuming always available.")
-            return True, current_time
+        status = ms['status_name'].upper()
+        af = ms['available_from']  # Start of status period
+        at = ms['available_to']  # End of status period (may be None)
 
-        # Step 1: Check for current OFF periods that block scheduling
-        for status in statuses:
-            if status.status.name.upper() == "OFF":
-                from_time = status.available_from
-                to_time = status.available_to
+        # Debug logging for machine status check
+        print(f"Checking machine {machine_id} status at {time}:")
+        print(f"  Status: {status}")
+        print(f"  Available From: {af}")
+        print(f"  Available To: {at}")
 
-                # Check if the proposed scheduling time falls within any OFF period
-                if from_time and to_time and from_time <= current_time < to_time:
-                    print(f"❌ Cannot schedule. Machine {machine_id} is OFF from {from_time} to {to_time}.")
-                    return False, to_time  # Must wait until after the OFF period completely ends
-
-        # Step 2: Find the most recent applicable status
-        applicable_status = None
-        next_off_status = None
-
-        for idx, status in enumerate(statuses):
-            # Find the most recent status that started before or at current_time
-            if status.available_from <= current_time:
-                # Prefer the latest ON or the latest status before current_time
-                if (status.status.name.upper() == "ON" or
-                        applicable_status is None or
-                        status.available_from > applicable_status.available_from):
-                    applicable_status = status
-
-            # Find the next OFF status after current_time
-            if status.status.name.upper() == "OFF" and status.available_from > current_time:
-                if next_off_status is None or status.available_from < next_off_status.available_from:
-                    next_off_status = status
-
-        # Step 3: Determine availability based on status
-        if applicable_status and applicable_status.status.name.upper() == "ON":
-            # Machine is ON
-            if next_off_status:
-                # There's a future OFF period
-                print(f"✅ Machine {machine_id} is ON until {next_off_status.available_from}")
-                return True, next_off_status.available_from
+        if status == 'OFF':
+            # OFF window: unavailable between af and at
+            if af and at:
+                if af <= time < at:
+                    # Time falls within OFF window
+                    print(f"  Machine is OFF until {at}")
+                    return False, at  # Not available now, will be at 'at'
+                else:
+                    # Time is outside OFF window, machine is available
+                    print(f"  Machine is available (outside OFF window)")
+                    return True, time
+            elif af and not at:
+                # Machine is OFF starting from 'af' indefinitely
+                if time >= af:
+                    print(f"  Machine is permanently OFF from {af}")
+                    return False, None  # Not available and won't be
+                else:
+                    print(f"  Machine is available until {af}")
+                    return True, time  # Available now until 'af'
             else:
-                # Machine is ON with no upcoming OFF period
-                print(f"✅ Machine {machine_id} is ON without any upcoming OFF period")
-                return True, current_time
+                # Malformed status record
+                print("  WARNING: Malformed machine status record, assuming available")
+                return True, time
 
-        # Step 4: Find the next ON period if not currently ON
-        next_on_status = None
-        for status in statuses:
-            if (status.status.name.upper() == "ON" and
-                    status.available_from and
-                    status.available_from > current_time):
-                if next_on_status is None or status.available_from < next_on_status.available_from:
-                    next_on_status = status
+        # Status is ON or any other status
+        if status == 'ON':
+            if af:
+                if time < af:
+                    # Machine will be ON from 'af'
+                    print(f"  Machine will be ON from {af}")
+                    return False, af
+                else:
+                    # Machine is ON now
+                    print(f"  Machine is ON")
+                    return True, time
+            else:
+                # Machine is ON with no start time specified
+                print(f"  Machine is ON (no start time specified)")
+                return True, time
 
-        if next_on_status:
-            # There's a future ON period
-            print(f"⏳ Machine {machine_id} will be ON starting from {next_on_status.available_from}")
-            return False, next_on_status.available_from
-
-        # Step 5: Fallback if no clear status was determined
-        print(f"⚠️ Ambiguous status for Machine {machine_id} at {current_time}. Assuming not available.")
-        return False, current_time  # Default to not available if no clear status
+        # Any other status - default to available
+        print(f"  Machine has status {status}, defaulting to available")
+        return True, time
 
     def find_last_available_operation(operations: List[dict], current_time: datetime) -> int:
         """Find the last operation that can be performed in sequence"""
@@ -455,14 +442,26 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
             cycle_minutes = float(operation.ideal_cycle_time) * 60
 
             current_time = operation_time
-            machine_available, available_time = check_machine_status(machine_id, current_time)
 
+            # Check machine availability for the current operation
+            machine_available, next_available_time = check_machine_status(machine_id, current_time)
+
+            # If machine is not available now but will be available later
             if not machine_available:
-                if available_time is None:
-                    continue
-                current_time = available_time
+                if next_available_time is None:
+                    print(
+                        f"Machine {machine_id} is unavailable with no estimated return time for {partno}, operation {op['operation']}")
+                    continue  # Skip this operation
+                else:
+                    # Update current time to when machine becomes available
+                    print(
+                        f"Machine {machine_id} is unavailable until {next_available_time} for {partno}, operation {op['operation']}")
+                    current_time = next_available_time
 
+            # Adjust to shift hours
             current_time = adjust_to_shift_hours(current_time)
+
+            # Use the later of current time or machine end time
             current_time = max(current_time, machine_end_times.get(machine_id, current_time))
             operation_start = current_time
 
@@ -471,19 +470,35 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
                 setup_end = operation_start + timedelta(minutes=setup_minutes)
                 shift_end = operation_start.replace(hour=17, minute=0, second=0, microsecond=0)
 
+                # Check if setup crosses the shift end
                 if setup_end > shift_end:
+                    # Log the partial setup scheduled today
                     batch_schedule.append([
                         partno, op['operation'], machine_id,
                         operation_start, shift_end,
                         f"Setup({int((shift_end - operation_start).total_seconds() / 60)}/{setup_minutes}min)",
-                        production_order  # Include production order
+                        production_order
                     ])
 
+                    # Calculate remaining setup for next day(s)
                     next_day = shift_end + timedelta(days=1)
                     next_start = next_day.replace(hour=9, minute=0, second=0, microsecond=0)
                     remaining_setup = setup_minutes - (shift_end - operation_start).total_seconds() / 60
 
+                    # Before continuing with setup next day, check if machine will be available
                     while remaining_setup > 0:
+                        # Check machine availability for the next day setup
+                        machine_available, next_available_time = check_machine_status(machine_id, next_start)
+
+                        if not machine_available:
+                            if next_available_time is None:
+                                print(f"Machine {machine_id} is permanently unavailable for remaining setup")
+                                break  # Can't complete setup
+                            else:
+                                # Adjust next start time to when machine becomes available
+                                next_start = adjust_to_shift_hours(next_available_time)
+                                print(f"Next setup will start at {next_start} when machine becomes available")
+
                         current_shift_end = next_start.replace(hour=17, minute=0, second=0, microsecond=0)
                         setup_possible = min(remaining_setup, (current_shift_end - next_start).total_seconds() / 60)
                         current_end = next_start + timedelta(minutes=setup_possible)
@@ -492,7 +507,7 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
                             partno, op['operation'], machine_id,
                             next_start, current_end,
                             f"Setup({setup_minutes - remaining_setup + setup_possible}/{setup_minutes}min)",
-                            production_order  # Include production order
+                            production_order
                         ])
 
                         remaining_setup -= setup_possible
@@ -508,7 +523,7 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
                         partno, op['operation'], machine_id,
                         operation_start, setup_end,
                         f"Setup({setup_minutes}/{setup_minutes}min)",
-                        production_order  # Include production order
+                        production_order
                     ])
                     operation_start = setup_end
                     current_time = setup_end
@@ -520,8 +535,9 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
             processing_end = operation_start + timedelta(minutes=total_processing_time)
             shift_end = operation_start.replace(hour=17, minute=0, second=0, microsecond=0)
 
+            # Check if processing crosses shifts
             if processing_end > shift_end:
-                # Split processing across shifts
+                # Calculate production in current shift
                 work_minutes_today = (shift_end - operation_start).total_seconds() / 60
                 completion_ratio = work_minutes_today / total_processing_time if total_processing_time > 0 else 0
                 pieces_today = int(quantity * completion_ratio)
@@ -532,17 +548,31 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
                         partno, op['operation'], machine_id,
                         operation_start, shift_end,
                         f"Process({new_cumulative}/{quantity}pcs)",
-                        production_order  # Include production order
+                        production_order
                     ])
                     cumulative_pieces[operation_key] = new_cumulative
 
+                # Calculate remaining work
                 remaining_time = total_processing_time - work_minutes_today
                 remaining_pieces = quantity - new_cumulative
 
                 next_day = shift_end + timedelta(days=1)
                 next_start = next_day.replace(hour=9, minute=0, second=0, microsecond=0)
 
+                # Process remaining pieces across future shifts
                 while remaining_time > 0:
+                    # Check machine availability for next day's work
+                    machine_available, next_available_time = check_machine_status(machine_id, next_start)
+
+                    if not machine_available:
+                        if next_available_time is None:
+                            print(f"Machine {machine_id} is permanently unavailable for remaining pieces")
+                            break  # Can't complete production
+                        else:
+                            # Adjust next start time to when machine becomes available
+                            next_start = adjust_to_shift_hours(next_available_time)
+                            print(f"Next processing will start at {next_start} when machine becomes available")
+
                     current_shift_end = next_start.replace(hour=17, minute=0, second=0, microsecond=0)
                     work_possible = min(remaining_time, (current_shift_end - next_start).total_seconds() / 60)
                     current_end = next_start + timedelta(minutes=work_possible)
@@ -558,7 +588,7 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
                         partno, op['operation'], machine_id,
                         next_start, current_end,
                         f"Process({new_cumulative}/{quantity}pcs)",
-                        production_order  # Include production order
+                        production_order
                     ])
 
                     cumulative_pieces[operation_key] = new_cumulative
@@ -577,7 +607,7 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
                     partno, op['operation'], machine_id,
                     operation_start, processing_end,
                     f"Process({quantity}/{quantity}pcs)",
-                    production_order  # Include production order
+                    production_order
                 ])
                 current_time = processing_end
                 machine_end_times[machine_id] = processing_end
