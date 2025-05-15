@@ -31,6 +31,10 @@ class MasterBocCRUD:
             if not document:
                 raise ValueError(f"Document with ID {data.document_id} not found")
 
+            # Validate bbox has exactly 8 values
+            if len(data.bbox) != 8:
+                raise ValueError("bbox must contain exactly 8 values [x1, y1, x2, y2, x3, y3, x4, y4]")
+
             # Convert to database format
             db_data = data.to_db_dict()
 
@@ -130,7 +134,7 @@ class MasterBocCRUD:
             raise ValueError(f"No operations found for order {order_id}")
 
         # Get all master bocs for this order
-        master_bocs = select(m for m in MasterBoc if m.order_id == order_id).order_by(
+        master_bocs = select(m for m in MasterBoc if m.order == order).order_by(
             MasterBoc.op_no)[:]
 
         # Create operation groups (will be empty if no master bocs found)
@@ -178,31 +182,35 @@ class StageInspectionCRUD:
     def create_stage_inspection(data: StageInspectionCreate) -> StageInspectionResponse:
         """Create a new Stage Inspection entry with validation for quantity progression"""
         try:
-            # Check if this is a subsequent quantity for the same order and operation
+            # For quantity > 1, verify that quantity 1 exists and FTP has been approved
             if data.quantity_no is not None and data.quantity_no > 1:
-                # Verify that the first quantity for this order & op_no exists and is marked as done
+                # Verify that the first quantity exists
                 first_quantity = select(si for si in StageInspection
-                                        if si.order_id == data.order_id
-                                        and si.op_no == data.op_no
-                                        and si.quantity_no == 1).first()
+                                     if si.order_id == data.order_id
+                                     and si.op_no == data.op_no
+                                     and si.quantity_no == 1).first()
 
                 if not first_quantity:
                     raise ValueError(
                         f"Cannot add quantity {data.quantity_no} because quantity 1 does not exist for order {data.order_id}, operation {data.op_no}")
 
-                if not first_quantity.is_done:
+                # Check if FTP is approved for this order and operation
+                # Get all master_bocs for this order and operation to find IPIDs
+                master_bocs = select(m for m in MasterBoc
+                                   if m.order.id == data.order_id
+                                   and m.op_no == data.op_no)[:]
+                
+                # Check FTP status for all IPIDs - all must be completed
+                all_ftp_completed = True
+                for master_boc in master_bocs:
+                    ftp_status = FTP.get(order_id=data.order_id, ipid=master_boc.ipid)
+                    if not ftp_status or not ftp_status.is_completed:
+                        all_ftp_completed = False
+                        break
+                
+                if not all_ftp_completed:
                     raise ValueError(
-                        f"Cannot add quantity {data.quantity_no} because quantity 1 for order {data.order_id}, operation {data.op_no} is not marked as done")
-
-                # Check if previous quantity exists and is marked as done
-                prev_quantity = select(si for si in StageInspection
-                                       if si.order_id == data.order_id
-                                       and si.op_no == data.op_no
-                                       and si.quantity_no == data.quantity_no - 1).first()
-
-                if prev_quantity and not prev_quantity.is_done:
-                    raise ValueError(
-                        f"Cannot add quantity {data.quantity_no} because previous quantity is not marked as done")
+                        f"Cannot add quantity {data.quantity_no} because FTP approval for quantity 1 is still pending for order {data.order_id}, operation {data.op_no}")
 
             # Create new instance
             stage_inspection_data = {
@@ -217,9 +225,9 @@ class StageInspectionCRUD:
                 'measured_3': data.measured_3,
                 'measured_mean': data.measured_mean,
                 'measured_instrument': data.measured_instrument,
+                'used_inst': data.used_inst,
                 'op_no': data.op_no,
                 'order_id': data.order_id,
-                'is_done': data.is_done,
             }
 
             # Only add quantity_no if it's provided
@@ -229,93 +237,67 @@ class StageInspectionCRUD:
             stage_inspection = StageInspection(**stage_inspection_data)
             commit()
 
-            # After creating stage inspection, update FTP status
-            # First, find all master_bocs for this order and operation
-            master_bocs = select(m for m in MasterBoc
-                               if m.order.id == data.order_id
-                               and m.op_no == data.op_no)[:]
+            # After creating stage inspection, update FTP status if this is quantity 1
+            if data.quantity_no == 1:
+                # Find all master_bocs for this order and operation
+                master_bocs = select(m for m in MasterBoc
+                                   if m.order.id == data.order_id
+                                   and m.op_no == data.op_no)[:]
 
-            # Update FTP status for each master_boc's IPID
-            for master_boc in master_bocs:
-                # Get all stage inspections for this order and operation number
-                stage_inspections = select(si for si in StageInspection
-                                        if si.order_id == data.order_id
-                                        and si.op_no == data.op_no)[:]
-                
-                # If there are no stage inspections, consider it not completed
-                if not stage_inspections:
-                    is_completed = False
-                else:
-                    # Check if all stage inspections are marked as done
-                    is_completed = all(si.is_done for si in stage_inspections)
-
-                # Get or create FTP entry
-                ftp = FTP.get(order_id=data.order_id, ipid=master_boc.ipid)
-                if not ftp:
-                    ftp = FTP(
-                        order_id=data.order_id,
-                        ipid=master_boc.ipid,
-                        is_completed=is_completed
-                    )
-                else:
-                    ftp.is_completed = is_completed
-                    ftp.updated_at = datetime.now()
+                # Update FTP status for each master_boc's IPID
+                for master_boc in master_bocs:
+                    # Get or create FTP entry
+                    ftp = FTP.get(order_id=data.order_id, ipid=master_boc.ipid)
+                    if not ftp:
+                        ftp = FTP(
+                            order_id=data.order_id,
+                            ipid=master_boc.ipid,
+                            is_completed=False  # Initially set to false
+                        )
+                    else:
+                        # Don't update existing FTP entries
+                        pass
 
             commit()
-
             return StageInspectionResponse.from_orm(stage_inspection)
+
         except Exception as e:
             raise ValueError(f"Failed to create Stage Inspection: {str(e)}")
 
     @staticmethod
     @db_session
-    def update_inspection_status(inspection_id: int, is_done: bool) -> StageInspectionResponse:
-        """Update the is_done status of a stage inspection and update related FTP statuses"""
+    def update_inspection_status(inspection_id: int, is_completed: bool) -> StageInspectionResponse:
+        """Update the related FTP statuses for a stage inspection"""
         try:
             # Get the stage inspection
             inspection = StageInspection.get(id=inspection_id)
             if not inspection:
                 raise ValueError(f"Stage inspection with ID {inspection_id} not found")
-
-            # Update the inspection status
-            inspection.is_done = is_done
             
-            # Get all master_bocs for this order and operation number
-            master_bocs = select(m for m in MasterBoc
+            # If this is quantity 1
+            if inspection.quantity_no == 1:
+                # Get all master_bocs for this order and operation
+                master_bocs = select(m for m in MasterBoc
                                if m.order.id == inspection.order_id
                                and m.op_no == inspection.op_no)[:]
 
-            if not master_bocs:
-                raise ValueError(f"No master_boc found for order_id {inspection.order_id} and op_no {inspection.op_no}")
+                # Update FTP status for each master_boc's IPID
+                for master_boc in master_bocs:
+                    # Get or create FTP entry
+                    ftp = FTP.get(order_id=inspection.order_id, ipid=master_boc.ipid)
+                    if ftp:
+                        ftp.is_completed = is_completed
+                        ftp.updated_at = datetime.now()
+                    else:
+                        ftp = FTP(
+                            order_id=inspection.order_id,
+                            ipid=master_boc.ipid,
+                            is_completed=is_completed
+                        )
 
-            # Get all stage inspections for this order and operation number
-            stage_inspections = select(si for si in StageInspection
-                                    if si.order_id == inspection.order_id
-                                    and si.op_no == inspection.op_no)[:]
-
-            # Calculate completion status
-            is_completed = bool(stage_inspections) and all(si.is_done for si in stage_inspections)
-
-            # Update FTP status for each master_boc's IPID
-            for master_boc in master_bocs:
-                # Get or create FTP entry
-                ftp = FTP.get(order_id=inspection.order_id, ipid=master_boc.ipid)
-                if ftp:
-                    # Update existing entry
-                    ftp.is_completed = is_completed
-                    ftp.updated_at = datetime.now()
-                else:
-                    # Create new entry
-                    ftp = FTP(
-                        order_id=inspection.order_id,
-                        ipid=master_boc.ipid,
-                        is_completed=is_completed
-                    )
-
-            # Commit all changes
             commit()
-
             return StageInspectionResponse.from_orm(inspection)
+
         except ValueError as e:
             raise ValueError(str(e))
         except Exception as e:
@@ -376,8 +358,8 @@ class QualityInspectionCRUD:
                                 measured_3=si.measured_3,
                                 measured_mean=si.measured_mean,
                                 measured_instrument=si.measured_instrument,
-                                is_done=si.is_done,  # Added is_done field
-                                quantity_no=si.quantity_no,  # Include quantity_no
+                                used_inst=si.used_inst,
+                                quantity_no=si.quantity_no,
                                 created_at=si.created_at,
                                 operator=operator_info
                             )
@@ -406,7 +388,7 @@ class FTPCRUD:
     def update_ftp_status(order_id: int, ipid: str) -> Optional[FTPResponse]:
         """
         Update or create FTP status for a given order_id and ipid.
-        Checks all stage inspections related to the ipid and updates status accordingly.
+        Sets is_completed to True for all FTP entries.
         """
         try:
             # Get the master_boc entry for this ipid
@@ -414,17 +396,8 @@ class FTPCRUD:
             if not master_boc:
                 raise ValueError(f"No master_boc found for order_id {order_id} and ipid {ipid}")
 
-            # Get all stage inspections for this order and operation number
-            stage_inspections = select(si for si in StageInspection
-                                    if si.order_id == order_id
-                                    and si.op_no == master_boc.op_no)[:]
-
-            # If there are no stage inspections, consider it not completed
-            if not stage_inspections:
-                is_completed = False
-            else:
-                # Check if all stage inspections are marked as done
-                is_completed = all(si.is_done for si in stage_inspections)
+            # Explicitly set is_completed to True when updating FTP status
+            is_completed = True
 
             # Get or create FTP entry
             ftp = FTP.get(order_id=order_id, ipid=ipid)

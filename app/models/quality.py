@@ -2,7 +2,7 @@ from pony.orm import *
 from ..database.connection import db  # Import the shared db instance
 from datetime import datetime
 from .master_order import Order
-from .document_management_v2 import DocumentV2
+from .document_management_v2 import DocumentTypeV2
 
 class MasterBoc(db.Entity):
     """
@@ -12,7 +12,7 @@ class MasterBoc(db.Entity):
 
     id = PrimaryKey(int, auto=True)
     order = Required(Order, column='order_id', reverse='master_bocs')  # Added reverse relationship
-    document = Required(DocumentV2, column='document_id', reverse='master_bocs')  # Added reverse relationship
+    document = Required(DocumentTypeV2, column='document_id', reverse='master_bocs')  # Changed to reference DocumentTypeV2
     nominal = Required(str)
     uppertol = Required(float)
     lowertol = Required(float)
@@ -42,10 +42,10 @@ class StageInspection(db.Entity):
     measured_3 = Required(float)
     measured_mean = Required(float)
     measured_instrument = Required(str)
+    used_inst = Required(str)  # Added new column
     op_no = Required(int)
     order_id = Required(int)
     quantity_no = Optional(int)  # Change from Required to Optional
-    is_done = Required(bool, default=False)  # Added is_done field
     created_at = Required(datetime, default=lambda: datetime.now())
 
 class Connectivity(db.Entity):

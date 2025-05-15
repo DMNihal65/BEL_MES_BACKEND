@@ -28,7 +28,29 @@ async def create_master_boc(
     data: MasterBocCreate,
     current_user = Depends(get_current_user)
 ) -> Any:
-    """Create a new Master BOC entry"""
+    """
+    Create a new Master BOC entry
+    
+    The bbox field must contain exactly 8 values representing the coordinates:
+    [x1, y1, x2, y2, x3, y3, x4, y4]
+    
+    Example request body:
+    ```json
+    {
+        "order_id": 1,
+        "document_id": 1,
+        "nominal": "10.5",
+        "uppertol": 0.1,
+        "lowertol": -0.1,
+        "zone": "A",
+        "dimension_type": "diameter",
+        "measured_instrument": "caliper",
+        "op_no": 10,
+        "bbox": [100.0, 200.0, 300.0, 200.0, 300.0, 400.0, 100.0, 400.0],
+        "ipid": "IP123"
+    }
+    ```
+    """
     try:
         print(f"Received bbox data: {data.bbox}")  # Debug log
         master_boc = MasterBocCRUD.create_master_boc(data)
@@ -115,8 +137,12 @@ async def create_stage_inspection(
     Create a new Stage Inspection entry
 
     This endpoint enforces the following validation rules:
-    - If creating a quantity > 1, the first quantity must exist and be marked as done
-    - Each subsequent quantity can only be added if the previous one is marked as done
+    - For quantity 1: Creates FTP status entries for all related IPIDs (initially set to not completed)
+    - For quantity > 1: Verifies that quantity 1 exists
+    - For quantity > 1: Verifies that FTP approval is completed for quantity 1
+    
+    You will receive an error if you attempt to create quantities > 1 before 
+    FTP approval for quantity 1 is completed.
     """
     try:
         stage_inspection = StageInspectionCRUD.create_stage_inspection(data)
@@ -136,21 +162,20 @@ async def create_stage_inspection(
 @router.patch(
     "/stage-inspection/{inspection_id}/status",
     response_model=StageInspectionResponse,
-    summary="Update the completion status of a stage inspection"
+    summary="Update the FTP status for a stage inspection"
 )
 async def update_inspection_status(
         inspection_id: int = Path(..., gt=0, description="Stage inspection ID"),
-        is_done: bool = Query(..., description="New status (true = done, false = not done)"),
+        is_completed: bool = Query(..., description="Completion status for FTP"),
         current_user=Depends(get_current_user)
 ) -> Any:
     """
-    Update the completion status (is_done) of a stage inspection.
+    Update the FTP completion status for a stage inspection.
 
-    This allows marking an inspection as completed, which is required before
-    subsequent quantities for the same order and operation can be added.
+    This endpoint updates FTP status for related IPIDs based on the inspection.
     """
     try:
-        updated_inspection = StageInspectionCRUD.update_inspection_status(inspection_id, is_done)
+        updated_inspection = StageInspectionCRUD.update_inspection_status(inspection_id, is_completed)
         return updated_inspection
     except ValueError as e:
         raise HTTPException(
@@ -228,8 +253,8 @@ async def get_stage_inspection_grouped(
         for op in operations:
             # Get stage inspections for this operation
             stage_inspections = select(si for si in StageInspection
-                                       if si.order_id == order_id and
-                                       si.op_no == op.operation_number)[:]
+                                    if si.order_id == order_id and
+                                    si.op_no == op.operation_number)[:]
 
             if stage_inspections:  # Only add to inspection_data if there are inspections
                 inspection_list = []
@@ -256,6 +281,7 @@ async def get_stage_inspection_grouped(
                                 measured_3=si.measured_3,
                                 measured_mean=si.measured_mean,
                                 measured_instrument=si.measured_instrument,
+                                used_inst=si.used_inst,
                                 is_done=si.is_done,
                                 quantity_no=si.quantity_no,
                                 created_at=si.created_at,
@@ -271,13 +297,16 @@ async def get_stage_inspection_grouped(
                         )
                     )
 
-        return DetailedQualityInspectionResponse(
+        # Create and return the response
+        response = DetailedQualityInspectionResponse(
             order_id=order.id,
             production_order=order.production_order,
             part_number=order.part_number,
-            operations=operation_numbers,  # All operation numbers
-            inspection_data=inspection_groups  # Only operations with inspections
+            operations=operation_numbers,
+            inspection_data=inspection_groups
         )
+
+        return response
 
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -460,7 +489,9 @@ async def update_ftp_status(
 ) -> Any:
     """
     Update the FTP status for a given order_id and IPID.
-    The status is determined by checking if all stage inspections for the IPID are marked as done.
+    
+    This endpoint explicitly sets the FTP status to completed (is_completed=true).
+    FTP status must be completed before adding quantities > 1.
     """
     try:
         ftp_status = FTPCRUD.update_ftp_status(order_id, ipid)

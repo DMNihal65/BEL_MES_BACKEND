@@ -32,6 +32,7 @@ class DocumentTypes(str, Enum):
     OARC = "OARC"
     ENGINEERING_DRAWING = "ENGINEERING_DRAWING"
     IPID = "IPID"
+    MACHINE_DOCUMENT = "MACHINE_DOCUMENT"
 
 
 # Move these static routes before any routes with path parameters
@@ -1727,8 +1728,8 @@ async def upload_ipid_document(
 
 @router.get("/ipid/{part_number}", response_model=List[DocumentResponse])
 async def get_ipid_documents(
-    part_number: str,
-    current_user: User = Depends(get_current_user)
+        part_number: str,
+        current_user: User = Depends(get_current_user)
 ):
     """Get all IPID documents for a specific part number"""
     try:
@@ -1739,18 +1740,18 @@ async def get_ipid_documents(
                 raise HTTPException(status_code=404, detail="IPID document type not found")
 
             # Query documents using part_number_id.production_order instead of part_number
-            documents = select(d for d in Document 
-                            if d.part_number_id.production_order == part_number 
-                            and d.doc_type == doc_type
-                            and d.is_active == True)[:]
-            
+            documents = select(d for d in Document
+                               if d.part_number_id.production_order == part_number
+                               and d.doc_type == doc_type
+                               and d.is_active == True)[:]
+
             # Format response according to DocumentResponse model
             response = []
             for doc in documents:
                 latest_version = max(doc.versions, key=lambda v: v.created_at) if doc.versions else None
                 if not latest_version:
                     continue
-                
+
                 doc_response = {
                     "id": doc.id,
                     "name": doc.document_name,
@@ -1776,7 +1777,7 @@ async def get_ipid_documents(
                     }
                 }
                 response.append(doc_response)
-            
+
             return response
 
     except Exception as e:
@@ -1997,7 +1998,6 @@ def list_available_ipid_documents(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-
 @router.get("/documents/download-latest_new/{part_number}/{doc_type}")
 async def download_latest_document_new_endpoint(
         part_number: str,
@@ -2023,7 +2023,7 @@ async def download_latest_document_new_endpoint(
                         status_code=400,
                         detail="Operation number is required for IPID documents"
                     )
-                
+
                 # Get all documents first
                 documents = list(DocumentV2.select(
                     lambda d: d.part_number == part_number and
@@ -2054,7 +2054,7 @@ async def download_latest_document_new_endpoint(
 
             if not document or not document.latest_version:
                 error_msg = (f"No {doc_type.value} document found for part number {part_number}"
-                           f"{f' and operation {operation_number}' if doc_type == DocumentTypes.IPID else ''}")
+                             f"{f' and operation {operation_number}' if doc_type == DocumentTypes.IPID else ''}")
                 raise HTTPException(status_code=404, detail=error_msg)
 
             # Log access
@@ -2069,7 +2069,7 @@ async def download_latest_document_new_endpoint(
 
             try:
                 file_data = minio.download_file(document.latest_version.minio_path)
-                
+
                 # Generate filename based on document type
                 if doc_type == DocumentTypes.IPID:
                     filename = f"{part_number}_OP{operation_number}_{doc_type.value}_{document.latest_version.version_number}.{document.latest_version.minio_path.split('.')[-1]}"
@@ -2279,9 +2279,9 @@ async def upload_ballooned_drawing(
 
 @router.get("/ballooned-drawing/download/{production_order}/{operation_number}")
 def download_ballooned_drawing_by_po_and_op(
-    production_order: str,
-    operation_number: str,
-    current_user: User = Depends(get_current_user)
+        production_order: str,
+        operation_number: str,
+        current_user: User = Depends(get_current_user)
 ):
     """Download the latest ballooned drawing for a production order and operation"""
     try:
@@ -2315,11 +2315,11 @@ def download_ballooned_drawing_by_po_and_op(
 
             # Find the most recent ballooned drawing for this production order and operation
             documents = select(d for d in DocumentV2
-                            if d.is_active and
-                            d.doc_type == doc_type and
-                            d.production_order == order and
-                            d.folder == op_folder and
-                            d.latest_version).order_by(lambda d: desc(d.created_at))[:]
+                               if d.is_active and
+                               d.doc_type == doc_type and
+                               d.production_order == order and
+                               d.folder == op_folder and
+                               d.latest_version).order_by(lambda d: desc(d.created_at))[:]
 
             if not documents:
                 raise HTTPException(
@@ -2380,6 +2380,586 @@ def download_ballooned_drawing_by_po_and_op(
         error_details = traceback.format_exc()
         print(f"Error downloading ballooned drawing: {error_details}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# Machine document management endpoints
+@router.post("/machine-documents/upload/", response_model=DocumentResponse)
+async def upload_machine_document(
+        file: UploadFile = File(...),
+        machine_id: int = Form(...),
+        document_name: str = Form(...),
+        document_type: str = Form(...),  # Type of machine document: "MANUAL", "MAINTENANCE", "CALIBRATION", etc.
+        description: Optional[str] = Form(None),
+        version_number: str = Form(default="1.0"),
+        metadata: Optional[str] = Form("{}"),
+        current_user: User = Depends(get_current_user)
+):
+    """Upload document for a specific machine"""
+    try:
+        with db_session:
+            user = User.get(id=current_user.id)
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+
+            # Get or create machine documents type
+            doc_type_obj = DocumentTypeV2.get(name=DocumentTypes.MACHINE_DOCUMENT.value)
+            if not doc_type_obj:
+                doc_type_obj = DocumentTypeV2(
+                    name=DocumentTypes.MACHINE_DOCUMENT.value,
+                    description="Machine Documents",
+                    allowed_extensions=[".pdf", ".doc", ".docx", ".xls", ".xlsx", ".jpg", ".jpeg", ".png"]
+                )
+                commit()
+
+            # Get or create root folder for machine documents
+            root_folder = FolderV2.get(name="MachineDocuments", parent_folder=None)
+            if not root_folder:
+                root_folder = FolderV2(
+                    name="MachineDocuments",
+                    path="MachineDocuments",
+                    created_by=user
+                )
+                commit()
+
+            # Get or create machine folder using machine_id
+            machine_folder_name = f"Machine_{machine_id}"
+            machine_folder = FolderV2.get(lambda f: f.name == machine_folder_name and f.parent_folder == root_folder)
+            if not machine_folder:
+                machine_folder = FolderV2(
+                    name=machine_folder_name,
+                    path=f"MachineDocuments/{machine_folder_name}",
+                    parent_folder=root_folder,
+                    created_by=user
+                )
+                commit()
+
+            # Get or create document type folder (e.g., MANUAL, MAINTENANCE)
+            doc_type_folder = FolderV2.get(lambda f: f.name == document_type and f.parent_folder == machine_folder)
+            if not doc_type_folder:
+                doc_type_folder = FolderV2(
+                    name=document_type,
+                    path=f"MachineDocuments/{machine_folder_name}/{document_type}",
+                    parent_folder=machine_folder,
+                    created_by=user
+                )
+                commit()
+
+            # Validate file extension
+            file_ext = file.filename.split('.')[-1].lower()
+            if f".{file_ext}" not in doc_type_obj.allowed_extensions:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"File type .{file_ext} not allowed for machine documents"
+                )
+
+            # Add machine info to metadata
+            try:
+                metadata_dict = json.loads(metadata)
+                metadata_dict.update({
+                    "machine_id": machine_id,
+                    "document_type": document_type,
+                })
+                metadata = json.dumps(metadata_dict)
+            except json.JSONDecodeError:
+                metadata = json.dumps({
+                    "machine_id": machine_id,
+                    "document_type": document_type,
+                })
+
+            # Create document
+            new_doc = DocumentV2(
+                name=document_name,
+                folder=doc_type_folder,
+                doc_type=doc_type_obj,
+                description=description,
+                created_by=user
+            )
+            commit()
+
+            # Handle file upload and version creation
+            file_content = await file.read()
+            checksum = hashlib.sha256(file_content).hexdigest()
+            minio_path = f"documents/machine/{machine_id}/{document_type}/{new_doc.id}/v{version_number}/{file.filename}"
+
+            try:
+                file.file.seek(0)
+                minio.upload_file(
+                    file=file.file,
+                    object_name=minio_path,
+                    content_type=file.content_type or "application/octet-stream"
+                )
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Failed to upload file: {str(e)}")
+
+            # Create version
+            version = DocumentVersionV2(
+                document=new_doc,
+                version_number=version_number,
+                minio_path=minio_path,
+                file_size=len(file_content),
+                checksum=checksum,
+                created_by=user,
+                metadata=json.loads(metadata)
+            )
+            new_doc.latest_version = version
+
+            # Create access log
+            DocumentAccessLogV2(
+                document=new_doc,
+                version=version,
+                user=user,
+                action_type=DocumentAction.UPDATE,
+                ip_address="0.0.0.0"
+            )
+
+            commit()
+
+            return {
+                "id": new_doc.id,
+                "name": new_doc.name,
+                "folder_id": new_doc.folder.id,
+                "doc_type_id": new_doc.doc_type.id,
+                "description": new_doc.description,
+                "part_number": None,
+                "production_order_id": None,
+                "created_at": new_doc.created_at,
+                "created_by_id": new_doc.created_by.id,
+                "is_active": new_doc.is_active,
+                "latest_version": {
+                    "id": version.id,
+                    "document_id": new_doc.id,
+                    "version_number": version.version_number,
+                    "minio_path": version.minio_path,
+                    "file_size": version.file_size,
+                    "checksum": version.checksum,
+                    "created_at": version.created_at,
+                    "created_by_id": version.created_by.id,
+                    "is_active": version.is_active,
+                    "metadata": version.metadata
+                }
+            }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An error occurred: {str(e)}"
+        )
+
+
+@router.get("/machine-documents/{machine_id}", response_model=List[DocumentResponse])
+async def get_machine_documents(
+        machine_id: int,
+        document_type: Optional[str] = Query(None, description="Filter by document type (MANUAL, MAINTENANCE, etc.)"),
+        current_user: User = Depends(get_current_user)
+):
+    """Get all documents for a specific machine"""
+    try:
+        with db_session:
+            # Get the machine folder
+            root_folder = FolderV2.get(name="MachineDocuments", parent_folder=None)
+            if not root_folder:
+                return []
+
+            machine_folder_name = f"Machine_{machine_id}"
+            machine_folder = FolderV2.get(lambda f: f.name == machine_folder_name and f.parent_folder == root_folder)
+            if not machine_folder:
+                return []
+
+            # Collect all relevant folder IDs
+            folder_ids = [machine_folder.id]
+
+            # If no document_type is specified, include all subfolders
+            if document_type is None:
+                for child in machine_folder.child_folders:
+                    folder_ids.append(child.id)
+            else:
+                # Otherwise, just include the specific document type folder
+                doc_type_folder = FolderV2.get(lambda f: f.name == document_type and f.parent_folder == machine_folder)
+                if doc_type_folder:
+                    folder_ids.append(doc_type_folder.id)
+
+            # Query documents
+            documents = list(DocumentV2.select(
+                lambda d: d.folder.id in folder_ids and d.is_active
+            ).order_by(lambda d: desc(d.created_at)))
+
+            # Format response
+            return [
+                {
+                    "id": doc.id,
+                    "name": doc.name,
+                    "folder_id": doc.folder.id,
+                    "doc_type_id": doc.doc_type.id,
+                    "description": doc.description,
+                    "part_number": doc.part_number,
+                    "production_order_id": doc.production_order.id if doc.production_order else None,
+                    "created_at": doc.created_at,
+                    "created_by_id": doc.created_by.id,
+                    "is_active": doc.is_active,
+                    "latest_version": {
+                        "id": doc.latest_version.id,
+                        "document_id": doc.id,
+                        "version_number": doc.latest_version.version_number,
+                        "minio_path": doc.latest_version.minio_path,
+                        "file_size": doc.latest_version.file_size,
+                        "checksum": doc.latest_version.checksum,
+                        "created_at": doc.latest_version.created_at,
+                        "created_by_id": doc.latest_version.created_by.id,
+                        "is_active": doc.latest_version.is_active,
+                        "metadata": doc.latest_version.metadata
+                    } if doc.latest_version else None
+                }
+                for doc in documents
+            ]
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An error occurred: {str(e)}"
+        )
+
+
+@router.get("/machine-documents/download/{document_id}")
+async def download_machine_document(
+        document_id: int,
+        version_id: int | None = Query(None, description="Specific version to download, omit for latest"),
+        current_user: User = Depends(get_current_user)
+):
+    """Download a specific machine document, either the latest version or a specific version"""
+    try:
+        with db_session:
+            # Get the document
+            document = DocumentV2.get(id=document_id)
+            if not document or not document.is_active:
+                raise HTTPException(status_code=404, detail="Document not found")
+
+            # Check if this is a machine document (should be in the MachineDocuments folder hierarchy)
+            root_folder_path_part = "MachineDocuments/"
+            if not document.folder.path.startswith(root_folder_path_part):
+                raise HTTPException(status_code=400, detail="Not a machine document")
+
+            # Determine which version to download
+            version = None
+            if version_id:
+                version = DocumentVersionV2.get(id=version_id, document=document)
+                if not version or not version.is_active:
+                    raise HTTPException(status_code=404, detail="Document version not found")
+            else:
+                version = document.latest_version
+                if not version:
+                    raise HTTPException(status_code=404, detail="No available version for this document")
+
+            # Log access
+            DocumentAccessLogV2(
+                document=document,
+                version=version,
+                user=User.get(id=current_user.id),
+                action_type=DocumentAction.DOWNLOAD,
+                ip_address="0.0.0.0"
+            )
+            commit()
+
+            try:
+                # Get machine_id from the folder path (MachineDocuments/Machine_X/...)
+                machine_id = document.folder.path.split('/')[1].replace('Machine_', '')
+                doc_type = document.folder.name  # e.g. MANUAL, MAINTENANCE
+
+                file_data = minio.download_file(version.minio_path)
+                filename = f"Machine_{machine_id}_{doc_type}_{document.name}_{version.version_number}.{version.minio_path.split('.')[-1]}"
+
+                return StreamingResponse(
+                    file_data,
+                    media_type="application/octet-stream",
+                    headers={
+                        "Content-Disposition": f'attachment; filename="{filename}"'
+                    }
+                )
+            except Exception as e:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to download file: {str(e)}"
+                )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An error occurred: {str(e)}"
+        )
+
+
+@router.get("/machine-documents/{document_id}/versions", response_model=List[DocumentVersionResponse])
+async def list_machine_document_versions(
+        document_id: int,
+        current_user: User = Depends(get_current_user)
+):
+    """Get all versions of a specific machine document"""
+    try:
+        with db_session:
+            # Get the document
+            document = DocumentV2.get(id=document_id)
+            if not document or not document.is_active:
+                raise HTTPException(status_code=404, detail="Document not found")
+
+            # Check if this is a machine document (should be in the MachineDocuments folder hierarchy)
+            root_folder_path_part = "MachineDocuments/"
+            if not document.folder.path.startswith(root_folder_path_part):
+                raise HTTPException(status_code=400, detail="Not a machine document")
+
+            # Get all versions
+            versions = list(DocumentVersionV2.select(
+                lambda v: v.document.id == document_id and v.is_active
+            ).order_by(lambda v: desc(v.created_at)))
+
+            # Format response
+            return [
+                {
+                    "id": version.id,
+                    "document_id": document.id,
+                    "version_number": version.version_number,
+                    "minio_path": version.minio_path,
+                    "file_size": version.file_size,
+                    "checksum": version.checksum,
+                    "created_at": version.created_at,
+                    "created_by_id": version.created_by.id,
+                    "is_active": version.is_active,
+                    "metadata": version.metadata
+                }
+                for version in versions
+            ]
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An error occurred: {str(e)}"
+        )
+
+
+@router.post("/machine-documents/{document_id}/versions", response_model=DocumentVersionResponse)
+async def create_machine_document_version(
+        document_id: int,
+        file: UploadFile = File(...),
+        version_number: str = Form(...),
+        metadata: str = Form(default="{}"),
+        current_user: User = Depends(get_current_user)
+):
+    """Add a new version to an existing machine document"""
+    try:
+        with db_session:
+            # Get the document and user
+            document = DocumentV2.get(id=document_id)
+            user = User.get(id=current_user.id)
+
+            if not document or not document.is_active:
+                raise HTTPException(status_code=404, detail="Document not found")
+
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+
+            # Check if this is a machine document (should be in the MachineDocuments folder hierarchy)
+            root_folder_path_part = "MachineDocuments/"
+            if not document.folder.path.startswith(root_folder_path_part):
+                raise HTTPException(status_code=400, detail="Not a machine document")
+
+            # Extract machine_id and document_type from folder path
+            path_parts = document.folder.path.split('/')
+            machine_id = path_parts[1].replace('Machine_', '')
+            document_type = path_parts[2] if len(path_parts) > 2 else "GENERAL"
+
+            # Add machine info to metadata
+            try:
+                metadata_dict = json.loads(metadata)
+                metadata_dict.update({
+                    "machine_id": machine_id,
+                    "document_type": document_type,
+                })
+                metadata = json.dumps(metadata_dict)
+            except json.JSONDecodeError:
+                metadata = json.dumps({
+                    "machine_id": machine_id,
+                    "document_type": document_type,
+                })
+
+            # Validate file extension
+            file_ext = file.filename.split('.')[-1].lower()
+            if f".{file_ext}" not in document.doc_type.allowed_extensions:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"File type .{file_ext} not allowed for this document type"
+                )
+
+            # Handle file upload and version creation
+            file_content = await file.read()
+            checksum = hashlib.sha256(file_content).hexdigest()
+            minio_path = f"documents/machine/{machine_id}/{document_type}/{document_id}/v{version_number}/{file.filename}"
+
+            try:
+                file.file.seek(0)
+                minio.upload_file(
+                    file=file.file,
+                    object_name=minio_path,
+                    content_type=file.content_type or "application/octet-stream"
+                )
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Failed to upload file: {str(e)}")
+
+            # Create version
+            version = DocumentVersionV2(
+                document=document,
+                version_number=version_number,
+                minio_path=minio_path,
+                file_size=len(file_content),
+                checksum=checksum,
+                created_by=user,
+                metadata=json.loads(metadata)
+            )
+
+            # Update document's latest version
+            document.latest_version = version
+
+            # Create access log
+            DocumentAccessLogV2(
+                document=document,
+                version=version,
+                user=user,
+                action_type=DocumentAction.UPDATE,
+                ip_address="0.0.0.0"
+            )
+
+            commit()
+
+            return {
+                "id": version.id,
+                "document_id": document.id,
+                "version_number": version.version_number,
+                "minio_path": version.minio_path,
+                "file_size": version.file_size,
+                "checksum": version.checksum,
+                "created_at": version.created_at,
+                "created_by_id": version.created_by.id,
+                "is_active": version.is_active,
+                "metadata": version.metadata
+            }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An error occurred: {str(e)}"
+        )
+
+
+class MachineDocumentTypeResponse(BaseModel):
+    name: str
+    description: str
+    count: int
+
+@router.get("/machine-documents/document-types/", response_model=List[MachineDocumentTypeResponse])
+async def list_machine_document_types(
+        machine_id: Optional[int] = Query(None, description="Filter by machine ID"),
+        current_user: User = Depends(get_current_user)
+):
+    """Get all available document types for machine documents, with counts"""
+    try:
+        with db_session:
+            # Get the machine folders
+            root_folder = FolderV2.get(name="MachineDocuments", parent_folder=None)
+            if not root_folder:
+                return []
+
+            if machine_id:
+                # For a specific machine, get its folder
+                machine_folder_name = f"Machine_{machine_id}"
+                machine_folder = FolderV2.get(lambda f: f.name == machine_folder_name and f.parent_folder == root_folder)
+                if not machine_folder:
+                    return []
+
+                # Get document types as subfolder names
+                doc_types = []
+                for subfolder in machine_folder.child_folders:
+                    if subfolder.is_active:
+                        # Count documents in this folder
+                        doc_count = select(d for d in DocumentV2 if d.folder.id == subfolder.id and d.is_active).count()
+                        doc_types.append({
+                            "name": subfolder.name,
+                            "description": f"Machine {machine_id} {subfolder.name} Documents",
+                            "count": doc_count
+                        })
+                return doc_types
+            else:
+                # For all machines, aggregate document types
+                doc_types = {}
+
+                # Get all machine folders
+                machine_folders = list(FolderV2.select(lambda f: f.parent_folder == root_folder and f.is_active))
+
+                for machine_folder in machine_folders:
+                    for doc_type_folder in machine_folder.child_folders:
+                        if doc_type_folder.is_active:
+                            doc_type = doc_type_folder.name
+                            if doc_type not in doc_types:
+                                doc_types[doc_type] = {
+                                    "name": doc_type,
+                                    "description": f"{doc_type} Documents",
+                                    "count": 0
+                                }
+
+                            # Count documents in this folder
+                            doc_count = select(d for d in DocumentV2 if d.folder.id == doc_type_folder.id and d.is_active).count()
+                            doc_types[doc_type]["count"] += doc_count
+
+                return list(doc_types.values())
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An error occurred: {str(e)}"
+        )
+
+
+class MachineWithDocumentsResponse(BaseModel):
+    machine_id: int
+    document_count: int
+    document_types: List[str]
+
+@router.get("/machine-documents/machines/", response_model=List[MachineWithDocumentsResponse])
+async def list_machines_with_documents(
+        current_user: User = Depends(get_current_user)
+):
+    """Get all machines that have documents in the system"""
+    try:
+        with db_session:
+            # Get the machine folders
+            root_folder = FolderV2.get(name="MachineDocuments", parent_folder=None)
+            if not root_folder:
+                return []
+
+            machines = []
+            # Get all machine folders
+            machine_folders = list(FolderV2.select(lambda f: f.parent_folder == root_folder and f.is_active))
+
+            for machine_folder in machine_folders:
+                machine_id = int(machine_folder.name.replace('Machine_', ''))
+
+                # Get all document type folders for this machine
+                doc_type_folders = list(FolderV2.select(lambda f: f.parent_folder == machine_folder and f.is_active))
+                doc_types = [folder.name for folder in doc_type_folders]
+
+                # Count total documents for this machine
+                folder_ids = [folder.id for folder in doc_type_folders]
+                if folder_ids:
+                    doc_count = select(d for d in DocumentV2 if d.folder.id in folder_ids and d.is_active).count()
+                else:
+                    doc_count = 0
+
+                machines.append({
+                    "machine_id": machine_id,
+                    "document_count": doc_count,
+                    "document_types": doc_types
+                })
+
+            return machines
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An error occurred: {str(e)}"
+        )
 
 
 @router.post("/report/upload/", response_model=DocumentResponse)
@@ -2755,6 +3335,7 @@ async def get_report_structure(
         print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.delete("/report/structure/{item_type}/{item_id}", status_code=200)
 async def delete_report_item(
         item_type: str,
@@ -2831,3 +3412,171 @@ async def delete_report_item(
         # Log the error for debugging
         print(f"Error in delete_report_item: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/report/download-latest/{report_type}/{part_number}")
+async def download_latest_report(
+        report_type: str = Path(..., description="Report subfolder type (e.g., CMM, CAL, etc.)"),
+        part_number: str = Path(..., description="Part number"),
+        current_user: User = Depends(get_current_user)
+):
+    """
+    Download the latest report document for a given report subfolder type and part number.
+
+    Parameters:
+    - report_type: Type of report subfolder (e.g., CMM, CAL, or any other subfolder under REPORT)
+    - part_number: Part number
+
+    Returns:
+    - File stream response with the latest document
+    """
+    try:
+        with db_session:
+            # Get root folder
+            root_folder = FolderV2.get(name="Document Types", parent_folder=None)
+            if not root_folder:
+                raise HTTPException(status_code=404, detail="Document Types folder not found")
+
+            # Get report folder
+            report_folder = FolderV2.get(lambda f: f.name == "REPORT" and f.parent_folder == root_folder)
+            if not report_folder:
+                raise HTTPException(status_code=404, detail="REPORT folder not found")
+
+            # Get report type folder
+            report_type_folder = FolderV2.get(lambda f: f.name == report_type and f.parent_folder == report_folder)
+            if not report_type_folder:
+                raise HTTPException(status_code=404, detail=f"Report type folder not found: {report_type}")
+
+            # Get part number folder
+            part_folder = FolderV2.get(lambda f: f.name == part_number and f.parent_folder == report_type_folder)
+            if not part_folder:
+                raise HTTPException(status_code=404, detail=f"Part number folder not found: {part_number}")
+
+            # Find all documents in the part number folder
+            documents = select(d for d in DocumentV2
+                               if d.folder == part_folder
+                               and d.is_active).order_by(lambda d: desc(d.created_at))[:]
+
+            if not documents:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"No documents found for part number {part_number} in {report_type}"
+                )
+
+            # Get the most recent document
+            latest_document = documents[0]
+
+            # Get the latest version of the most recent document
+            latest_version = latest_document.versions.select().order_by(lambda v: desc(v.created_at)).first()
+            if not latest_version:
+                raise HTTPException(
+                    status_code=404,
+                    detail="No versions found for the latest document"
+                )
+
+            # Get the file from MinioService
+            minio_service = MinioService()
+            file_stream = minio_service.get_file(latest_version.minio_path)
+
+            # Get the file extension from the minio path
+            file_extension = os.path.splitext(latest_version.minio_path)[1]
+            if not file_extension:
+                file_extension = '.pdf'  # Default to .pdf if no extension found
+
+            # Create a response with the file
+            content_type = "application/pdf" if file_extension.lower() == '.pdf' else "application/octet-stream"
+
+            return StreamingResponse(
+                file_stream,
+                media_type=content_type,
+                headers={
+                    "Content-Disposition": f'attachment; filename="{latest_document.name}{file_extension}"'
+                }
+            )
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error downloading latest document: {str(e)}"
+        )
+
+
+@router.get("/documents/download-version/{document_id}/{version_number}")
+async def download_document_by_version(
+        document_id: int = Path(..., description="Document ID"),
+        version_number: str = Path(..., description="Version number to download"),
+        current_user: User = Depends(get_current_user)
+):
+    """
+    Download a specific version of a document.
+
+    Parameters:
+    - document_id: ID of the document
+    - version_number: Specific version number to download
+
+    Returns:
+    - File stream response with the requested version
+    """
+    try:
+        with db_session:
+            # Get the document
+            document = DocumentV2.get(id=document_id)
+            if not document:
+                raise HTTPException(status_code=404, detail="Document not found")
+
+            # Get the specific version
+            version = select(v for v in DocumentVersionV2
+                             if v.document == document
+                             and v.version_number == version_number
+                             and v.is_active).first()
+
+            if not version:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Version {version_number} not found for document {document_id}"
+                )
+
+            # Log access
+            DocumentAccessLogV2(
+                document=document,
+                version=version,
+                user=User.get(id=current_user.id),
+                action_type=DocumentAction.DOWNLOAD,
+                ip_address="0.0.0.0"
+            )
+            commit()
+
+            try:
+                # Get file from MinIO
+                file_stream = minio.get_file(version.minio_path)
+
+                # Get file extension from minio path
+                file_extension = os.path.splitext(version.minio_path)[1]
+                if not file_extension:
+                    file_extension = '.pdf'  # Default to .pdf if no extension found
+
+                # Determine content type based on file extension
+                content_type = "application/pdf" if file_extension.lower() == '.pdf' else "application/octet-stream"
+
+                # Generate filename with version number
+                filename = f"{document.name}_v{version.version_number}{file_extension}"
+
+                return StreamingResponse(
+                    file_stream,
+                    media_type=content_type,
+                    headers={
+                        "Content-Disposition": f'attachment; filename="{filename}"',
+                        "Content-Length": str(version.file_size)
+                    }
+                )
+            except Exception as e:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Error retrieving file from storage: {str(e)}"
+                )
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error downloading document version: {str(e)}"
+        )
