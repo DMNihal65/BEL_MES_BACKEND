@@ -5,6 +5,7 @@ from . import Machine
 from .inventoryv1 import CalibrationSchedule
 from ..database.connection import db  # Import the shared db instance
 
+
 # Define the database entities in the logs schema
 class MachineStatusLog(db.Entity):
     _table_ = ("logs", "machine_status_logs")  # Set schema and table name
@@ -34,8 +35,6 @@ class MachineStatusLog(db.Entity):
         }
 
 
-
-
 class RawMaterialStatusLog(db.Entity):
     _table_ = ("logs", "raw_material_status_logs")  # Set schema and table name
     id = PrimaryKey(int, auto=True)
@@ -63,6 +62,7 @@ class RawMaterialStatusLog(db.Entity):
             "acknowledged_at": self.acknowledged_at
         }
 
+
 # PokaYoke Models
 
 class PokaYokeChecklist(db.Entity):
@@ -89,6 +89,7 @@ class PokaYokeChecklist(db.Entity):
             "items": [item.to_dict() for item in self.items]
         }
 
+
 class PokaYokeChecklistItem(db.Entity):
     """Individual checklist items within a checklist template"""
     _table_ = ("logs", "pokayoke_checklist_items")
@@ -110,6 +111,7 @@ class PokaYokeChecklistItem(db.Entity):
             "is_required": self.is_required,
             "expected_value": self.expected_value
         }
+
 
 class PokaYokeChecklistMachineAssignment(db.Entity):
     """Maps checklists to machines (many-to-many relationship)"""
@@ -133,6 +135,7 @@ class PokaYokeChecklistMachineAssignment(db.Entity):
             "assigned_by": self.assigned_by,
             "is_active": self.is_active
         }
+
 
 class PokaYokeCompletedLog(db.Entity):
     """Log of completed checklists by operators"""
@@ -193,6 +196,54 @@ class MachineCalibrationLog(db.Entity):
     calibration_due_date = Optional(date)
     machine_id = Optional(Machine)
 
+    def after_insert(self):
+        """
+        Hook that runs after a new calibration log is inserted.
+        Schedule an async task to send a notification.
+        """
+        print(f"after_insert triggered for MachineCalibrationLog with ID: {self.id}")
+
+        # Import here to avoid circular imports
+        import asyncio
+        from concurrent.futures import ThreadPoolExecutor
+
+        try:
+            # Create a function to call the notification sender
+            def send_notification():
+                from app.api.v1.endpoints.notification_service import send_calibration_notification
+
+                # Get the event loop or create a new one
+                try:
+                    loop = asyncio.get_event_loop()
+                except RuntimeError:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+
+                # We need to get the entity within db_session in this thread
+                from pony.orm import db_session
+                with db_session:
+                    # Get the entity by ID to ensure it's properly loaded
+                    log_entry = MachineCalibrationLog.get(id=self.id)
+                    if log_entry:
+                        # Run the async notification in the loop
+                        asyncio.run_coroutine_threadsafe(
+                            send_calibration_notification(log_entry),
+                            loop
+                        )
+                        print(f"Notification for log ID {self.id} scheduled successfully")
+                    else:
+                        print(f"Could not find log with ID {self.id} for notification")
+
+            # Run the notification sender in a separate thread
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                executor.submit(send_notification)
+
+            print(f"Notification task submitted for calibration log ID: {self.id}")
+        except Exception as e:
+            print(f"Error scheduling notification for log ID {self.id}: {str(e)}")
+            import traceback
+            traceback.print_exc()
+
 
 class InstrumentCalibrationLog(db.Entity):
     _table_ = ("logs", "instrument_calibration_logs")
@@ -200,4 +251,52 @@ class InstrumentCalibrationLog(db.Entity):
     timestamp = Required(datetime, default=datetime.now)
     calibration_due_date = Optional(date)
     instrument_id = Optional(CalibrationSchedule)
+
+    def after_insert(self):
+        """
+        Hook that runs after a new instrument calibration log is inserted.
+        Schedule an async task to send a notification.
+        """
+        print(f"after_insert triggered for InstrumentCalibrationLog with ID: {self.id}")
+
+        # Import here to avoid circular imports
+        import asyncio
+        from concurrent.futures import ThreadPoolExecutor
+
+        try:
+            # Create a function to call the notification sender
+            def send_notification():
+                from app.api.v1.endpoints.notification_service import send_instrument_calibration_notification
+
+                # Get the event loop or create a new one
+                try:
+                    loop = asyncio.get_event_loop()
+                except RuntimeError:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+
+                # We need to get the entity within db_session in this thread
+                from pony.orm import db_session
+                with db_session:
+                    # Get the entity by ID to ensure it's properly loaded
+                    log_entry = InstrumentCalibrationLog.get(id=self.id)
+                    if log_entry:
+                        # Run the async notification in the loop
+                        asyncio.run_coroutine_threadsafe(
+                            send_instrument_calibration_notification(log_entry),
+                            loop
+                        )
+                        print(f"Instrument notification for log ID {self.id} scheduled successfully")
+                    else:
+                        print(f"Could not find instrument log with ID {self.id} for notification")
+
+            # Run the notification sender in a separate thread
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                executor.submit(send_notification)
+
+            print(f"Instrument notification task submitted for calibration log ID: {self.id}")
+        except Exception as e:
+            print(f"Error scheduling instrument notification for log ID {self.id}: {str(e)}")
+            import traceback
+            traceback.print_exc()
 
