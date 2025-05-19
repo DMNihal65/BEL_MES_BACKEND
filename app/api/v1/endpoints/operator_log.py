@@ -82,7 +82,7 @@ def create_production_log(log_data: ProductionLogCreate):
 # Pydantic model for request body
 class MachineStatusInput(BaseModel):
     machine_id: int
-    operation_id: int
+    # operation_id: int
 
 @router.post("/machine-raw-live/")
 @db_session
@@ -111,7 +111,7 @@ def update_machine_status(data: MachineStatusInput):
 def update_machine_status(data: MachineStatusInput):
 
     # Check if machine exists in MachineRawLive
-    machine_operation_entry = MachineRawLive.get(machine_id=data.machine_id, actual_job = data.operation_id)
+    machine_operation_entry = MachineRawLive.get(machine_id=data.machine_id)
     if not machine_operation_entry:
         raise HTTPException(status_code=404, detail="Machine not found in MachineRawLive")
 

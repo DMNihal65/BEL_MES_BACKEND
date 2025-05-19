@@ -680,6 +680,14 @@ def get_machine_operations(
         # Check if there are any operations in progress
         global_has_inprogress = len(operations_response["inprogress"]) > 0
 
+        # Define part_numbers_in_progress before using it
+        part_numbers_in_progress = set()
+        if global_has_inprogress:
+            # Get the part numbers in progress
+            part_numbers_in_progress = set([op["part_number"] for op in operations_response["inprogress"]])
+            print(
+                f"Found {len(part_numbers_in_progress)} part numbers in progress: {', '.join(part_numbers_in_progress)}")
+
         # If no operations in progress, return all operations (don't filter)
         if not global_has_inprogress:
             response = {
@@ -706,9 +714,6 @@ def get_machine_operations(
             print(
                 f"Multiple part numbers found ({len(all_part_numbers)}), filtering to only show in-progress part numbers")
 
-            # Get the part numbers in progress
-            part_numbers_in_progress = set([op["part_number"] for op in operations_response["inprogress"]])
-
             # Filter all operations to only include those with part numbers that are in progress
             filtered_operations = {
                 "completed": [],
@@ -730,7 +735,7 @@ def get_machine_operations(
         filtered_orders = [
             order for order in order_details_cache.values()
             if order["part_number"] in part_numbers_in_progress
-        ]
+        ] if global_has_inprogress else list(order_details_cache.values())
 
         # Build complete response with only the in-progress part numbers
         response = {
@@ -754,7 +759,6 @@ def get_machine_operations(
             status_code=500,
             detail=f"Error retrieving machine operations at step {debug_step}: {str(e)}"
         )
-
 # Function to asynchronously send notifications
 async def send_machine_notification(machine_id, machine_make, status_name, description, created_by):
     """Send a machine notification with direct parameters instead of database entity"""

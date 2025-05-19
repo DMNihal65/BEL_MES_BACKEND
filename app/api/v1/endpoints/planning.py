@@ -1128,6 +1128,13 @@ def delete_order(order_id: int):
     raw_material_ref = order.raw_material
     project_ref = order.project
 
+    # Find and delete associated PartScheduleStatus if it exists
+    # Assuming Order has a production_order attribute or we can get it somehow
+    production_order = order.production_order if hasattr(order, 'production_order') else str(order_id)
+    part_schedule_status = PartScheduleStatus.get(production_order=production_order)
+    if part_schedule_status:
+        part_schedule_status.delete()
+
     # Delete all related child entities
     for op in order.operations:
         op.delete()
