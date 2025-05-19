@@ -59,6 +59,7 @@ class ProductionLogResponse(BaseModel):
     quantity_completed: int
     quantity_rejected: int
     part_number: Optional[str]      # Made optional
+    production_order: Optional[str]
     operation_description: Optional[str]  # Made optional
     machine_name: Optional[str]     # Made optional
     notes: Optional[str]

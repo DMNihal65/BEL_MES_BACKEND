@@ -621,11 +621,15 @@ async def dynamic_reschedule():
                     else:
                         machine_name = machine.make
 
-                # Group logs by part_number, operation, and machine_name
+                # Get production order from the order
+                production_order = order.production_order if order and hasattr(order, 'production_order') else None
+
+                # Group logs by part_number, operation, machine_name, and production_order
                 group_key = (
                     order.part_number if order else None,
                     operation.operation_description if operation else None,
-                    machine_name
+                    machine_name,
+                    production_order
                 )
 
                 if group_key not in combined_logs:
@@ -637,6 +641,7 @@ async def dynamic_reschedule():
                         'quantity_rejected': 0,
                         'operator_id': operator.id if operator else None,
                         'part_number': order.part_number if order else None,
+                        'production_order': production_order,
                         'operation_description': operation.operation_description if operation else None,
                         'machine_name': machine_name,
                         'notes': []
@@ -672,7 +677,7 @@ async def dynamic_reschedule():
                     # Join all notes with a separator
                     notes = " | ".join(group_data['notes']) if group_data['notes'] else ""
 
-                    # Create the log entry
+                    # Create the log entry with production_order included
                     log_entry = ProductionLogResponse(
                         id=log_id,
                         operator_id=group_data['operator_id'],
@@ -681,6 +686,7 @@ async def dynamic_reschedule():
                         quantity_completed=group_data['quantity_completed'],
                         quantity_rejected=group_data['quantity_rejected'],
                         part_number=group_data['part_number'],
+                        production_order=group_data['production_order'],  # Include production_order in response
                         operation_description=group_data['operation_description'],
                         machine_name=group_data['machine_name'],
                         notes=notes,
