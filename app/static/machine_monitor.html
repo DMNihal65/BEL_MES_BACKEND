@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Machine Status Monitor</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .status-table {
+            width: 100%;
+            border-collapse: collapse;
+            background-color: white;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        .status-table th, .status-table td {
+            padding: 12px 15px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        .status-table th {
+            background-color: #4CAF50;
+            color: white;
+            font-weight: bold;
+        }
+        .status-table tr:hover {
+            background-color: #f5f5f5;
+        }
+        .status-indicator {
+            padding: 5px 10px;
+            border-radius: 15px;
+            font-weight: bold;
+        }
+        .connection-status {
+            text-align: center;
+            margin-bottom: 20px;
+            padding: 10px;
+            border-radius: 5px;
+        }
+        .connected {
+            background-color: #dff0d8;
+            color: #3c763d;
+        }
+        .disconnected {
+            background-color: #f2dede;
+            color: #a94442;
+        }
+        .status-badge {
+            padding: 5px 10px;
+            border-radius: 4px;
+            font-weight: bold;
+            color: white;
+        }
+        .timestamp {
+            font-size: 0.9em;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Machine Status Monitor</h1>
+        <div id="connectionStatus" class="connection-status">Connecting...</div>
+        <table class="status-table">
+            <thead>
+                <tr>
+                    <th>Machine ID</th>
+                    <th>Machine Name</th>
+                    <th>Status</th>
+                    <th>Total Power (kW)</th>
+                    <th>Energy Consumed (kWh)</th>
+                    <th>Last Updated</th>
+                </tr>
+            </thead>
+            <tbody id="machineTableBody">
+                <!-- Machine status rows will be inserted here -->
+            </tbody>
+        </table>
+    </div>
+
+    <script>
+        let machineStates = {};
+        const connectionStatus = document.getElementById('connectionStatus');
+        const tableBody = document.getElementById('machineTableBody');
+
+        function getStatusColor(status) {
+            const colors = {
+                0: '#dc3545',  // Red for offline/error
+                1: '#28a745',  // Green for running
+                2: '#ffc107',  // Yellow for idle
+                3: '#17a2b8',  // Blue for setup
+                'OFFLINE': '#6c757d'  // Grey for offline
+            };
+            return colors[status] || '#6c757d';
+        }
+
+        function formatTimestamp(isoString) {
+            const date = new Date(isoString);
+            return date.toLocaleString();
+        }
+
+        function updateMachineRow(machine) {
+            const rowId = `machine-${machine.machine_id}`;
+            let row = document.getElementById(rowId);
+            
+            if (!row) {
+                row = document.createElement('tr');
+                row.id = rowId;
+                tableBody.appendChild(row);
+            }
+
+            const statusColor = getStatusColor(machine.status);
+            
+            row.innerHTML = `
+                <td>${machine.machine_id}</td>
+                <td>${machine.machine_name}</td>
+                <td><span class="status-badge" style="background-color: ${statusColor}">${machine.status}</span></td>
+                <td>${machine.total_power ? machine.total_power.toFixed(2) : 'N/A'}</td>
+                <td>${machine.energy_consumed ? machine.energy_consumed.toFixed(2) : 'N/A'}</td>
+                <td class="timestamp">${formatTimestamp(machine.timestamp)}</td>
+            `;
+
+            // Highlight the row briefly when updated
+            row.style.transition = 'background-color 1s';
+            row.style.backgroundColor = '#fff3cd';
+            setTimeout(() => {
+                row.style.backgroundColor = '';
+            }, 1000);
+        }
+
+        function updateUI(states) {
+            for (const machineId in states) {
+                if (machineId !== 'initialized') {
+                    updateMachineRow(states[machineId]);
+                }
+            }
+        }
+
+        // Connect to SSE endpoint
+        const serverUrl = 'http://172.18.7.93:9999';  // Updated to standard port
+        const eventSource = new EventSource(`${serverUrl}/api/v1/energy-monitoring/machine-status-stream`);
+
+        console.log('Connecting to:', `${serverUrl}/api/v1/energy-monitoring/machine-status-stream`);
+
+        let reconnectAttempts = 0;
+        const maxReconnectAttempts = 5;
+
+        eventSource.onopen = () => {
+            console.log('Connection established');
+            connectionStatus.textContent = 'Connected to server';
+            connectionStatus.className = 'connection-status connected';
+            reconnectAttempts = 0; // Reset reconnect attempts on successful connection
+        };
+
+        eventSource.onmessage = (event) => {
+            console.log('Received data:', event.data);
+            const updates = JSON.parse(event.data);
+            
+            // If this is the initial state, replace everything
+            if (Array.isArray(updates) && updates.length > 0 && !machineStates.initialized) {
+                updates.forEach(machine => {
+                    machineStates[machine.machine_id] = machine;
+                });
+                machineStates.initialized = true;
+            } 
+            // Otherwise, update only the changed machines
+            else {
+                updates.forEach(machine => {
+                    machineStates[machine.machine_id] = machine;
+                });
+            }
+            
+            updateUI(machineStates);
+        };
+
+        eventSource.onerror = (error) => {
+            console.error('SSE Error:', error);
+            reconnectAttempts++;
+            
+            if (reconnectAttempts <= maxReconnectAttempts) {
+                const waitTime = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000); // Exponential backoff, max 30 seconds
+                connectionStatus.textContent = `Connection failed. Retrying in ${waitTime/1000} seconds... (Attempt ${reconnectAttempts}/${maxReconnectAttempts})`;
+                connectionStatus.className = 'connection-status disconnected';
+                
+                // Close the current connection
+                eventSource.close();
+                
+                // Attempt to reconnect after the wait time
+                setTimeout(() => {
+                    window.location.reload();
+                }, waitTime);
+            } else {
+                connectionStatus.textContent = 'Connection failed. Please refresh the page manually to try again.';
+                connectionStatus.className = 'connection-status disconnected';
+                eventSource.close();
+            }
+        };
+    </script>
+</body>
+</html> 

@@ -144,40 +144,6 @@ def extract_oarc_details(pdf_content):
     if current_operation:
         data["Operations"].append(current_operation)
 
-    # Extract document verification details from long text when operation is verification
-    # for operation in data["Operations"]:
-    #     if "verification" in operation["Operation"].lower():
-    #         doc_details = {}
-    #         long_text = operation["Long Text"]
-    #
-    #         # Extract document details using regex patterns
-    #         doc_patterns = {
-    #             "OARC Rev": r"OARC Rev\.\s*:\s*([^\n]+)",
-    #             "Part Rev": r"Part Rev\.\s*:\s*([^\n]+)",
-    #             "Drawing No": r"Drawing No\.\s*:\s*([^R]+)Rev\.\s*:\s*([^\n]+)",
-    #             "Cad No": r"Cad No\.\s*:\s*([^R]+)Rev\.\s*:\s*([^\n]+)",
-    #             "Stage Verification Doc": r"Stage Verification Document No\.\s*:\s*([^R]+)Rev\.\s*:\s*([^\n]+)",
-    #             "Final Verification Doc": r"Final Verification Document No\.\s*:\s*([^R]+)Rev\.\s*:\s*([^\n]+)",
-    #             "Raw Material Index Doc": r"Raw Material Index\s+Doc No\.\s*:\s*([\w\-]+)\s+Rev\.\s*:\s*(\d+)",
-    #             "Plating Inspection Doc": r"Plating inspection Doc No\.\s*:([\w\-]+)\s+Rev\.\s*:\s*(\d+)",
-    #             "MPP Doc": r"MPP Doc No\.\s*:\s*([^R]+)Rev\.\s*:\s*([^\n]+)"
-    #         }
-    #
-    #         for key, pattern in doc_patterns.items():
-    #             match = re.search(pattern, long_text)
-    #             if match:
-    #                 if len(match.groups()) == 2:
-    #                     doc_details[key] = {
-    #                         "Number": match.group(1).strip(),
-    #                         "Revision": match.group(2).strip()
-    #                     }
-    #                 else:
-    #                     doc_details[key] = match.group(1).strip()
-    #
-    #         data["Document Verification"] = doc_details
-    #         break
-
-    # Extract raw materials
     raw_materials_started = False
     raw_material_pattern = r'(\d{4})\s+(\w+)\s+([\w\s\-\.]+)\s+([\d\.]+)\s+(\w+)\s+([\d\.]+)'
 
@@ -208,62 +174,6 @@ def extract_oarc_details(pdf_content):
             raw_materials_started = False
 
     return data
-
-
-# @router.post("/upload-pdf")
-# async def upload_pdf(file: UploadFile = File(...)):
-#     try:
-#         pdf_content = await file.read()
-#         data = extract_oarc_details(io.BytesIO(pdf_content))
-#
-#         with db_session:
-#             master_order = save_to_database(data)
-#
-#             # Prepare detailed response
-#             response_data = {
-#                 "message": "PDF uploaded and data saved successfully",
-#                 "order_details": {
-#                     "id": master_order.id,
-#                     "production_order": master_order.production_order,
-#                     "sale_order": master_order.sale_order,
-#                     "wbs_element": master_order.wbs_element,
-#                     "part_number": master_order.part_number,
-#                     "part_description": master_order.part_description,
-#                     "total_operations": master_order.total_operations,
-#                     "required_quantity": master_order.required_quantity,
-#                     "launched_quantity": master_order.launched_quantity,
-#                     "plant_id": master_order.plant_id,
-#
-#                     "project": {
-#                         "id": master_order.project.id,
-#                         "name": master_order.project.name,
-#                         "priority": master_order.project.priority,
-#                         "delivery_date": master_order.project.delivery_date,
-#                         "start_date": master_order.project.start_date,
-#                         "end_date": master_order.project.end_date
-#                     } if master_order.project else None,
-#
-#                     "raw_material": {
-#                         "id": master_order.raw_material.id,
-#                         "child_part_number": master_order.raw_material.child_part_number,
-#                         "description": master_order.raw_material.description,
-#                         "quantity": master_order.raw_material.quantity,
-#                         "unit": {
-#                             "id": master_order.raw_material.unit.id,
-#                             "name": master_order.raw_material.unit.name
-#                         } if master_order.raw_material.unit else None,
-#                         "status": {
-#                             "id": master_order.raw_material.status.id,
-#                             "name": master_order.raw_material.status.name
-#                         } if master_order.raw_material.status else None
-#                     } if master_order.raw_material else None
-#                 }
-#             }
-#
-#             return response_data
-#
-#     except Exception as e:
-#         raise HTTPException(status_code=500, detail=str(e))
 
 
 @db_session
@@ -339,11 +249,12 @@ def save_to_database(data):
             raw_material=raw_material
         )
 
-        # Create initial 'inactive' status for scheduling
-        part_status = PartScheduleStatus.get(part_number=data["Part No"])
+        # Create initial 'inactive' status for scheduling - FIX: Use both part_number and production_order
+        part_status = PartScheduleStatus.get(part_number=data["Part No"], production_order=data["Prod Order No"])
         if not part_status:
             PartScheduleStatus(
                 part_number=data["Part No"],
+                production_order=data["Prod Order No"],
                 status='inactive'  # Default to inactive when OARC is uploaded
             )
 
@@ -424,6 +335,7 @@ def save_to_database(data):
                         available_from=datetime(2025, 1, 21, 11, 41, 20, 417587)  # Hardcoded as requested
                     )
 
+            # Create a new operation specific to this order
             operation = Operation(
                 order=master_order,
                 work_center=work_center,
@@ -439,7 +351,6 @@ def save_to_database(data):
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
-
 
 
 @router.get("/all_orders")
@@ -540,7 +451,6 @@ async def search_order(
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
 
 
-
 @router.put("/update_order/{order_number}")
 async def update_order(order_number: str, update_data: OrderUpdateRequest):
     try:
@@ -602,19 +512,27 @@ async def update_order(order_number: str, update_data: OrderUpdateRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.put("/operations/{part_number}/{operation_number}")
 async def update_operation(
         part_number: str,
         operation_number: int,
-        operation_data: OperationUpdateRequest
+        operation_data: OperationUpdateRequest,
+        production_order: Optional[str] = Query(None)  # Get from query parameter instead
 ):
     try:
         with db_session:
-            order = Order.get(part_number=part_number)
+            # Find the order using both part_number and production_order
+            if production_order:
+                order = Order.get(part_number=part_number, production_order=production_order)
+            else:
+                # Fallback to just part_number, but this may be ambiguous
+                order = Order.get(part_number=part_number)
+
             if not order:
                 raise HTTPException(
                     status_code=404,
-                    detail=f"No order found with part number {part_number}"
+                    detail=f"No order found with part number {part_number} and production order {production_order}"
                 )
 
             operation = select(op for op in Operation
@@ -730,12 +648,44 @@ async def create_order(order_data: CreateOrderRequest):
             )
 
             # Create initial 'inactive' status for scheduling
-            part_status = PartScheduleStatus.get(part_number=order_data.part_number)
+            # FIX: Updated to use both part_number and production_order
+            part_status = PartScheduleStatus.get(
+                part_number=order_data.part_number,
+                production_order=order_data.production_order
+            )
             if not part_status:
                 PartScheduleStatus(
                     part_number=order_data.part_number,
+                    production_order=order_data.production_order,
                     status='inactive'  # Default to inactive when order is created
                 )
+
+            # Check if there are existing operations for this part number that we should duplicate
+            # First, find other orders with the same part number
+            similar_orders = select(o for o in Order if o.part_number == order_data.part_number and o.id != order.id)[:]
+
+            # If there are similar orders, duplicate their operations
+            if similar_orders:
+                # Get the first similar order
+                source_order = similar_orders[0]
+
+                # Get all operations from the source order
+                source_operations = select(op for op in Operation if op.order == source_order)[:]
+
+                # Duplicate each operation for the new order
+                for source_op in source_operations:
+                    Operation(
+                        order=order,
+                        operation_number=source_op.operation_number,
+                        operation_description=source_op.operation_description,
+                        setup_time=source_op.setup_time,
+                        ideal_cycle_time=source_op.ideal_cycle_time,
+                        work_center=source_op.work_center,
+                        machine=source_op.machine
+                    )
+
+                # Update total operations count
+                order.total_operations = len(source_operations)
 
             commit()
             return {
@@ -781,6 +731,8 @@ async def create_order(order_data: CreateOrderRequest):
             status_code=500,
             detail=f"Error creating order: {str(e)}"
         )
+
+
 
 @router.post("/operations")
 async def create_operation(operation_data: CreateOperationRequest):
@@ -862,9 +814,10 @@ async def get_work_centers():
             detail=f"Error retrieving work centers: {str(e)}"
         )
 
+
 @router.get("/search_order2")
 async def search_order(
-    production_order: Optional[str] = Query(None, min_length=1)
+        production_order: Optional[str] = Query(None, min_length=1)
 ):
     """Get order details by production order number"""
     try:
@@ -872,67 +825,93 @@ async def search_order(
             if not production_order:
                 return {"orders": []}
 
-            orders = select(o for o in Order if production_order.lower() in o.production_order.lower())[:]
+            # Exact match search - change from substring match to exact match
+            orders = select(o for o in Order if o.production_order == production_order)[:]
+
+            if not orders:
+                # If no exact match found, fall back to partial match as a secondary option
+                orders = select(o for o in Order if production_order.lower() in o.production_order.lower())[:]
 
             if not orders:
                 return {"orders": []}
 
             response_data = {
-                "orders": [
-                    {
-                        "id": order.id,
-                        "production_order": order.production_order,
-                        "sale_order": order.sale_order,
-                        "wbs_element": order.wbs_element,
-                        "part_number": order.part_number,
-                        "part_description": order.part_description,
-                        "total_operations": order.total_operations,
-                        "required_quantity": order.required_quantity,
-                        "launched_quantity": order.launched_quantity,
-                        "plant_id": order.plant_id,
-                        "project": {
-                            "id": order.project.id,
-                            "name": order.project.name,
-                            "priority": order.project.priority,
-                            "start_date": order.project.start_date,
-                            "end_date": order.project.end_date
-                        } if order.project else None,
-                        "operations": [
-                            {
-                                "id": op.id,
-                                "operation_number": op.operation_number,
-                                "operation_description": op.operation_description,
-                                "setup_time": op.setup_time,
-                                "ideal_cycle_time": op.ideal_cycle_time,
-                                "work_center": op.work_center.code if op.work_center else None,
-                                "primary_machine": {
-                                    "id": op.machine.id,
-                                    "name": f"{op.machine.make} {op.machine.model}"
-                                } if op.machine else None,
-                                "work_center_machines": [
-                                    {
-                                        "id": machine.id,
-                                        "make": machine.make,
-                                        "model": machine.model,
-                                        "type": machine.type
-                                    }
-                                    for machine in op.work_center.machines
-                                ] if op.work_center else []
-                            }
-                            for op in order.operations
-                        ]
-                    }
-                    for order in orders
-                ]
+                "orders": []
             }
+
+            for order in orders:
+                # Get raw materials associated with this order
+                raw_materials = select(rm for rm in RawMaterial if order in rm.orders)[:]
+
+                order_data = {
+                    "id": order.id,
+                    "production_order": order.production_order,
+                    "sale_order": order.sale_order,
+                    "wbs_element": order.wbs_element,
+                    "part_number": order.part_number,
+                    "part_description": order.part_description,
+                    "total_operations": order.total_operations,
+                    "required_quantity": order.required_quantity,
+                    "launched_quantity": order.launched_quantity,
+                    "plant_id": order.plant_id,
+                    "project": {
+                        "id": order.project.id,
+                        "name": order.project.name,
+                        "priority": order.project.priority,
+                        "start_date": order.project.start_date,
+                        "end_date": order.project.end_date
+                    } if order.project else None,
+                    "raw_materials": [
+                        {
+                            "id": raw_material.id,
+                            "child_part_number": raw_material.child_part_number,
+                            "description": raw_material.description,
+                            "quantity": float(raw_material.quantity),
+                            "unit": {
+                                "id": raw_material.unit.id,
+                                "name": raw_material.unit.name
+                            },
+                            "status": {
+                                "id": raw_material.status.id,
+                                "name": raw_material.status.name
+                            },
+                            "available_from": raw_material.available_from.isoformat() if raw_material.available_from else None
+                        }
+                        for raw_material in raw_materials
+                    ],
+                    "operations": [
+                        {
+                            "id": op.id,
+                            "operation_number": op.operation_number,
+                            "operation_description": op.operation_description,
+                            "setup_time": op.setup_time,
+                            "ideal_cycle_time": op.ideal_cycle_time,
+                            "work_center": op.work_center.code if op.work_center else None,
+                            "boolean": op.work_center.is_schedulable,
+                            "primary_machine": {
+                                "id": op.machine.id,
+                                "name": f"{op.machine.make} {op.machine.model}"
+                            } if op.machine else None,
+                            "work_center_machines": [
+                                {
+                                    "id": machine.id,
+                                    "make": machine.make,
+                                    "model": machine.model,
+                                    "type": machine.type
+                                }
+                                for machine in op.work_center.machines
+                            ] if op.work_center else []
+                        }
+                        for op in order.operations
+                    ]
+                }
+
+                response_data["orders"].append(order_data)
 
             return response_data
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
-
-
-
 
 
 @router.post("/upload-pdf")
@@ -1136,3 +1115,52 @@ async def get_project_priorities():
             status_code=500,
             detail=f"Error retrieving project priorities: {str(e)}"
         )
+
+
+@router.delete("/orders/{order_id}", status_code=200)
+@db_session
+def delete_order(order_id: int):
+    order = Order.get(id=order_id)
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    # Save references to foreign keys only after confirming order exists
+    raw_material_ref = order.raw_material
+    project_ref = order.project
+
+    # Delete all related child entities
+    for op in order.operations:
+        op.delete()
+    for doc in order.documents:
+        doc.delete()
+    for tool in order.tools:
+        tool.delete()
+    for jig in order.jigs_fixtures:
+        jig.delete()
+    for mpp in order.mpps:
+        mpp.delete()
+    for psi in order.planned_schedule_items:
+        psi.delete()
+    for req in order.inventory_requests:
+        req.delete()
+    
+    # Handle DocumentV2 entities - preserve IPID documents
+    for docv2 in order.documents_v2:
+        # Skip IPID documents
+        if docv2.doc_type.name == "IPID":
+            # Just remove the order reference but keep the document
+            docv2.production_order = None
+        else:
+            # Delete non-IPID documents
+            docv2.delete()
+
+    # Delete the order itself
+    order.delete()
+
+    # Clean up orphaned references if they're not used by other orders
+    if raw_material_ref and not raw_material_ref.orders:
+        raw_material_ref.delete()
+    if project_ref and not project_ref.orders:
+        project_ref.delete()
+
+    return {"message": "Order and related entities deleted successfully"}

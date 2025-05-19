@@ -13,6 +13,7 @@ class WorkCenter(db.Entity):
     plant_id = Required(str)
     work_center_name = Optional(str)  # Renamed from 'operation'
     description = Optional(str)
+    is_schedulable = Optional(bool, default=False)  # New field to determine if scheduling is allowed
     machines = Set('Machine')
     operations = Set('Operation')
 
@@ -29,12 +30,14 @@ class Machine(db.Entity):
     cnc_controller_series = Optional(str)
     remarks = Optional(str)
     calibration_date = Optional(datetime)
+    calibration_due_date = Optional(datetime)  # Added this field
     last_maintenance_date = Optional(datetime)
     shifts = Set('MachineShift')
     downtimes = Set('MachineDowntime')
     status = Set('MachineStatus')
     operations = Set('Operation')  # Reverse relationship
     planned_schedule_items = Set('PlannedScheduleItem', reverse='machine')
+    credential = Optional('MachineCredential', reverse='machine', cascade_delete=True)
 
 
 class MachineShift(db.Entity):
@@ -69,7 +72,9 @@ class MachineStatus(db.Entity):
     machine = Required(Machine)
     status = Required(Status)
     description = Optional(str)
-    available_from = Optional(datetime)  # New column
+    available_from = Optional(datetime)  # Start of status period
+    available_to = Optional(datetime)    # ⬅️ NEW: End of status period (needed for range checking)
+
 
 
 class Project(db.Entity):
@@ -105,7 +110,9 @@ class Order(db.Entity):
     planned_schedule_items = Set('PlannedScheduleItem', reverse='order')
     inventory_requests = Set("InventoryRequest")
     documents_v2 = Set('DocumentV2', reverse='production_order')
+    order_tools = Set("OrderTool", reverse="order")  # Updated relationship name
     master_bocs = Set('MasterBoc', reverse='order')  # Add this line for MasterBoc relationship
+
 
 
 class Operation(db.Entity):
@@ -124,7 +131,12 @@ class Operation(db.Entity):
     programs = Set('Program')
     mpps = Set('MPP', reverse='operation')
     planned_schedule_items = Set('PlannedScheduleItem', reverse='operation')
-
+    order_tools = Set('OrderTool', reverse='operation')
+    production_logs = Set('ProductionLog', reverse='operation')
+    machine_raw_live_1 = Set('MachineRawLive', reverse='scheduled_job')
+    machine_raw_live_2 = Set('MachineRawLive', reverse='actual_job')
+    machine_raw_1 = Set('MachineRaw', reverse='scheduled_job')
+    machine_raw_2 = Set('MachineRaw', reverse='actual_job')
     inventory_requests = Set("InventoryRequest")
 
 
@@ -135,18 +147,37 @@ class ProcessPlan(db.Entity):
     instructions = Optional(str)
     images = Optional(str)
     remarks = Optional(str)
-    program = Optional('Program', reverse='process_plan')
+    # program = Optional('Program', reverse='process_plan')
 
 
 class Program(db.Entity):
     _table_ = ("master_order", "programs")
     id = PrimaryKey(int, auto=True)
     operation = Required(Operation)
-    process_plan = Optional(ProcessPlan)
     program_name = Required(str)
     program_number = Required(str)
     version = Required(str)
     update_date = Required(datetime)
+
+
+class OrderTool(db.Entity):
+    """
+    Table for storing tools used in orders.
+    """
+    _table_ = ("master_order", "order_tools")  # Changed table name to force new creation
+    id = PrimaryKey(int, auto=True)
+    order = Required("Order", reverse="order_tools")
+    operation = Optional("Operation", reverse="order_tools")
+    tool_name = Required(str)
+    tool_number = Required(str)
+    bel_partnumber = Optional(str)
+    description = Optional(str)
+    quantity = Required(int, default=1)
+    created_at = Required(datetime, default=datetime.now)
+    updated_at = Required(datetime, default=datetime.now)
+
+    def before_update(self):
+        self.updated_at = datetime.now()
 
 
 # class Document(db.Entity):
@@ -196,3 +227,4 @@ class MPP(db.Entity):
     datum_y = Optional(str)
     datum_z = Optional(str)
     work_instructions = Required(Json, default={"sections": []})
+

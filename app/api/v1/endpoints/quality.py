@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, Depends, Path, Query
 from typing import Any, List
 import os
 import subprocess
-from pony.orm import db_session, commit, flush, select
+from pony.orm import db_session, commit, flush, select, desc
 
 from app.core.security import get_current_user
 from app.models import Operation, Order, User
@@ -16,8 +16,8 @@ from app.models.inventoryv1 import InventoryItem
 
 from app.schemas.quality import OperatorInfo, StageInspectionWithOperator, OperationGroup
 
-
 router = APIRouter(prefix="/api/v1/quality", tags=["quality"])
+
 
 @router.post(
     "/master-boc/",
@@ -25,15 +25,15 @@ router = APIRouter(prefix="/api/v1/quality", tags=["quality"])
     status_code=201
 )
 async def create_master_boc(
-    data: MasterBocCreate,
-    current_user = Depends(get_current_user)
+        data: MasterBocCreate,
+        current_user=Depends(get_current_user)
 ) -> Any:
     """
     Create a new Master BOC entry
-    
+
     The bbox field must contain exactly 8 values representing the coordinates:
     [x1, y1, x2, y2, x3, y3, x4, y4]
-    
+
     Example request body:
     ```json
     {
@@ -62,13 +62,14 @@ async def create_master_boc(
             detail=f"Error creating Master BOC: {str(e)}"
         )
 
+
 @router.get(
     "/master-boc/measurement-instruments",
     response_model=MeasurementInstrumentsResponse,
     summary="Get all measurement instruments"
 )
 async def get_measurement_instruments(
-    current_user = Depends(get_current_user)
+        current_user=Depends(get_current_user)
 ) -> Any:
     """
     Get a list of all unique measurement instruments used in Master BOC entries
@@ -82,13 +83,14 @@ async def get_measurement_instruments(
             detail=f"Error retrieving measurement instruments: {str(e)}"
         )
 
+
 @router.get(
     "/master-boc/{id}",
     response_model=MasterBocResponse
 )
 async def get_master_boc(
-    id: int = Path(..., gt=0),
-    current_user = Depends(get_current_user)
+        id: int = Path(..., gt=0),
+        current_user=Depends(get_current_user)
 ) -> Any:
     """Get Master BOC by ID"""
     try:
@@ -99,15 +101,16 @@ async def get_master_boc(
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+
 @router.get(
     "/master-boc/order/{order_id}",
     response_model=List[MasterBocResponse]
 )
 async def get_master_bocs_by_order(
-    order_id: int = Path(..., gt=0),
-    op_no: int = Query(..., gt=0),
-    measurement_instruments: List[str] = Query(None, description="Filter by multiple measurement instruments"),
-    current_user = Depends(get_current_user)
+        order_id: int = Path(..., gt=0),
+        op_no: int = Query(..., gt=0),
+        measurement_instruments: List[str] = Query(None, description="Filter by multiple measurement instruments"),
+        current_user=Depends(get_current_user)
 ) -> Any:
     """
     Get all Master BOCs for an order and operation number
@@ -140,8 +143,8 @@ async def create_stage_inspection(
     - For quantity 1: Creates FTP status entries for all related IPIDs (initially set to not completed)
     - For quantity > 1: Verifies that quantity 1 exists
     - For quantity > 1: Verifies that FTP approval is completed for quantity 1
-    
-    You will receive an error if you attempt to create quantities > 1 before 
+
+    You will receive an error if you attempt to create quantities > 1 before
     FTP approval for quantity 1 is completed.
     """
     try:
@@ -188,13 +191,14 @@ async def update_inspection_status(
             detail=f"Error updating inspection status: {str(e)}"
         )
 
+
 @router.get(
     "/inspection/{order_id}/detailed",
     response_model=DetailedQualityInspectionResponse
 )
 async def get_detailed_quality_inspection(
-    order_id: int = Path(..., gt=0),
-    current_user = Depends(get_current_user)
+        order_id: int = Path(..., gt=0),
+        current_user=Depends(get_current_user)
 ) -> Any:
     """
     Get detailed quality inspection data including:
@@ -214,6 +218,7 @@ async def get_detailed_quality_inspection(
             detail=f"Error retrieving detailed quality inspection data: {str(e)}"
         )
 
+
 @router.get(
     "/stage-inspection/{order_id}/grouped",
     response_model=DetailedQualityInspectionResponse,
@@ -221,8 +226,8 @@ async def get_detailed_quality_inspection(
 )
 @db_session
 async def get_stage_inspection_grouped(
-    order_id: int = Path(..., gt=0),
-    current_user = Depends(get_current_user)
+        order_id: int = Path(..., gt=0),
+        current_user=Depends(get_current_user)
 ) -> Any:
     """
     Get stage inspection data grouped by operation number including:
@@ -253,8 +258,8 @@ async def get_stage_inspection_grouped(
         for op in operations:
             # Get stage inspections for this operation
             stage_inspections = select(si for si in StageInspection
-                                    if si.order_id == order_id and
-                                    si.op_no == op.operation_number)[:]
+                                       if si.order_id == order_id and
+                                       si.op_no == op.operation_number)[:]
 
             if stage_inspections:  # Only add to inspection_data if there are inspections
                 inspection_list = []
@@ -316,13 +321,14 @@ async def get_stage_inspection_grouped(
             detail=f"Error retrieving stage inspection data: {str(e)}"
         )
 
+
 @router.get(
     "/master-boc/ipids/{order_id}",
     response_model=OrderIPIDResponse
 )
 async def get_order_ipids(
-    order_id: int = Path(..., gt=0),
-    current_user = Depends(get_current_user)
+        order_id: int = Path(..., gt=0),
+        current_user=Depends(get_current_user)
 ) -> Any:
     """
     Get all IPIDs for an order including:
@@ -341,7 +347,6 @@ async def get_order_ipids(
         )
 
 
-
 @router.post(
     "/connectivity/",
     response_model=ConnectivityResponse,
@@ -350,8 +355,8 @@ async def get_order_ipids(
 )
 @db_session
 def create_connectivity(
-    data: ConnectivityCreate,
-    current_user = Depends(get_current_user)
+        data: ConnectivityCreate,
+        current_user=Depends(get_current_user)
 ) -> Any:
     """
     Create a new connectivity record for an inventory item.
@@ -391,7 +396,7 @@ def create_connectivity(
             uuid=data.uuid,
             address=data.address
         )
-        
+
         # Flush to get the ID and created_at
         flush()
 
@@ -416,24 +421,25 @@ def create_connectivity(
             detail=f"An error occurred while creating connectivity record: {str(e)}"
         )
 
+
 @router.get(
     "/connectivity/instrument/{instrument_name}",
     response_model=ConnectivityResponse,
-    summary="Get connectivity information by instrument name"
+    summary="Get most recent connectivity information by instrument name"
 )
 @db_session
 def get_connectivity_by_instrument(
-    instrument_name: str = Path(..., description="Name of the instrument to search for"),
-    current_user = Depends(get_current_user)
+        instrument_name: str = Path(..., description="Name of the instrument to search for"),
+        current_user=Depends(get_current_user)
 ) -> Any:
     """
-    Get connectivity information for a specific instrument by its name.
+    Get the most recent connectivity information for a specific instrument by its name.
 
     Parameters:
     - instrument_name: Name of the instrument to search for
 
     Returns:
-    - Connectivity information including address and UUID
+    - Most recent connectivity information including address and UUID
 
     Example response:
     ```json
@@ -448,9 +454,9 @@ def get_connectivity_by_instrument(
     ```
     """
     try:
-        # Query the connectivity record by instrument name
-        connectivity = select(c for c in Connectivity if c.instrument == instrument_name).first()
-        
+        # Query the most recent connectivity record by instrument name
+        connectivity = select(c for c in Connectivity if c.instrument == instrument_name).order_by(lambda c: desc(c.created_at)).first()
+
         if not connectivity:
             raise HTTPException(
                 status_code=404,
@@ -477,19 +483,20 @@ def get_connectivity_by_instrument(
             detail=f"An error occurred while retrieving connectivity information: {str(e)}"
         )
 
+
 @router.post(
     "/ftp/{order_id}/{ipid}/update",
     response_model=FTPResponse,
     summary="Update FTP status for an IPID"
 )
 async def update_ftp_status(
-    order_id: int = Path(..., gt=0),
-    ipid: str = Path(..., min_length=1),
-    current_user = Depends(get_current_user)
+        order_id: int = Path(..., gt=0),
+        ipid: str = Path(..., min_length=1),
+        current_user=Depends(get_current_user)
 ) -> Any:
     """
     Update the FTP status for a given order_id and IPID.
-    
+
     This endpoint explicitly sets the FTP status to completed (is_completed=true).
     FTP status must be completed before adding quantities > 1.
     """
@@ -504,15 +511,16 @@ async def update_ftp_status(
             detail=f"Error updating FTP status: {str(e)}"
         )
 
+
 @router.get(
     "/ftp/{order_id}/{ipid}",
     response_model=FTPResponse,
     summary="Get FTP status for an IPID"
 )
 async def get_ftp_status(
-    order_id: int = Path(..., gt=0),
-    ipid: str = Path(..., min_length=1),
-    current_user = Depends(get_current_user)
+        order_id: int = Path(..., gt=0),
+        ipid: str = Path(..., min_length=1),
+        current_user=Depends(get_current_user)
 ) -> Any:
     """
     Get the FTP status for a given order_id and IPID
@@ -533,14 +541,15 @@ async def get_ftp_status(
             detail=f"Error retrieving FTP status: {str(e)}"
         )
 
+
 @router.get(
     "/ftp/order/{order_id}",
     response_model=List[FTPResponse],
     summary="Get all FTP statuses for an order"
 )
 async def get_all_ftp_by_order(
-    order_id: int = Path(..., gt=0),
-    current_user = Depends(get_current_user)
+        order_id: int = Path(..., gt=0),
+        current_user=Depends(get_current_user)
 ) -> Any:
     """
     Get all FTP statuses for a given order
@@ -553,5 +562,4 @@ async def get_all_ftp_by_order(
             status_code=500,
             detail=f"Error retrieving FTP statuses: {str(e)}"
         )
-
 

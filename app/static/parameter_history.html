@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Machine Parameter History</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f5f5f5;
+            color: #333;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        h1, h2 {
+            color: #2c3e50;
+            margin-bottom: 20px;
+        }
+        .info-panel {
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        .connection-status {
+            text-align: center;
+            margin-bottom: 20px;
+            padding: 10px;
+            border-radius: 5px;
+        }
+        .connected {
+            background-color: #dff0d8;
+            color: #3c763d;
+        }
+        .disconnected {
+            background-color: #f2dede;
+            color: #a94442;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background-color: white;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        th {
+            background-color: #f8f9fa;
+            font-weight: bold;
+        }
+        tr:hover {
+            background-color: #f5f5f5;
+        }
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin: 20px 0;
+        }
+        .stat-card {
+            background-color: white;
+            padding: 15px;
+            border-radius: 4px;
+            text-align: center;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .stat-value {
+            font-size: 1.5em;
+            font-weight: bold;
+            color: #2c3e50;
+        }
+        .stat-label {
+            color: #7f8c8d;
+            font-size: 0.9em;
+            margin-top: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Machine Parameter History</h1>
+        
+        <div id="connectionStatus" class="connection-status">Connecting...</div>
+        
+        <div class="info-panel">
+            <h2 id="machineName">Loading...</h2>
+            <div id="parameterInfo"></div>
+        </div>
+
+        <div class="stats">
+            <div class="stat-card">
+                <div class="stat-value" id="currentValue">--</div>
+                <div class="stat-label">Current Value</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="avgValue">--</div>
+                <div class="stat-label">Average (30min)</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="minValue">--</div>
+                <div class="stat-label">Minimum (30min)</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="maxValue">--</div>
+                <div class="stat-label">Maximum (30min)</div>
+            </div>
+        </div>
+
+        <table>
+            <thead>
+                <tr>
+                    <th>Timestamp</th>
+                    <th>Value</th>
+                </tr>
+            </thead>
+            <tbody id="dataTable">
+            </tbody>
+        </table>
+    </div>
+
+    <script>
+        let eventSource = null;
+        const connectionStatus = document.getElementById('connectionStatus');
+        let reconnectAttempts = 0;
+        const maxReconnectAttempts = 5;
+        
+        const parameterUnits = {
+            phase_a_voltage: 'V',
+            phase_b_voltage: 'V',
+            phase_c_voltage: 'V',
+            avg_phase_voltage: 'V',
+            line_ab_voltage: 'V',
+            line_bc_voltage: 'V',
+            line_ca_voltage: 'V',
+            avg_line_voltage: 'V',
+            phase_a_current: 'A',
+            phase_b_current: 'A',
+            phase_c_current: 'A',
+            avg_three_phase_current: 'A',
+            power_factor: '',
+            frequency: 'Hz',
+            total_instantaneous_power: 'kW',
+            active_energy_delivered: 'kWh'
+        };
+
+        function formatTimestamp(isoString) {
+            const date = new Date(isoString);
+            return date.toLocaleString();
+        }
+
+        function updateStats(dataPoints) {
+            if (dataPoints.length === 0) return;
+
+            const values = dataPoints.map(point => point.value);
+            const currentValue = values[values.length - 1];
+            const avgValue = values.reduce((a, b) => a + b, 0) / values.length;
+            const minValue = Math.min(...values);
+            const maxValue = Math.max(...values);
+
+            document.getElementById('currentValue').textContent = currentValue.toFixed(2);
+            document.getElementById('avgValue').textContent = avgValue.toFixed(2);
+            document.getElementById('minValue').textContent = minValue.toFixed(2);
+            document.getElementById('maxValue').textContent = maxValue.toFixed(2);
+        }
+
+        function updateTable(data) {
+            const dataPoints = data.data_points;
+            if (!dataPoints || dataPoints.length === 0) return;
+
+            const tableBody = document.getElementById('dataTable');
+            tableBody.innerHTML = ''; // Clear existing data
+
+            // Add new rows
+            dataPoints.forEach(point => {
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td>${formatTimestamp(point.timestamp)}</td>
+                    <td>${point.value.toFixed(2)}</td>
+                `;
+                tableBody.appendChild(row);
+            });
+
+            // Update stats
+            updateStats(dataPoints);
+
+            // Update info panel
+            const unit = parameterUnits[data.parameter] || '';
+            document.getElementById('machineName').textContent = data.machine_name;
+            document.getElementById('parameterInfo').textContent = 
+                `Monitoring: ${data.parameter} (${unit})`;
+        }
+
+        function connectToStream(machineId, parameter) {
+            if (eventSource) {
+                eventSource.close();
+            }
+
+            reconnectAttempts = 0;
+            const serverUrl = 'http://172.18.7.93:9999';
+            eventSource = new EventSource(
+                `${serverUrl}/api/v1/energy-monitoring/machine/${machineId}/parameter/${parameter}/history-stream`
+            );
+
+            console.log('Connecting to:', 
+                `${serverUrl}/api/v1/energy-monitoring/machine/${machineId}/parameter/${parameter}/history-stream`
+            );
+
+            eventSource.onopen = () => {
+                console.log('Connection established');
+                connectionStatus.textContent = 'Connected to server';
+                connectionStatus.className = 'connection-status connected';
+                reconnectAttempts = 0;
+            };
+
+            eventSource.onmessage = (event) => {
+                console.log('Received data:', event.data);
+                const data = JSON.parse(event.data);
+                updateTable(data);
+            };
+
+            eventSource.onerror = (error) => {
+                console.error('SSE Error:', error);
+                reconnectAttempts++;
+                
+                if (reconnectAttempts <= maxReconnectAttempts) {
+                    const waitTime = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
+                    connectionStatus.textContent = 
+                        `Connection failed. Retrying in ${waitTime/1000} seconds... (Attempt ${reconnectAttempts}/${maxReconnectAttempts})`;
+                    connectionStatus.className = 'connection-status disconnected';
+                    
+                    eventSource.close();
+                    
+                    setTimeout(() => {
+                        connectToStream(machineId, parameter);
+                    }, waitTime);
+                } else {
+                    connectionStatus.textContent = 'Connection failed. Please refresh the page to try again.';
+                    connectionStatus.className = 'connection-status disconnected';
+                    eventSource.close();
+                }
+            };
+        }
+
+        // Get parameters from URL
+        const urlParams = new URLSearchParams(window.location.search);
+        const machineId = urlParams.get('machine_id');
+        const parameter = urlParams.get('parameter');
+
+        if (!machineId || !parameter) {
+            connectionStatus.textContent = 'Error: Missing machine_id or parameter. Use ?machine_id=X&parameter=Y in the URL.';
+            connectionStatus.className = 'connection-status disconnected';
+        } else {
+            // Connect to the stream
+            connectToStream(machineId, parameter);
+        }
+    </script>
+</body>
+</html> 

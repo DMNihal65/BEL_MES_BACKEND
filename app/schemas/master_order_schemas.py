@@ -8,6 +8,8 @@ class WorkCenterBase(BaseModel):
     plant_id: str = Field(..., description="Plant ID")
     description: Optional[str] = Field(None, description="Work center description")
     work_center_name: Optional[str] = Field(None, description="Operation type")
+    is_schedulable: bool = Field(..., description="Indicates if the work center can be scheduled")
+
 
 class WorkCenterCreate(WorkCenterBase):
     pass
@@ -34,6 +36,7 @@ class MachineBase(BaseModel):
     cnc_controller_series: Optional[str] = Field(None, description="CNC controller series")
     remarks: Optional[str] = Field(None, description="Additional remarks")
     calibration_date: Optional[datetime] = Field(None, description="Last calibration date")
+    calibration_due_date: Optional[datetime] = Field(None, description="Next calibration due date")  # Added this field
     last_maintenance_date: Optional[datetime] = Field(None, description="Last maintenance date")
 
 class MachineCreate(MachineBase):
@@ -48,12 +51,18 @@ class MachineUpdate(BaseModel):
     cnc_controller_series: Optional[str] = None
     remarks: Optional[str] = None
     calibration_date: Optional[datetime] = None
+    calibration_due_date: Optional[datetime] = None  # Added this field
     last_maintenance_date: Optional[datetime] = None
 
 class MachineResponse(MachineBase):
     id: int
     work_center_id: int  # Make sure this field is here
+    work_center_boolean: bool
     work_center: WorkCenterResponse
 
     class Config:
         from_attributes = True
+
+
+class UpdateSchedulable(BaseModel):
+    is_schedulable: bool

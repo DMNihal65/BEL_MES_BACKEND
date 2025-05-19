@@ -1,7 +1,7 @@
 import traceback
 
-from fastapi import APIRouter, HTTPException, Query, Depends
-from pony.orm import db_session, select
+from fastapi import APIRouter, HTTPException, Query, Depends, BackgroundTasks
+from pony.orm import db_session, select, commit, desc
 from typing import Dict, Optional, List, Set, Any
 from datetime import datetime, timedelta
 
@@ -11,6 +11,8 @@ from app.schemas.comp_maintainance import (
 )
 from app.models import MachineStatus, Status, ProductionLog, ScheduleVersion, PlannedScheduleItem, Machine, Operation, \
     Order
+from app.models.logs import MachineStatusLog, RawMaterialStatusLog
+from .notification_service import send_notification
 
 # Modified storage to include read status tracking
 pending_changes: Dict[int, Dict] = {}
@@ -143,34 +145,7 @@ async def get_pending_changes():
             detail=f"Error fetching pending changes: {str(e)}"
         )
 
-#
-# @router.get("/Machine-status-Notification")
-# async def get_latest_status_message():
-#     """
-#     Get the latest status message from the system
-#     """
-#     try:
-#         with db_session:
-#             # Get all machine statuses
-#             if not status_messages:
-#                 return {
-#                     "messages": []
-#                 }
-#
-#             # Get the latest messages for all machines
-#             latest_messages = {}
-#             for machine_id, messages in status_messages.items():
-#                 if messages:  # If there are messages for this machine
-#                     latest_messages[machine_id] = messages[-1]
-#
-#             return {
-#                 "latest_messages": latest_messages
-#             }
-#     except Exception as e:
-#         raise HTTPException(
-#             status_code=500,
-#             detail=f"Error fetching latest status messages: {str(e)}"
-#         )
+
 
 
 
@@ -441,6 +416,9 @@ def get_machine_operations(
         # Dictionary to store order details to avoid duplicate queries
         order_details_cache = {}
 
+        # Dictionary to track in-progress status for each order
+        order_inprogress_status = {}
+
         # STEP 1: First collect all operations with their schedule info
         all_operations = []
 
@@ -533,8 +511,12 @@ def get_machine_operations(
                                 "project_name": project.name if project else "",
                                 # "delivery_date": project.delivery_date.strftime("%d %b %Y") if project and hasattr(
                                 #     project, "delivery_date") else ""
-                            }
+                            },
+                            "has_inprogress": False  # Initialize as False
                         }
+
+                    # Initialize in-progress status for this order
+                    order_inprogress_status[order_id] = False
 
                 # Get all schedule versions for this operation to find potential later versions
                 all_versions_query = select(sv for sv in ScheduleVersion
@@ -593,6 +575,7 @@ def get_machine_operations(
         for i, operation in enumerate(all_operations):
             op_id = operation["op_id"]
             op_number = operation["op_number"]
+            order_id = operation["order_id"]
 
             # Determine end time
             planned_end_time = None
@@ -639,6 +622,10 @@ def get_machine_operations(
                         operation["planned_quantity"]:
                     status = "inprogress"
                     print(f"Operation {op_id} is IN PROGRESS (in time window)")
+
+                    # Update the order's in-progress status
+                    order_inprogress_status[order_id] = True
+
                 # 3. SCHEDULED: Not yet started (before start time)
                 elif now < operation["planned_start_time"]:
                     status = "scheduled"
@@ -674,6 +661,11 @@ def get_machine_operations(
             operations_response[status].append(operation_data)
             print(f"Successfully added operation {op_id} to {status} category")
 
+        # Update all order records with their in-progress status
+        for order_id, has_inprogress in order_inprogress_status.items():
+            if order_id in order_details_cache:
+                order_details_cache[order_id]["has_inprogress"] = has_inprogress
+
         # Sort each category by planned start time
         for status_key in operations_response:
             try:
@@ -685,9 +677,11 @@ def get_machine_operations(
             except Exception as sort_error:
                 print(f"Error sorting operations for status {status_key}: {str(sort_error)}")
 
-        # Check if there are operations in progress
-        if not operations_response["inprogress"]:
-            # If no operations in progress, return all operations (don't filter)
+        # Check if there are any operations in progress
+        global_has_inprogress = len(operations_response["inprogress"]) > 0
+
+        # If no operations in progress, return all operations (don't filter)
+        if not global_has_inprogress:
             response = {
                 "machine": machine_details,
                 "operations": operations_response,
@@ -708,7 +702,7 @@ def get_machine_operations(
                 all_part_numbers.add(op["part_number"])
 
         # Only filter if there are multiple part numbers AND at least one has in-progress operations
-        if len(all_part_numbers) > 1 and operations_response["inprogress"]:
+        if len(all_part_numbers) > 1 and global_has_inprogress:
             print(
                 f"Multiple part numbers found ({len(all_part_numbers)}), filtering to only show in-progress part numbers")
 
@@ -759,4 +753,183 @@ def get_machine_operations(
         raise HTTPException(
             status_code=500,
             detail=f"Error retrieving machine operations at step {debug_step}: {str(e)}"
+        )
+
+# Function to asynchronously send notifications
+async def send_machine_notification(machine_id, machine_make, status_name, description, created_by):
+    """Send a machine notification with direct parameters instead of database entity"""
+    try:
+        with db_session:
+            # Query the latest log for this machine using select() and order by timestamp
+            latest_logs = select(
+                log for log in MachineStatusLog
+                if log.machine_id == machine_id
+                and log.machine_make == machine_make
+                and log.status_name == status_name
+                and log.description == description
+                and log.created_by == created_by
+            ).order_by(lambda log: desc(log.updated_at)).limit(1)
+
+            log_entries = list(latest_logs)
+
+            # Check if we found any matching log
+            if log_entries:
+                log_entry = log_entries[0]
+                # Pass the found log entry to notification service
+                await send_notification(log_entry, "machine")
+            else:
+                print(f"Error: Could not find newly created machine log entry for machine_id={machine_id}")
+    except Exception as e:
+        print(f"Error in send_machine_notification: {str(e)}")
+
+async def send_material_notification(material_id, part_number, status_name, description, created_by):
+    """Send a material notification with direct parameters instead of database entity"""
+    try:
+        with db_session:
+            # Build the base query
+            query = select(
+                log for log in RawMaterialStatusLog
+                if log.material_id == material_id
+                and log.status_name == status_name
+                and log.description == description
+                and log.created_by == created_by
+            )
+
+            # Add part_number check only if it's provided
+            if part_number:
+                query = query.filter(lambda log: log.part_number == part_number)
+
+            # Order by most recent and limit to 1
+            latest_logs = query.order_by(lambda log: desc(log.updated_at)).limit(1)
+
+            log_entries = list(latest_logs)
+
+            # Check if we found any matching log
+            if log_entries:
+                log_entry = log_entries[0]
+                # Pass the found log entry to notification service
+                await send_notification(log_entry, "material")
+            else:
+                print(f"Error: Could not find newly created material log entry for material_id={material_id}")
+    except Exception as e:
+        print(f"Error in send_material_notification: {str(e)}")
+
+# Example endpoint for operator to update machine status
+@router.post("/machine-status/{machine_id}")
+async def update_machine_status(
+    machine_id: int,
+    status_data: Dict[str, Any],
+    background_tasks: BackgroundTasks
+):
+    """
+    Update machine status and send notification to supervisors
+    """
+    try:
+        with db_session:
+            # Here you would update your machine status in the main database...
+
+            # Get values from status_data
+            machine_make = status_data.get("machine_make", "Unknown")
+            status_name = status_data.get("status_name", "Unknown")
+            description = status_data.get("description", "")
+            created_by = status_data.get("created_by")
+            current_time = datetime.now()
+
+            # Then create a notification log
+            log_entry = MachineStatusLog(
+                machine_id=machine_id,
+                machine_make=machine_make,
+                status_name=status_name,
+                description=description,
+                updated_at=current_time,
+                created_by=created_by,
+                is_acknowledged=False
+            )
+            # Get the ID for logging
+            log_id = log_entry.id
+            commit()
+
+            print(f"Created machine notification log with ID {log_id}")
+
+            # Add task to send notification asynchronously
+            background_tasks.add_task(
+                send_machine_notification,
+                machine_id,
+                machine_make,
+                status_name,
+                description,
+                created_by
+            )
+
+            return {
+                "status": "success",
+                "message": "Machine status updated and notification sent",
+                "notification_id": log_id
+            }
+
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error updating machine status: {str(e)}"
+        )
+
+# Example endpoint for operator to update raw material status
+@router.post("/material-status/{material_id}")
+async def update_material_status(
+    material_id: int,
+    status_data: Dict[str, Any],
+    background_tasks: BackgroundTasks
+):
+    """
+    Update raw material status and send notification to supervisors
+    """
+    try:
+        with db_session:
+            # Here you would update your material status in the main database...
+
+            # Get values from status_data
+            part_number = status_data.get("part_number")
+            status_name = status_data.get("status_name", "Unknown")
+            description = status_data.get("description", "")
+            created_by = status_data.get("created_by")
+            current_time = datetime.now()
+
+            # Then create a notification log
+            log_entry = RawMaterialStatusLog(
+                material_id=material_id,
+                part_number=part_number,
+                status_name=status_name,
+                description=description,
+                updated_at=current_time,
+                created_by=created_by,
+                is_acknowledged=False
+            )
+            # Get the ID for logging
+            log_id = log_entry.id
+            commit()
+
+            print(f"Created material notification log with ID {log_id}")
+
+            # Add task to send notification asynchronously
+            background_tasks.add_task(
+                send_material_notification,
+                material_id,
+                part_number,
+                status_name,
+                description,
+                created_by
+            )
+
+            return {
+                "status": "success",
+                "message": "Material status updated and notification sent",
+                "notification_id": log_id
+            }
+
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error updating material status: {str(e)}"
         )

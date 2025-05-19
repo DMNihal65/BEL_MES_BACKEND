@@ -3,7 +3,8 @@ from decimal import Decimal
 from pony.orm import Required, Set, PrimaryKey, Optional, composite_key, select
 from datetime import datetime, time
 from ..database.connection import db
-from .master_order import Operation, Order  # Add these imports
+from .master_order import Operation, Order, Program  # Add Program import
+from .scheduled import PlannedScheduleItem
 
 
 class StatusLookup(db.Entity):
@@ -20,17 +21,21 @@ class MachineRaw(db.Entity):
     """Entity class for machine_raw table in livedata schema"""
     _table_ = ('production', 'machine_raw')
 
-    id = PrimaryKey(int, auto=True)  # Auto-incrementing ID
-    machine_id = Required(int)  # Foreign key to master_order.machines table
-    time_stamp = Required(datetime, default=lambda: datetime.utcnow())
+    id = PrimaryKey(int, auto=True)
+    machine_id = Required(int)
+    timestamp = Required(datetime, default=lambda: datetime.utcnow())
     status = Required(StatusLookup)
     op_mode = Optional(int)
+    prog_status = Optional(int)
     selected_program = Optional(str)
     active_program = Optional(str)
     program_number = Optional(str)
     part_count = Optional(int)
     job_in_progress = Optional(int)
     part_status = Optional(int)
+
+    scheduled_job = Optional(Operation, reverse='machine_raw_1')
+    actual_job = Optional(Operation, reverse='machine_raw_2')
 
 
 class MachineRawLive(db.Entity):
@@ -41,65 +46,32 @@ class MachineRawLive(db.Entity):
     timestamp = Required(datetime, default=lambda: datetime.utcnow())
     status = Required(StatusLookup)
     op_mode = Optional(int)
+    prog_status = Optional(int)
     selected_program = Optional(str)
     active_program = Optional(str)
+    # program_number = Optional(str)
     part_count = Optional(int)
     job_status = Optional(int)
     job_in_progress = Optional(int)
+    program_number = Optional(int)
+    scheduled_job = Optional(Operation, reverse='machine_raw_live_1')
+    actual_job = Optional(Operation, reverse='machine_raw_live_2')
 
     def get_order_details(self):
-        """Get associated order details through job_in_progress (operation_id)"""
+        """Get associated order details through actual_job or scheduled_job relationships"""
         try:
-            if self.job_in_progress:
-                print(f"\nDEBUG: Looking up details for job_in_progress: {self.job_in_progress}")
-
-                from app.models import PlannedScheduleItem, Operation, Order
-                from pony.orm import select, desc
-
-                # Try multiple ways to find the operation
+            # First approach: Use actual_job if available
+            if self.actual_job:
                 try:
-                    # Method 1: Direct select query
-                    operations = select(o for o in Operation if o.id == self.job_in_progress)[:]
-                    print(f"DEBUG: Direct select found {len(operations)} operations")
-
-                    operation = None
-                    if operations:
-                        operation = operations[0]
-                    else:
-                        # Method 2: Try through PlannedScheduleItem
-                        schedule_items = select(p for p in PlannedScheduleItem if p.operation.id == self.job_in_progress)[:]
-                        print(f"DEBUG: Found {len(schedule_items)} schedule items")
-
-                        if schedule_items:
-                            operation = schedule_items[0].operation
-                        else:
-                            # Method 3: Raw SQL equivalent query through Operation
-                            sql_results = Operation.select_by_sql(
-                                "SELECT * FROM master_order.operations WHERE id = $job_id",
-                                {"job_id": self.job_in_progress}
-                            )[:]
-
-                            if sql_results:
-                                operation = sql_results[0]
-
+                    print(f"\n=== Debug: Using actual_job with ID {self.actual_job.id} ===")
+                    operation = self.actual_job
                     if operation:
-                        print(f"DEBUG: Found operation: ID={operation.id}, Number={operation.operation_number}")
+                        print(f"Found operation: ID={operation.id}, Number={operation.operation_number}")
 
-                        # Get order details
+                        # Get order from operation
                         order = operation.order
                         if order:
-                            print(f"DEBUG: Found order: PO={order.production_order}, Part={order.part_number}")
-
-                            # Check for active schedule
-                            schedule_items = select(p for p in PlannedScheduleItem
-                                               if p.operation.id == operation.id and
-                                               p.schedule_versions.filter(lambda v: v.is_active == True))[:]
-
-                            if schedule_items:
-                                print(f"DEBUG: Found active schedule for operation")
-                            else:
-                                print(f"DEBUG: No active schedule found, using direct operation details")
-
+                            print(f"Found order: PO={order.production_order}, Part={order.part_number}")
                             return {
                                 'production_order': order.production_order,
                                 'part_number': order.part_number,
@@ -110,21 +82,87 @@ class MachineRawLive(db.Entity):
                                 'operation_description': operation.operation_description
                             }
                         else:
-                            print(f"DEBUG: Operation found but no associated order")
+                            print(f"No order found for actual_job operation {operation.id}")
                     else:
-                        print(f"DEBUG: Could not find operation with any method")
-
-                except Exception as inner_e:
-                    print(f"DEBUG: Error during operation lookup: {str(inner_e)}")
+                        print(f"Actual job reference exists but operation is None")
+                except Exception as actual_job_error:
+                    print(f"Error processing actual_job: {str(actual_job_error)}")
                     import traceback
                     print(traceback.format_exc())
 
+            # Second approach: Use scheduled_job if available
+            if self.scheduled_job:
+                try:
+                    print(f"\n=== Debug: Using scheduled_job with ID {self.scheduled_job.id} ===")
+                    operation = self.scheduled_job
+                    if operation:
+                        print(f"Found operation: ID={operation.id}, Number={operation.operation_number}")
+
+                        # Get order from operation
+                        order = operation.order
+                        if order:
+                            print(f"Found order: PO={order.production_order}, Part={order.part_number}")
+                            return {
+                                'production_order': order.production_order,
+                                'part_number': order.part_number,
+                                'part_description': order.part_description,
+                                'required_quantity': order.required_quantity,
+                                'launched_quantity': order.launched_quantity,
+                                'operation_number': operation.operation_number,
+                                'operation_description': operation.operation_description
+                            }
+                        else:
+                            print(f"No order found for scheduled_job operation {operation.id}")
+                    else:
+                        print(f"Scheduled job reference exists but operation is None")
+                except Exception as scheduled_job_error:
+                    print(f"Error processing scheduled_job: {str(scheduled_job_error)}")
+                    import traceback
+                    print(traceback.format_exc())
+
+            # Third approach: Use job_in_progress to find scheduled item
+            if self.job_in_progress:
+                try:
+                    print(f"\n=== Debug: Using job_in_progress ID {self.job_in_progress} ===")
+                    # Get the schedule item directly by ID
+                    schedule_item = PlannedScheduleItem.get(id=self.job_in_progress)
+                    if schedule_item:
+                        print(f"Found schedule item: ID={schedule_item.id}")
+                        operation = schedule_item.operation
+                        order = schedule_item.order
+
+                        if operation:
+                            print(f"Found operation: ID={operation.id}, Number={operation.operation_number}")
+                        else:
+                            print(f"No operation found for schedule item {self.job_in_progress}")
+
+                        if order:
+                            print(f"Found order: PO={order.production_order}, Part={order.part_number}")
+                            return {
+                                'production_order': order.production_order,
+                                'part_number': order.part_number,
+                                'part_description': order.part_description,
+                                'required_quantity': order.required_quantity,
+                                'launched_quantity': order.launched_quantity,
+                                'operation_number': operation.operation_number if operation else None,
+                                'operation_description': operation.operation_description if operation else None
+                            }
+                        else:
+                            print(f"No order found for schedule item {self.job_in_progress}")
+                    else:
+                        print(f"No schedule item found with ID {self.job_in_progress}")
+                except Exception as schedule_error:
+                    print(f"Error finding schedule item: {str(schedule_error)}")
+                    import traceback
+                    print(traceback.format_exc())
+
+            # No match found, return None
+            print("No operation or order information found through any available method")
             return None
 
         except Exception as e:
-            print(f"DEBUG: Error getting order details: {str(e)}")
+            print(f"Error getting order details: {str(e)}")
             import traceback
-            print("DEBUG: Full traceback:")
             print(traceback.format_exc())
             return None
 
@@ -137,6 +175,8 @@ class ShiftSummary(db.Entity):
     machine_id = Required(int)
     shift = Required(int)
     timestamp = Required(datetime)
+
+    updatedate = Required(datetime, default=lambda: datetime.utcnow(), auto=True)
 
     off_time = Optional(time)
     idle_time = Optional(time)
@@ -155,8 +195,6 @@ class ShiftSummary(db.Entity):
     quality_loss = Optional(Decimal, precision=5, scale=2)
 
     oee = Optional(Decimal, precision=5, scale=2)
-
-    updatedate = Required(datetime, default=lambda: datetime.utcnow(), auto=True)
 
 
 class ShiftInfo(db.Entity):
@@ -178,3 +216,19 @@ class ConfigInfo(db.Entity):
     planned_non_production_time = Required(int)
     planned_downtime = Required(int)
     updatedate = Required(datetime, default=lambda: datetime.utcnow(), auto=True)
+
+
+class MachineDowntimes(db.Entity):
+    _table_ = ('production', 'machine_downtimes')
+
+    id = PrimaryKey(int, auto=True)
+    machine_id = Required(int)
+    # status = Required(int)
+    priority = Optional(int)
+    category = Optional(str, nullable=True)
+    description = Optional(str, nullable=True)
+    open_dt = Required(datetime)
+    inprogress_dt = Optional(datetime)
+    closed_dt = Optional(datetime)
+    reported_by = Optional(int)
+    action_taken = Optional(str, nullable=True)

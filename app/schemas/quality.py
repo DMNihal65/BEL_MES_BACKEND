@@ -16,7 +16,7 @@ class MasterBocBase(BaseModel):
     measured_instrument: str = Field(..., description="Measuring instrument used", min_length=1)
     op_no: int = Field(..., description="Operation number", gt=0)
     bbox: List[float] = Field(
-        ..., 
+        ...,
         description="Bounding box coordinates [x1, y1, x2, y2, x3, y3, x4, y4]",
         min_items=8,
         max_items=8
@@ -228,4 +228,3 @@ class FTPResponse(FTPBase):
 
     class Config:
         from_attributes = True
-

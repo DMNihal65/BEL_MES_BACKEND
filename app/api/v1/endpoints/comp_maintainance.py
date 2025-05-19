@@ -1,87 +1,89 @@
-from fastapi import APIRouter, HTTPException, Body, Query, Depends
+from fastapi import APIRouter, HTTPException, Body, Query, Depends, BackgroundTasks
 from pony.orm import db_session, select, commit, Database, Required, Optional as PonyOptional, PrimaryKey, Set, desc
 from app.schemas.comp_maintainance import (
     MachineStatusResponse, MachineStatusOut, UpdateMachineStatusRequest,
     StatusOut, StatusResponse, UpdateRawMaterialRequest,
     RawMaterialResponse, OrderInfo, RawMaterialsListResponse, ReferenceDataResponse, UnitResponse, StatusResponse1,
-    RawMaterialNotificationsResponse, RawMaterialNotification, MachineNotificationsResponse, MachineNotification
+    RawMaterialNotificationsResponse, RawMaterialNotification, MachineNotificationsResponse, MachineNotification,
+    OperatorMachineUpdate, OperatorRawMaterialUpdate
 )
 from app.models import MachineStatus, Status, Machine, RawMaterial, InventoryStatus, Order, Unit
+from app.models.logs import MachineStatusLog, RawMaterialStatusLog  # Import the new log models
 from typing import Optional, Dict, List
 from datetime import datetime, timedelta
-from pydantic import BaseModel
-import os
+from .notification_service import send_notification
 
 router = APIRouter(prefix="/api/v1/maintainance", tags=["maintainance"])
 
-# Create a separate database for notifications to ensure persistence
-# Use SQLite for simplicity and reliability
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "notifications.sqlite")
-notification_db = Database()
+# Function to asynchronously send notifications
+async def send_machine_notification(machine_id, machine_make, status_name, description, created_by):
+    """Send a machine notification with direct parameters instead of database entity"""
+    try:
+        with db_session:
+            # Use timestamp to get the most recent log entry
+            current_time = datetime.now()
 
+            # Query the latest log for this machine using select() and order by timestamp
+            latest_logs = select(
+                log for log in MachineStatusLog
+                if log.machine_id == machine_id
+                and log.machine_make == machine_make
+                and log.status_name == status_name
+                and log.description == description
+                and log.created_by == created_by
+            ).order_by(lambda log: desc(log.updated_at)).limit(1)
 
-# Define database entities for persistent storage
-class MachineNotificationEntity(notification_db.Entity):
-    _table_ = "machine_notifications"
-    id = PrimaryKey(int, auto=True)
-    machine_id = Required(int)
-    machine_make = Required(str)
-    status_name = Required(str)
-    description = PonyOptional(str)
-    updated_at = Required(datetime)
+            log_entries = list(latest_logs)
 
-    def to_dict(self):
-        return {
-            "machine_id": self.machine_id,
-            "machine_make": self.machine_make,
-            "status_name": self.status_name,
-            "description": self.description,
-            "updated_at": self.updated_at
-        }
+            # Check if we found any matching log
+            if log_entries:
+                log_entry = log_entries[0]
+                # Pass the found log entry to notification service
+                await send_notification(log_entry, "machine")
+            else:
+                print(f"Error: Could not find newly created machine log entry for machine_id={machine_id}")
+    except Exception as e:
+        print(f"Error in send_machine_notification: {str(e)}")
 
+async def send_material_notification(material_id, part_number, status_name, description, created_by):
+    """Send a material notification with direct parameters instead of database entity"""
+    try:
+        with db_session:
+            # Build the base query
+            query = select(
+                log for log in RawMaterialStatusLog
+                if log.material_id == material_id
+                and log.status_name == status_name
+                and log.description == description
+                and log.created_by == created_by
+            )
 
-class RawMaterialNotificationEntity(notification_db.Entity):
-    _table_ = "raw_material_notifications"
-    id = PrimaryKey(int, auto=True)
-    material_id = Required(int)
-    part_number = PonyOptional(str)
-    status_name = Required(str)
-    description = PonyOptional(str)
-    updated_at = Required(datetime)
+            # Add part_number check only if it's provided
+            if part_number:
+                query = query.filter(lambda log: log.part_number == part_number)
 
-    def to_dict(self):
-        return {
-            "id": self.material_id,
-            "part_number": self.part_number,
-            "status_name": self.status_name,
-            "description": self.description,
-            "updated_at": self.updated_at
-        }
+            # Order by most recent and limit to 1
+            latest_logs = query.order_by(lambda log: desc(log.updated_at)).limit(1)
 
+            log_entries = list(latest_logs)
 
-# Connect to SQLite database
-notification_db.bind(provider='sqlite', filename=DB_PATH, create_db=True)
-notification_db.generate_mapping(create_tables=True)
-
-
-# New Pydantic models for the operator to send updates
-class OperatorMachineUpdate(BaseModel):
-    description: str
-    is_on: bool  # True for machine ON, False for machine OFF
-
-
-class OperatorRawMaterialUpdate(BaseModel):
-    description: str
-    is_available: bool  # True for available, False for unavailable
-
+            # Check if we found any matching log
+            if log_entries:
+                log_entry = log_entries[0]
+                # Pass the found log entry to notification service
+                await send_notification(log_entry, "material")
+            else:
+                print(f"Error: Could not find newly created material log entry for material_id={material_id}")
+    except Exception as e:
+        print(f"Error in send_material_notification: {str(e)}")
 
 # Updated endpoint for operators to send machine status updates to supervisors
 @router.post("/operator/machine-update/{machine_id}", response_model=MachineStatusOut)
-async def operator_machine_update(machine_id: int, update: OperatorMachineUpdate):
+async def operator_machine_update(machine_id: int, update: OperatorMachineUpdate, background_tasks: BackgroundTasks):
     """
     Endpoint for operators to send machine status updates to supervisors.
     Allows operators to turn machine on/off and provide a description.
-    Creates supervisor notifications with database persistence.
+    Creates supervisor notifications with persistent storage in logs schema.
     """
     try:
         with db_session:
@@ -140,20 +142,38 @@ async def operator_machine_update(machine_id: int, update: OperatorMachineUpdate
             # For the response, set the current time
             current_time = datetime.now()
 
-            # Create notification in persistent database
-            with db_session:
-                MachineNotificationEntity(
-                    machine_id=machine_id,
-                    machine_make=machine.make,
-                    status_name=new_status.name,
-                    description=update.description,
-                    updated_at=current_time
-                )
-                commit()  # Ensure the transaction is committed
+            # Create log entry in the logs schema
+            log_entry = MachineStatusLog(
+                machine_id=machine_id,
+                machine_make=machine.make,
+                status_name=new_status.name,
+                description=update.description,
+                updated_at=current_time,
+                created_by=update.created_by,
+                is_acknowledged=False
+            )
+            commit()  # Ensure the transaction is committed
+
+            # Store values we need for notification
+            machine_make = machine.make
+            status_name = new_status.name
+            description = update.description
+            created_by = update.created_by
+
+            # Add task to send notification asynchronously
+            background_tasks.add_task(
+                send_machine_notification,
+                machine_id,
+                machine_make,
+                status_name,
+                description,
+                created_by
+            )
 
             # Create response object with updated data
             updated_status = MachineStatusOut(
                 machine_make=machine.make,
+                machine_id= machine.id,
                 status_name=new_status.name,
                 available_from=current_time,  # Ensure this is not null
                 description=update.description
@@ -172,11 +192,11 @@ async def operator_machine_update(machine_id: int, update: OperatorMachineUpdate
 
 # Updated endpoint for operators to send raw material status updates to supervisors
 @router.post("/operator/raw-material-update/{part_number}", response_model=RawMaterialResponse)
-async def operator_raw_material_update(part_number: str, update: OperatorRawMaterialUpdate):
+async def operator_raw_material_update(part_number: str, update: OperatorRawMaterialUpdate, background_tasks: BackgroundTasks):
     """
     Endpoint for operators to send raw material status updates to supervisors.
     Allows operators to mark raw materials as available/unavailable and provide a description.
-    Creates supervisor notifications with database persistence.
+    Creates supervisor notifications with persistent storage in logs schema.
     """
     try:
         with db_session:
@@ -240,16 +260,33 @@ async def operator_raw_material_update(part_number: str, update: OperatorRawMate
                 first_order = list(raw_material.orders)[0]
                 notification_part_number = first_order.part_number
 
-            # Create notification in persistent database
-            with db_session:
-                RawMaterialNotificationEntity(
-                    material_id=raw_material.id,
-                    part_number=notification_part_number,
-                    status_name=new_status.name,
-                    description=update.description,
-                    updated_at=current_time
-                )
-                commit()  # Ensure the transaction is committed
+            # Create log entry in the logs schema
+            log_entry = RawMaterialStatusLog(
+                material_id=raw_material.id,
+                part_number=notification_part_number,
+                status_name=new_status.name,
+                description=update.description,
+                updated_at=current_time,
+                created_by=update.created_by,
+                is_acknowledged=False
+            )
+            commit()  # Ensure the transaction is committed
+
+            # Store values we need for notification
+            material_id = raw_material.id
+            status_name = new_status.name
+            description = update.description
+            created_by = update.created_by
+
+            # Add task to send notification asynchronously
+            background_tasks.add_task(
+                send_material_notification,
+                material_id,
+                notification_part_number,
+                status_name,
+                description,
+                created_by
+            )
 
             # Create orders list for response
             orders_info = [
@@ -282,50 +319,68 @@ async def operator_raw_material_update(part_number: str, update: OperatorRawMate
         )
 
 
-# Updated endpoint for machine notifications - with database persistence
+# Updated endpoint for machine notifications - using logs schema
 @router.get("/supervisor/machine-notifications/", response_model=MachineNotificationsResponse)
 async def get_supervisor_machine_notifications(
         hours: Optional[int] = Query(None, description="Get notifications from the last X hours"),
         status: Optional[str] = Query(None, description="Filter by status name (e.g., 'stopped', 'running')"),
         machine_id: Optional[int] = Query(None, description="Filter by machine ID"),
-        limit: Optional[int] = Query(None, description="Limit the number of results")
+        limit: Optional[int] = Query(None, description="Limit the number of results"),
+        acknowledged: Optional[bool] = Query(None, description="Filter by acknowledgment status")
 ):
     """
-    Get machine status notifications for supervisors with database persistence.
-    Returns all notifications sent by operators from the persistent database, with filtering options.
+    Get machine status notifications for supervisors from logs schema.
+    Returns all notifications sent by operators with filtering options.
     """
     try:
         with db_session:
             # Start with a base query
-            query = select(n for n in MachineNotificationEntity)
+            query = select(log for log in MachineStatusLog)
 
             # Apply time filter if specified
             if hours:
                 time_threshold = datetime.now() - timedelta(hours=hours)
-                query = query.filter(lambda n: n.updated_at >= time_threshold)
+                query = query.filter(lambda log: log.updated_at >= time_threshold)
 
             # Apply status filter if specified
             if status:
                 status_lower = status.lower()
-                query = query.filter(lambda n: status_lower in n.status_name.lower())
+                query = query.filter(lambda log: status_lower in log.status_name.lower())
 
             # Apply machine_id filter if specified
             if machine_id:
-                query = query.filter(lambda n: n.machine_id == machine_id)
+                query = query.filter(lambda log: log.machine_id == machine_id)
+
+            # Apply acknowledgment filter if specified
+            if acknowledged is not None:
+                query = query.filter(lambda log: log.is_acknowledged == acknowledged)
 
             # Order by timestamp, newest first
-            query = query.order_by(lambda n: desc(n.updated_at))
+            query = query.order_by(lambda log: desc(log.updated_at))
 
             # Apply limit if specified
             if limit:
                 query = query.limit(limit)
 
             # Execute query and convert to notification objects
-            notification_entities = list(query)
-            notifications = [
-                MachineNotification(**entity.to_dict())
-                for entity in notification_entities
-            ]
+            log_entities = list(query)
+            notifications = []
+
+            for entity in log_entities:
+                # Create notification with explicit ID
+                notification = MachineNotification(
+                    id=entity.id,  # Explicitly include notification ID
+                    machine_id=entity.machine_id,
+                    machine_make=entity.machine_make,
+                    status_name=entity.status_name,
+                    description=entity.description,
+                    updated_at=entity.updated_at,
+                    created_by=entity.created_by,
+                    is_acknowledged=entity.is_acknowledged,
+                    acknowledged_by=entity.acknowledged_by,
+                    acknowledged_at=entity.acknowledged_at
+                )
+                notifications.append(notification)
 
             return MachineNotificationsResponse(
                 total_notifications=len(notifications),
@@ -339,56 +394,74 @@ async def get_supervisor_machine_notifications(
         )
 
 
-# Updated endpoint for raw material notifications - with database persistence
+# Updated endpoint for raw material notifications - using logs schema
 @router.get("/supervisor/raw-material-notifications/", response_model=RawMaterialNotificationsResponse)
 async def get_supervisor_raw_material_notifications(
         hours: Optional[int] = Query(None, description="Get notifications from the last X hours"),
         status: Optional[str] = Query(None, description="Filter by status name (e.g., 'unavailable', 'available')"),
         material_id: Optional[int] = Query(None, description="Filter by raw material ID"),
         part_number: Optional[str] = Query(None, description="Filter by part number"),
-        limit: Optional[int] = Query(None, description="Limit the number of results")
+        limit: Optional[int] = Query(None, description="Limit the number of results"),
+        acknowledged: Optional[bool] = Query(None, description="Filter by acknowledgment status")
 ):
     """
-    Get raw material status notifications for supervisors with database persistence.
-    Returns all notifications sent by operators from the persistent database, with filtering options.
+    Get raw material status notifications for supervisors from logs schema.
+    Returns all notifications sent by operators with filtering options.
     """
     try:
         with db_session:
             # Start with a base query
-            query = select(n for n in RawMaterialNotificationEntity)
+            query = select(log for log in RawMaterialStatusLog)
 
             # Apply time filter if specified
             if hours:
                 time_threshold = datetime.now() - timedelta(hours=hours)
-                query = query.filter(lambda n: n.updated_at >= time_threshold)
+                query = query.filter(lambda log: log.updated_at >= time_threshold)
 
             # Apply status filter if specified
             if status:
                 status_lower = status.lower()
-                query = query.filter(lambda n: status_lower in n.status_name.lower())
+                query = query.filter(lambda log: status_lower in log.status_name.lower())
 
             # Apply material_id filter if specified
             if material_id:
-                query = query.filter(lambda n: n.material_id == material_id)
+                query = query.filter(lambda log: log.material_id == material_id)
 
             # Apply part_number filter if specified
             if part_number and part_number.strip():
                 part_number_lower = part_number.lower()
-                query = query.filter(lambda n: n.part_number and part_number_lower in n.part_number.lower())
+                query = query.filter(lambda log: log.part_number and part_number_lower in log.part_number.lower())
+
+            # Apply acknowledgment filter if specified
+            if acknowledged is not None:
+                query = query.filter(lambda log: log.is_acknowledged == acknowledged)
 
             # Order by timestamp, newest first
-            query = query.order_by(lambda n: desc(n.updated_at))
+            query = query.order_by(lambda log: desc(log.updated_at))
 
             # Apply limit if specified
             if limit:
                 query = query.limit(limit)
 
             # Execute query and convert to notification objects
-            notification_entities = list(query)
-            notifications = [
-                RawMaterialNotification(**entity.to_dict())
-                for entity in notification_entities
-            ]
+            log_entities = list(query)
+            notifications = []
+
+            for entity in log_entities:
+                # Create notification with explicit ID
+                notification = RawMaterialNotification(
+                    id=entity.id,  # Explicitly include notification ID
+                    material_id=entity.material_id,
+                    part_number=entity.part_number,
+                    status_name=entity.status_name,
+                    description=entity.description,
+                    updated_at=entity.updated_at,
+                    created_by=entity.created_by,
+                    is_acknowledged=entity.is_acknowledged,
+                    acknowledged_by=entity.acknowledged_by,
+                    acknowledged_at=entity.acknowledged_at
+                )
+                notifications.append(notification)
 
             return RawMaterialNotificationsResponse(
                 total_notifications=len(notifications),
@@ -408,7 +481,8 @@ async def get_supervisor_machine_updates(
         hours: Optional[int] = Query(None, description="Get updates from the last X hours"),
         status: Optional[str] = Query(None, description="Filter by status name"),
         machine_id: Optional[int] = Query(None, description="Filter by machine ID"),
-        limit: Optional[int] = Query(None, description="Limit the number of results")
+        limit: Optional[int] = Query(None, description="Limit the number of results"),
+        acknowledged: Optional[bool] = Query(None, description="Filter by acknowledgment status")
 ):
     """
     Get machine status updates with persistent database storage.
@@ -416,72 +490,76 @@ async def get_supervisor_machine_updates(
     """
     # This endpoint uses the same implementation as the notifications endpoint
     # since we're now storing all updates in the database
-    return await get_supervisor_machine_notifications(hours, status, machine_id, limit)
+    return await get_supervisor_machine_notifications(hours, status, machine_id, limit, acknowledged)
 
 
 # Updated endpoint for administrators/supervisors to update machine status
-@router.put("/machine-status/{machine_id}", response_model=MachineStatusOut)
-async def update_machine_status(machine_id: int, status_update: UpdateMachineStatusRequest):
-    """
-    Update the status of a specific machine and persist the change to the notification database.
-    """
-    try:
-        with db_session:
-            # Find the existing machine status
-            machine_status = MachineStatus.get(machine=machine_id)
-            if not machine_status:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Machine status not found for machine ID: {machine_id}"
-                )
+class MachineNotificationEntity:
+    pass
 
-            # Find the new status
-            new_status = Status.get(id=status_update.status_id)
-            if not new_status:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Status with ID {status_update.status_id} not found"
-                )
 
-            # Update the machine status
-            machine_status.status = new_status
-            if status_update.available_from is not None:
-                machine_status.available_from = status_update.available_from
-
-            # Update description
-            machine_status.description = status_update.description
-
-            # Create response object with updated data
-            updated_status = MachineStatusOut(
-                machine_make=machine_status.machine.make,
-                status_name=new_status.name,
-                available_from=machine_status.available_from,
-                description=machine_status.description
-            )
-
-            # Also add to the notification database when supervisor updates
-            current_time = datetime.now()
-
-            # Create notification in persistent database
-            with db_session:
-                MachineNotificationEntity(
-                    machine_id=machine_id,
-                    machine_make=machine_status.machine.make,
-                    status_name=new_status.name,
-                    description=status_update.description,
-                    updated_at=current_time
-                )
-                commit()  # Ensure the transaction is committed
-
-            return updated_status
-
-    except HTTPException as he:
-        raise he
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error updating machine status: {str(e)}"
-        )
+# @router.put("/machine-status/{machine_id}", response_model=MachineStatusOut)
+# async def update_machine_status(machine_id: int, status_update: UpdateMachineStatusRequest):
+#     """
+#     Update the status of a specific machine and persist the change to the notification database.
+#     """
+#     try:
+#         with db_session:
+#             # Find the existing machine status
+#             machine_status = MachineStatus.get(machine=machine_id)
+#             if not machine_status:
+#                 raise HTTPException(
+#                     status_code=404,
+#                     detail=f"Machine status not found for machine ID: {machine_id}"
+#                 )
+#
+#             # Find the new status
+#             new_status = Status.get(id=status_update.status_id)
+#             if not new_status:
+#                 raise HTTPException(
+#                     status_code=404,
+#                     detail=f"Status with ID {status_update.status_id} not found"
+#                 )
+#
+#             # Update the machine status
+#             machine_status.status = new_status
+#             if status_update.available_from is not None:
+#                 machine_status.available_from = status_update.available_from
+#
+#             # Update description
+#             machine_status.description = status_update.description
+#
+#             # Create response object with updated data
+#             updated_status = MachineStatusOut(
+#                 machine_make=machine_status.machine.make,
+#                 status_name=new_status.name,
+#                 available_from=machine_status.available_from,
+#                 description=machine_status.description
+#             )
+#
+#             # Also add to the notification database when supervisor updates
+#             current_time = datetime.now()
+#
+#             # Create notification in persistent database
+#             with db_session:
+#                 MachineNotificationEntity(
+#                     machine_id=machine_id,
+#                     machine_make=machine_status.machine.make,
+#                     status_name=new_status.name,
+#                     description=status_update.description,
+#                     updated_at=current_time
+#                 )
+#                 commit()  # Ensure the transaction is committed
+#
+#             return updated_status
+#
+#     except HTTPException as he:
+#         raise he
+#     except Exception as e:
+#         raise HTTPException(
+#             status_code=500,
+#             detail=f"Error updating machine status: {str(e)}"
+#         )
 
 
 @router.get("/machine-status/", response_model=MachineStatusResponse)
@@ -499,8 +577,10 @@ async def get_machine_status():
             for ms in machine_statuses_raw:
                 machine_status = MachineStatusOut(
                     machine_make=ms.machine.make,
+                    machine_id = ms.machine.id,
                     status_name=ms.status.name,
                     available_from=ms.available_from,
+                    available_to=ms.available_to,
                     description=ms.description  # Added description
                 )
                 machine_statuses.append(machine_status)
@@ -548,10 +628,12 @@ async def get_all_statuses():
             detail=f"Error fetching statuses: {str(e)}"
         )
 
+
 @router.put("/machine-status/{machine_id}", response_model=MachineStatusOut)
 async def update_machine_status(machine_id: int, status_update: UpdateMachineStatusRequest):
     """
     Update the status of a specific machine.
+    Can update status, description, available_from, and available_to date.
     """
     try:
         with db_session:
@@ -573,18 +655,34 @@ async def update_machine_status(machine_id: int, status_update: UpdateMachineSta
 
             # Update the machine status
             machine_status.status = new_status
+
+            # Update date range if provided
             if status_update.available_from is not None:
                 machine_status.available_from = status_update.available_from
 
-            # Update description - add this line
+            # Update available_to date if provided
+            if status_update.available_to is not None:
+                machine_status.available_to = status_update.available_to
+
+            # Validate the date range if both dates are provided
+            if machine_status.available_from and machine_status.available_to:
+                if machine_status.available_from > machine_status.available_to:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="available_from date cannot be after available_to date"
+                    )
+
+            # Update description
             machine_status.description = status_update.description
 
             # Create response object with updated data
             updated_status = MachineStatusOut(
                 machine_make=machine_status.machine.make,
+                machine_id=machine_status.machine.id,
                 status_name=new_status.name,
                 available_from=machine_status.available_from,
-                description=machine_status.description  # Add this line
+                available_to=machine_status.available_to,  # Added available_to
+                description=machine_status.description
             )
 
             return updated_status

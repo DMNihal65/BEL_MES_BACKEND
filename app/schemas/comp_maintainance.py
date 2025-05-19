@@ -4,9 +4,11 @@ from pydantic import BaseModel
 
 class MachineStatusBase(BaseModel):
     machine_make: str
+    machine_id: int
     status_name: str
     description: Optional[str] = None
     available_from: Optional[datetime] = None
+    available_to: Optional[datetime] = None
 
 class MachineStatusOut(MachineStatusBase):
     pass
@@ -19,15 +21,18 @@ class UpdateMachineStatusRequest(BaseModel):
     status_id: int
     description: Optional[str] = None
     available_from: Optional[datetime] = None
+    available_to: Optional[datetime] = None
 
 # Models for operator updates
 class OperatorMachineUpdate(BaseModel):
     description: str
     is_on: bool  # True for machine ON, False for machine OFF
+    created_by: Optional[str] = None  # Operator who created the update
 
 class OperatorRawMaterialUpdate(BaseModel):
     description: str
     is_available: bool  # True for available, False for unavailable
+    created_by: Optional[str] = None  # Operator who created the update
 
 class StatusOut(BaseModel):
     id: int
@@ -77,21 +82,30 @@ class ReferenceDataResponse(BaseModel):
     statuses: List[StatusResponse1]
     units: List[UnitResponse]
 
-# Updated notification models (without is_critical)
+# Updated notification models with acknowledgment fields
 class MachineNotification(BaseModel):
+    id: Optional[int] = None  # Notification ID
     machine_id: int
     machine_make: str
     status_name: str
     description: Optional[str]
-    updated_at: Optional[datetime]  # Using available_from as a proxy for update time
+    updated_at: Optional[datetime]
+    created_by: Optional[str] = None
+    is_acknowledged: bool = False
+    acknowledged_by: Optional[str] = None
+    acknowledged_at: Optional[datetime] = None
 
 class RawMaterialNotification(BaseModel):
-    id: int
-    # child_part_number: str
+    id: Optional[int] = None  # Notification ID
+    material_id: int  # Added material_id field
     part_number: Optional[str]  # From associated order if available
     status_name: str
     description: Optional[str]
-    updated_at: Optional[datetime]  # Using available_from as a proxy for update time
+    updated_at: Optional[datetime]
+    created_by: Optional[str] = None
+    is_acknowledged: bool = False
+    acknowledged_by: Optional[str] = None
+    acknowledged_at: Optional[datetime] = None
 
 class MachineNotificationsResponse(BaseModel):
     total_notifications: int
@@ -101,4 +115,7 @@ class RawMaterialNotificationsResponse(BaseModel):
     total_notifications: int
     notifications: List[RawMaterialNotification]
 
-
+# Notification acknowledgment request
+class NotificationAcknowledgmentRequest(BaseModel):
+    notification_id: int
+    user_id: str  # User acknowledging the notification

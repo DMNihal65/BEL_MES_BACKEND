@@ -1,5 +1,6 @@
 from pony.orm import Required, Set, PrimaryKey, Optional
 from datetime import datetime
+
 from ..database.connection import db
 
 class UserRole(db.Entity):
@@ -40,3 +41,10 @@ class User(db.Entity):
     documents_v2 = Set('DocumentV2', reverse='created_by')
     document_versions_v2 = Set('DocumentVersionV2', reverse='created_by')
     document_access_logs_v2 = Set('DocumentAccessLogV2', reverse='user')
+
+
+class MachineCredential(db.Entity):
+    _table_ = ("auth", "machine_credentials")
+    id = PrimaryKey(int, auto=True)
+    machine = Required('Machine', unique=True, reverse='credential')  # ✅ reverse declared
+    password = Required(str)

@@ -1,6 +1,5 @@
 ################## machine utilization code ###############################
 
-
 from datetime import datetime, timedelta, date
 import pandas as pd
 from typing import Dict, Tuple, List

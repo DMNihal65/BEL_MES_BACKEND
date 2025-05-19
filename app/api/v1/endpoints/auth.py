@@ -282,3 +282,33 @@ def get_login_logs():
             ))
 
         return result
+
+
+@router.get("/api/v1/auth/users-get")
+@db_session
+def get_users( active_only: bool = True):
+    users = select(u for u in User if (not active_only) or u.is_active)
+
+    result = []
+    for user in users:
+        result.append({
+            "id": user.id,
+            "username": user.username,
+            "role": {
+                "role_name": user.role.role_name,
+                "access_list": user.role.access_list,
+                "created_at": user.role.created_at.isoformat() if user.role.created_at else None,
+            },
+            "created_at": user.created_at.isoformat() if user.created_at else None,
+            # add other fields as needed
+        })
+    return result
+
+@router.delete("/users/{user_id}", status_code=204)
+@db_session
+def delete_user(user_id: int):
+    user = User.get(id=user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    user.delete()
+    return

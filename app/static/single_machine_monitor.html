@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Single Machine Parameter Monitor</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f5f5f5;
+            color: #333;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        h1 {
+            color: #2c3e50;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .machine-info {
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        .parameter-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-top: 20px;
+        }
+        .parameter-card {
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .parameter-card h3 {
+            margin: 0 0 15px 0;
+            color: #2c3e50;
+            font-size: 1.1em;
+        }
+        .parameter-value {
+            font-size: 1.8em;
+            font-weight: bold;
+            color: #2c3e50;
+            margin: 10px 0;
+        }
+        .parameter-unit {
+            color: #7f8c8d;
+            font-size: 0.9em;
+        }
+        .status-badge {
+            display: inline-block;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-weight: bold;
+            color: white;
+            margin: 10px 0;
+        }
+        .connection-status {
+            text-align: center;
+            margin-bottom: 20px;
+            padding: 10px;
+            border-radius: 5px;
+        }
+        .connected {
+            background-color: #dff0d8;
+            color: #3c763d;
+        }
+        .disconnected {
+            background-color: #f2dede;
+            color: #a94442;
+        }
+        .highlight {
+            animation: highlight 1s ease-out;
+        }
+        @keyframes highlight {
+            0% { background-color: #fff3cd; }
+            100% { background-color: white; }
+        }
+        .timestamp {
+            text-align: center;
+            color: #7f8c8d;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Machine Parameter Monitor</h1>
+        
+        <div id="connectionStatus" class="connection-status">Connecting...</div>
+        
+        <div class="machine-info">
+            <h2 id="machineName">Machine Name</h2>
+            <div id="machineStatus"></div>
+        </div>
+
+        <div class="parameter-grid">
+            <!-- Voltage Parameters -->
+            <div class="parameter-card">
+                <h3>Phase Voltages</h3>
+                <div>Phase A: <span id="phaseAVoltage" class="parameter-value">--</span> <span class="parameter-unit">V</span></div>
+                <div>Phase B: <span id="phaseBVoltage" class="parameter-value">--</span> <span class="parameter-unit">V</span></div>
+                <div>Phase C: <span id="phaseCVoltage" class="parameter-value">--</span> <span class="parameter-unit">V</span></div>
+                <div>Average: <span id="avgPhaseVoltage" class="parameter-value">--</span> <span class="parameter-unit">V</span></div>
+            </div>
+
+            <div class="parameter-card">
+                <h3>Line Voltages</h3>
+                <div>Line AB: <span id="lineABVoltage" class="parameter-value">--</span> <span class="parameter-unit">V</span></div>
+                <div>Line BC: <span id="lineBCVoltage" class="parameter-value">--</span> <span class="parameter-unit">V</span></div>
+                <div>Line CA: <span id="lineCAVoltage" class="parameter-value">--</span> <span class="parameter-unit">V</span></div>
+                <div>Average: <span id="avgLineVoltage" class="parameter-value">--</span> <span class="parameter-unit">V</span></div>
+            </div>
+
+            <!-- Current Parameters -->
+            <div class="parameter-card">
+                <h3>Current Measurements</h3>
+                <div>Phase A: <span id="phaseACurrent" class="parameter-value">--</span> <span class="parameter-unit">A</span></div>
+                <div>Phase B: <span id="phaseBCurrent" class="parameter-value">--</span> <span class="parameter-unit">A</span></div>
+                <div>Phase C: <span id="phaseCCurrent" class="parameter-value">--</span> <span class="parameter-unit">A</span></div>
+                <div>Average: <span id="avgThreePhaseCurrent" class="parameter-value">--</span> <span class="parameter-unit">A</span></div>
+            </div>
+
+            <!-- Power Parameters -->
+            <div class="parameter-card">
+                <h3>Power Measurements</h3>
+                <div>Power Factor: <span id="powerFactor" class="parameter-value">--</span></div>
+                <div>Frequency: <span id="frequency" class="parameter-value">--</span> <span class="parameter-unit">Hz</span></div>
+                <div>Total Power: <span id="totalPower" class="parameter-value">--</span> <span class="parameter-unit">kW</span></div>
+                <div>Energy Consumed: <span id="energyConsumed" class="parameter-value">--</span> <span class="parameter-unit">kWh</span></div>
+            </div>
+        </div>
+
+        <div id="timestamp" class="timestamp"></div>
+    </div>
+
+    <script>
+        let eventSource = null;
+        const connectionStatus = document.getElementById('connectionStatus');
+        let reconnectAttempts = 0;
+        const maxReconnectAttempts = 5;
+
+        function getStatusColor(status) {
+            const colors = {
+                0: '#dc3545',  // Red for offline/error
+                1: '#28a745',  // Green for running
+                2: '#ffc107',  // Yellow for idle
+                3: '#17a2b8',  // Blue for setup
+                'OFFLINE': '#6c757d'  // Grey for offline
+            };
+            return colors[status] || '#6c757d';
+        }
+
+        function formatTimestamp(isoString) {
+            const date = new Date(isoString);
+            return date.toLocaleString();
+        }
+
+        function updateParameterValue(elementId, value, decimals = 2) {
+            const element = document.getElementById(elementId);
+            if (!element) return;
+
+            const oldValue = element.textContent;
+            const newValue = value === null || value === undefined ? '--' : 
+                           typeof value === 'number' ? value.toFixed(decimals) : value;
+
+            element.textContent = newValue;
+
+            // Highlight changes
+            if (oldValue !== newValue && oldValue !== '--') {
+                element.parentElement.classList.remove('highlight');
+                void element.parentElement.offsetWidth; // Trigger reflow
+                element.parentElement.classList.add('highlight');
+            }
+        }
+
+        function updateUI(data) {
+            // Update machine info
+            document.getElementById('machineName').textContent = data.machine_name;
+            const statusElement = document.getElementById('machineStatus');
+            statusElement.innerHTML = `<span class="status-badge" style="background-color: ${getStatusColor(data.status)}">${data.status}</span>`;
+
+            // Update voltage parameters
+            updateParameterValue('phaseAVoltage', data.phase_a_voltage);
+            updateParameterValue('phaseBVoltage', data.phase_b_voltage);
+            updateParameterValue('phaseCVoltage', data.phase_c_voltage);
+            updateParameterValue('avgPhaseVoltage', data.avg_phase_voltage);
+            updateParameterValue('lineABVoltage', data.line_ab_voltage);
+            updateParameterValue('lineBCVoltage', data.line_bc_voltage);
+            updateParameterValue('lineCAVoltage', data.line_ca_voltage);
+            updateParameterValue('avgLineVoltage', data.avg_line_voltage);
+
+            // Update current parameters
+            updateParameterValue('phaseACurrent', data.phase_a_current);
+            updateParameterValue('phaseBCurrent', data.phase_b_current);
+            updateParameterValue('phaseCCurrent', data.phase_c_current);
+            updateParameterValue('avgThreePhaseCurrent', data.avg_three_phase_current);
+
+            // Update power parameters
+            updateParameterValue('powerFactor', data.power_factor, 3);
+            updateParameterValue('frequency', data.frequency, 1);
+            updateParameterValue('totalPower', data.total_instantaneous_power);
+            updateParameterValue('energyConsumed', data.active_energy_delivered);
+
+            // Update timestamp
+            document.getElementById('timestamp').textContent = `Last Updated: ${formatTimestamp(data.timestamp)}`;
+        }
+
+        function connectToMachine(machineId) {
+            // Close existing connection if any
+            if (eventSource) {
+                eventSource.close();
+            }
+
+            // Reset reconnection attempts
+            reconnectAttempts = 0;
+
+            // Connect to SSE endpoint
+            const serverUrl = 'http://172.18.7.93:9999';
+            eventSource = new EventSource(`${serverUrl}/api/v1/energy-monitoring/machine/${machineId}/parameters-stream`);
+
+            console.log('Connecting to:', `${serverUrl}/api/v1/energy-monitoring/machine/${machineId}/parameters-stream`);
+
+            eventSource.onopen = () => {
+                console.log('Connection established');
+                connectionStatus.textContent = 'Connected to server';
+                connectionStatus.className = 'connection-status connected';
+                reconnectAttempts = 0;
+            };
+
+            eventSource.onmessage = (event) => {
+                console.log('Received data:', event.data);
+                const data = JSON.parse(event.data);
+                updateUI(data);
+            };
+
+            eventSource.onerror = (error) => {
+                console.error('SSE Error:', error);
+                reconnectAttempts++;
+                
+                if (reconnectAttempts <= maxReconnectAttempts) {
+                    const waitTime = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
+                    connectionStatus.textContent = `Connection failed. Retrying in ${waitTime/1000} seconds... (Attempt ${reconnectAttempts}/${maxReconnectAttempts})`;
+                    connectionStatus.className = 'connection-status disconnected';
+                    
+                    eventSource.close();
+                    
+                    setTimeout(() => {
+                        connectToMachine(machineId);
+                    }, waitTime);
+                } else {
+                    connectionStatus.textContent = 'Connection failed. Please refresh the page to try again.';
+                    connectionStatus.className = 'connection-status disconnected';
+                    eventSource.close();
+                }
+            };
+        }
+
+        // Get machine ID from URL parameters
+        const urlParams = new URLSearchParams(window.location.search);
+        const machineId = urlParams.get('machine_id');
+
+        if (!machineId) {
+            connectionStatus.textContent = 'Error: No machine ID provided. Use ?machine_id=X in the URL.';
+            connectionStatus.className = 'connection-status disconnected';
+        } else {
+            // Connect to the specified machine
+            connectToMachine(machineId);
+        }
+    </script>
+</body>
+</html> 

@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Machine Parameters Monitor</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .machine-card {
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+            padding: 20px;
+        }
+        .machine-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid #eee;
+        }
+        .machine-title {
+            font-size: 1.2em;
+            font-weight: bold;
+        }
+        .status-badge {
+            padding: 5px 10px;
+            border-radius: 4px;
+            font-weight: bold;
+            color: white;
+        }
+        .parameters-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+            gap: 15px;
+        }
+        .parameter-item {
+            background-color: #f8f9fa;
+            padding: 15px;
+            border-radius: 4px;
+            transition: all 0.3s ease;
+        }
+        .parameter-item.changed {
+            background-color: #fff3cd;
+            border-left: 4px solid #ffc107;
+        }
+        .parameter-label {
+            font-size: 0.9em;
+            color: #666;
+            margin-bottom: 8px;
+            font-weight: bold;
+        }
+        .parameter-value {
+            font-size: 1.1em;
+            font-weight: bold;
+            color: #333;
+        }
+        .parameter-previous {
+            font-size: 0.9em;
+            color: #999;
+            margin-top: 5px;
+            display: none;
+        }
+        .changed .parameter-previous {
+            display: block;
+        }
+        .parameter-unit {
+            font-size: 0.8em;
+            color: #666;
+            margin-left: 4px;
+        }
+        .connection-status {
+            text-align: center;
+            margin-bottom: 20px;
+            padding: 10px;
+            border-radius: 5px;
+        }
+        .connected {
+            background-color: #dff0d8;
+            color: #3c763d;
+        }
+        .disconnected {
+            background-color: #f2dede;
+            color: #a94442;
+        }
+        .timestamp {
+            font-size: 0.8em;
+            color: #666;
+            margin-top: 15px;
+            text-align: right;
+        }
+        .change-arrow {
+            display: inline-block;
+            margin: 0 5px;
+            color: #666;
+        }
+        .value-increased {
+            color: #28a745;
+        }
+        .value-decreased {
+            color: #dc3545;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Machine Parameters Monitor</h1>
+        <div id="connectionStatus" class="connection-status">Connecting...</div>
+        <div id="machineContainer">
+            <!-- Machine cards will be inserted here -->
+        </div>
+    </div>
+
+    <script>
+        let machineStates = {};
+        const connectionStatus = document.getElementById('connectionStatus');
+        const machineContainer = document.getElementById('machineContainer');
+
+        const parameterUnits = {
+            'phase_a_voltage': 'V',
+            'phase_b_voltage': 'V',
+            'phase_c_voltage': 'V',
+            'avg_phase_voltage': 'V',
+            'line_ab_voltage': 'V',
+            'line_bc_voltage': 'V',
+            'line_ca_voltage': 'V',
+            'avg_line_voltage': 'V',
+            'phase_a_current': 'A',
+            'phase_b_current': 'A',
+            'phase_c_current': 'A',
+            'avg_three_phase_current': 'A',
+            'power_factor': '',
+            'frequency': 'Hz',
+            'total_instantaneous_power': 'kW',
+            'active_energy_delivered': 'kWh'
+        };
+
+        function getStatusColor(status) {
+            const colors = {
+                0: '#dc3545',  // Red for offline/error
+                1: '#28a745',  // Green for running
+                2: '#ffc107',  // Yellow for idle
+                3: '#17a2b8',  // Blue for setup
+                'OFFLINE': '#6c757d'  // Grey for offline
+            };
+            return colors[status] || '#6c757d';
+        }
+
+        function formatValue(value, decimals = 2) {
+            return value !== null && value !== undefined ? Number(value).toFixed(decimals) : 'N/A';
+        }
+
+        function formatTimestamp(isoString) {
+            const date = new Date(isoString);
+            return date.toLocaleString();
+        }
+
+        function getChangeIndicator(newValue, oldValue) {
+            if (newValue === null || oldValue === null) return '';
+            if (newValue > oldValue) {
+                return '<span class="change-arrow value-increased">↑</span>';
+            } else if (newValue < oldValue) {
+                return '<span class="change-arrow value-decreased">↓</span>';
+            }
+            return '';
+        }
+
+        function createParameterElement(label, value, oldValue, unit = '') {
+            const paramKey = label.toLowerCase().replace(/ /g, '_');
+            const div = document.createElement('div');
+            const hasChanged = oldValue !== undefined && oldValue !== value;
+            div.className = 'parameter-item' + (hasChanged ? ' changed' : '');
+            
+            const changeIndicator = hasChanged ? getChangeIndicator(value, oldValue) : '';
+            
+            div.innerHTML = `
+                <div class="parameter-label">${label}</div>
+                <div class="parameter-value">
+                    ${formatValue(value)}${unit ? `<span class="parameter-unit">${unit}</span>` : ''}
+                    ${changeIndicator}
+                </div>
+                ${hasChanged ? `
+                    <div class="parameter-previous">
+                        Previous: ${formatValue(oldValue)}${unit ? `<span class="parameter-unit">${unit}</span>` : ''}
+                    </div>
+                ` : ''}
+            `;
+            return div;
+        }
+
+        function updateMachineCard(machine, previousState) {
+            const cardId = `machine-${machine.machine_id}`;
+            let card = document.getElementById(cardId);
+            
+            if (!card) {
+                card = document.createElement('div');
+                card.id = cardId;
+                card.className = 'machine-card';
+                machineContainer.appendChild(card);
+            }
+
+            const statusColor = getStatusColor(machine.status);
+            
+            // Create the header section
+            const headerHtml = `
+                <div class="machine-header">
+                    <div class="machine-title">${machine.machine_name} (ID: ${machine.machine_id})</div>
+                    <span class="status-badge" style="background-color: ${statusColor}">${machine.status}</span>
+                </div>
+            `;
+
+            // Create the parameters grid
+            const parametersGrid = document.createElement('div');
+            parametersGrid.className = 'parameters-grid';
+
+            // Add all parameters
+            const parameters = {
+                'Phase A Voltage': machine.phase_a_voltage,
+                'Phase B Voltage': machine.phase_b_voltage,
+                'Phase C Voltage': machine.phase_c_voltage,
+                'Avg Phase Voltage': machine.avg_phase_voltage,
+                'Line AB Voltage': machine.line_ab_voltage,
+                'Line BC Voltage': machine.line_bc_voltage,
+                'Line CA Voltage': machine.line_ca_voltage,
+                'Avg Line Voltage': machine.avg_line_voltage,
+                'Phase A Current': machine.phase_a_current,
+                'Phase B Current': machine.phase_b_current,
+                'Phase C Current': machine.phase_c_current,
+                'Avg Three Phase Current': machine.avg_three_phase_current,
+                'Power Factor': machine.power_factor,
+                'Frequency': machine.frequency,
+                'Total Power': machine.total_instantaneous_power,
+                'Energy Consumed': machine.active_energy_delivered
+            };
+
+            for (const [label, value] of Object.entries(parameters)) {
+                const paramKey = label.toLowerCase().replace(/ /g, '_');
+                const unit = parameterUnits[paramKey] || '';
+                const oldValue = previousState ? previousState[paramKey] : undefined;
+                parametersGrid.appendChild(createParameterElement(label, value, oldValue, unit));
+            }
+
+            // Add timestamp
+            const timestampDiv = document.createElement('div');
+            timestampDiv.className = 'timestamp';
+            timestampDiv.textContent = `Last updated: ${formatTimestamp(machine.timestamp)}`;
+
+            // Update the card content
+            card.innerHTML = headerHtml;
+            card.appendChild(parametersGrid);
+            card.appendChild(timestampDiv);
+        }
+
+        function updateUI(states) {
+            for (const machineId in states) {
+                if (machineId !== 'initialized') {
+                    updateMachineCard(states[machineId], machineStates[machineId]);
+                }
+            }
+        }
+
+        // Connect to SSE endpoint
+        const serverUrl = 'http://172.18.7.93:9999';  // Specific server address
+        const eventSource = new EventSource(`${serverUrl}/api/v1/energy-monitoring/machine-parameters-stream`);
+
+        console.log('Connecting to:', `${serverUrl}/api/v1/energy-monitoring/machine-parameters-stream`);
+
+        let reconnectAttempts = 0;
+        const maxReconnectAttempts = 5;
+
+        eventSource.onopen = () => {
+            console.log('Connection established');
+            connectionStatus.textContent = 'Connected to server';
+            connectionStatus.className = 'connection-status connected';
+            reconnectAttempts = 0;
+        };
+
+        eventSource.onmessage = (event) => {
+            console.log('Received data:', event.data);
+            const updates = JSON.parse(event.data);
+            
+            // If this is the initial state, replace everything
+            if (Array.isArray(updates) && updates.length > 0 && !machineStates.initialized) {
+                updates.forEach(machine => {
+                    machineStates[machine.machine_id] = machine;
+                });
+                machineStates.initialized = true;
+            } 
+            // Otherwise, update only the changed machines
+            else {
+                updates.forEach(machine => {
+                    machineStates[machine.machine_id] = machine;
+                });
+            }
+            
+            updateUI(machineStates);
+        };
+
+        eventSource.onerror = (error) => {
+            console.error('SSE Error:', error);
+            reconnectAttempts++;
+            
+            if (reconnectAttempts <= maxReconnectAttempts) {
+                const waitTime = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
+                connectionStatus.textContent = `Connection failed. Retrying in ${waitTime/1000} seconds... (Attempt ${reconnectAttempts}/${maxReconnectAttempts})`;
+                connectionStatus.className = 'connection-status disconnected';
+                
+                // Close the current connection
+                eventSource.close();
+                
+                // Attempt to reconnect after the wait time
+                setTimeout(() => {
+                    window.location.reload();
+                }, waitTime);
+            } else {
+                connectionStatus.textContent = 'Connection failed. Please refresh the page manually to try again.';
+                connectionStatus.className = 'connection-status disconnected';
+                eventSource.close();
+            }
+        };
+    </script>
+</body>
+</html> 
