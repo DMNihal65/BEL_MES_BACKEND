@@ -12,7 +12,7 @@ COPY . .
 # Create .env file with the provided settings
 RUN echo "DB_HOST=172.16.0.203" > .env && \
     echo "DB_PORT=5432" >> .env && \
-    echo "DB_NAME=BEL_DEMO2" >> .env && \
+    echo "DB_NAME=BEL_DEMO3" >> .env && \
     echo "DB_USER=cmtismc" >> .env && \
     echo "DB_PASSWORD=cmtismc@2025" >> .env && \
     echo "SECRET_KEY=BEL_MES_25" >> .env && \

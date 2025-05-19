@@ -57,12 +57,72 @@ class MachineRawLive(db.Entity):
     actual_job = Optional(Operation, reverse='machine_raw_live_2')
 
     def get_order_details(self):
-        """Get associated order details through job_in_progress (operation_id) or by matching program name"""
+        """Get associated order details through actual_job or scheduled_job relationships"""
         try:
-            # First approach: Use job_in_progress (operation_id) if available
+            # First approach: Use actual_job if available
+            if self.actual_job:
+                try:
+                    print(f"\n=== Debug: Using actual_job with ID {self.actual_job.id} ===")
+                    operation = self.actual_job
+                    if operation:
+                        print(f"Found operation: ID={operation.id}, Number={operation.operation_number}")
+
+                        # Get order from operation
+                        order = operation.order
+                        if order:
+                            print(f"Found order: PO={order.production_order}, Part={order.part_number}")
+                            return {
+                                'production_order': order.production_order,
+                                'part_number': order.part_number,
+                                'part_description': order.part_description,
+                                'required_quantity': order.required_quantity,
+                                'launched_quantity': order.launched_quantity,
+                                'operation_number': operation.operation_number,
+                                'operation_description': operation.operation_description
+                            }
+                        else:
+                            print(f"No order found for actual_job operation {operation.id}")
+                    else:
+                        print(f"Actual job reference exists but operation is None")
+                except Exception as actual_job_error:
+                    print(f"Error processing actual_job: {str(actual_job_error)}")
+                    import traceback
+                    print(traceback.format_exc())
+
+            # Second approach: Use scheduled_job if available
+            if self.scheduled_job:
+                try:
+                    print(f"\n=== Debug: Using scheduled_job with ID {self.scheduled_job.id} ===")
+                    operation = self.scheduled_job
+                    if operation:
+                        print(f"Found operation: ID={operation.id}, Number={operation.operation_number}")
+
+                        # Get order from operation
+                        order = operation.order
+                        if order:
+                            print(f"Found order: PO={order.production_order}, Part={order.part_number}")
+                            return {
+                                'production_order': order.production_order,
+                                'part_number': order.part_number,
+                                'part_description': order.part_description,
+                                'required_quantity': order.required_quantity,
+                                'launched_quantity': order.launched_quantity,
+                                'operation_number': operation.operation_number,
+                                'operation_description': operation.operation_description
+                            }
+                        else:
+                            print(f"No order found for scheduled_job operation {operation.id}")
+                    else:
+                        print(f"Scheduled job reference exists but operation is None")
+                except Exception as scheduled_job_error:
+                    print(f"Error processing scheduled_job: {str(scheduled_job_error)}")
+                    import traceback
+                    print(traceback.format_exc())
+
+            # Third approach: Use job_in_progress to find scheduled item
             if self.job_in_progress:
                 try:
-                    print(f"\n=== Debug: Looking up details for schedule item ID {self.job_in_progress} ===")
+                    print(f"\n=== Debug: Using job_in_progress ID {self.job_in_progress} ===")
                     # Get the schedule item directly by ID
                     schedule_item = PlannedScheduleItem.get(id=self.job_in_progress)
                     if schedule_item:
@@ -94,188 +154,11 @@ class MachineRawLive(db.Entity):
                     print(f"Error finding schedule item: {str(schedule_error)}")
                     import traceback
                     print(traceback.format_exc())
-                    # Continue to fallback mechanism
-
-            # Fallback approach: Try to match active_program with program_name in master order
-            if self.active_program:
-                try:
-                    print(f"\n=== Debug: Fallback - Looking up program with name '{self.active_program}' ===")
-
-                    # Find programs matching the active_program
-                    matching_programs = []
-                    try:
-                        print("START===================================================")
-                        print("The active program from the machine_raw_live is:", self.active_program)
-
-                        # Use direct SQL queries instead of generator expression to avoid tuple index error
-                        # Method 1: Exact match on program_name
-                        programs_list = Program.select()[:]  # Get all programs first
-                        for program in programs_list:
-                            if program.program_name == self.active_program:
-                                matching_programs.append(program)
-
-                        print(f"Found {len(matching_programs)} programs matching name exactly")
-
-                        # Method 2: Match program name at the end of the path
-                        if not matching_programs and self.active_program:
-                            print("Trying to match program name at the end of the path...")
-                            try:
-                                program_file = self.active_program.split('\\')[-1]
-                                print(f"Extracted filename: {program_file}")
-
-                                for program in programs_list:
-                                    if program.program_name and program.program_name.endswith(program_file):
-                                        matching_programs.append(program)
-
-                                print(f"Found {len(matching_programs)} programs matching filename at end of path")
-                            except Exception as split_error:
-                                print(f"Error splitting path: {str(split_error)}")
-
-                        # Method 3: Try matching program_number
-                        if not matching_programs and self.active_program:
-                            print("Trying to match program number...")
-
-                            for program in programs_list:
-                                if program.program_number == self.active_program:
-                                    matching_programs.append(program)
-
-                            print(f"Found {len(matching_programs)} programs matching program number")
-
-                        # Method 4: Try substring matching (as a last resort)
-                        if not matching_programs and self.active_program:
-                            print("Trying substring matching as a final attempt...")
-
-                            # Extract filename without path
-                            try:
-                                # Try with backslash path separator
-                                if '\\' in self.active_program:
-                                    filename = self.active_program.split('\\')[-1]
-                                # Try with forward slash path separator
-                                elif '/' in self.active_program:
-                                    filename = self.active_program.split('/')[-1]
-                                else:
-                                    filename = self.active_program
-
-                                # Remove extension if present
-                                if '.' in filename:
-                                    filename_no_ext = filename.split('.')[0]
-                                else:
-                                    filename_no_ext = filename
-
-                                print(f"Looking for programs containing: '{filename_no_ext}'")
-
-                                for program in programs_list:
-                                    if program.program_name and filename_no_ext in program.program_name:
-                                        print(f"Found substring match: '{filename_no_ext}' in '{program.program_name}'")
-                                        matching_programs.append(program)
-
-                                print(f"Found {len(matching_programs)} programs with substring matching")
-                            except Exception as substring_error:
-                                print(f"Error in substring matching: {str(substring_error)}")
-
-                        print("===================================================END")
-                    except Exception as match_error:
-                        print(f"Error during program matching: {str(match_error)}")
-                        import traceback
-                        print(traceback.format_exc())
-
-                    # Process each matching program
-                    for program in matching_programs:
-                        try:
-                            print(f"Processing program: ID={program.id}, Name={program.program_name}")
-
-                            # Check for operation relationship
-                            operation = None
-                            try:
-                                if hasattr(program, 'operation'):
-                                    operation = program.operation
-                                    if operation:
-                                        print(
-                                            f"Found operation: ID={operation.id}, Number={operation.operation_number}")
-                                    else:
-                                        print("Program has no associated operation (operation is None)")
-                                        continue
-                                else:
-                                    print("Program has no 'operation' attribute")
-
-                                    # Try to get operation through the database relationship
-                                    print(f"Trying to find operation for program ID {program.id} through database...")
-                                    program_with_relations = Program.get(id=program.id)
-                                    if program_with_relations:
-                                        operation = program_with_relations.operation
-                                        if operation:
-                                            print(f"Found operation through database lookup: ID={operation.id}")
-                                        else:
-                                            print("No operation found through database lookup")
-                                            continue
-                                    else:
-                                        print(f"Could not find program with ID {program.id}")
-                                        continue
-                            except AttributeError as attr_error:
-                                print(f"Attribute error checking operation: {attr_error}")
-                                continue
-
-                            # Check for order relationship
-                            order = None
-                            try:
-                                if operation and hasattr(operation, 'order'):
-                                    order = operation.order
-                                    if order:
-                                        print(f"Found order: PO={order.production_order}, Part={order.part_number}")
-                                    else:
-                                        print("Operation has no associated order (order is None)")
-                                        continue
-                                elif operation:
-                                    print("Operation has no 'order' attribute")
-
-                                    # Try to get order through the database relationship
-                                    print(f"Trying to find order for operation ID {operation.id} through database...")
-                                    operation_with_relations = Operation.get(id=operation.id)
-                                    if operation_with_relations:
-                                        order = operation_with_relations.order
-                                        if order:
-                                            print(f"Found order through database lookup: PO={order.production_order}")
-                                        else:
-                                            print("No order found through database lookup")
-                                            continue
-                                    else:
-                                        print(f"Could not find operation with ID {operation.id}")
-                                        continue
-                                else:
-                                    print("Operation is None, cannot check for order")
-                                    continue
-                            except AttributeError as attr_error:
-                                print(f"Attribute error checking order: {attr_error}")
-                                continue
-
-                            # Return order details if all relationships are valid
-                            if order and operation:
-                                return {
-                                    'production_order': order.production_order,
-                                    'part_number': order.part_number,
-                                    'part_description': order.part_description,
-                                    'required_quantity': order.required_quantity,
-                                    'launched_quantity': order.launched_quantity,
-                                    'operation_number': operation.operation_number,
-                                    'operation_description': operation.operation_description
-                                }
-                            else:
-                                print("Missing required order or operation relationship")
-                        except Exception as program_process_error:
-                            print(f"Error processing program {program.id}: {str(program_process_error)}")
-                            import traceback
-                            print(traceback.format_exc())
-                            continue  # Try next program
-
-                    print(f"No valid program/operation/order relationship found for '{self.active_program}'")
-
-                except Exception as program_error:
-                    print(f"Error in program lookup fallback: {str(program_error)}")
-                    import traceback
-                    print(traceback.format_exc())
 
             # No match found, return None
+            print("No operation or order information found through any available method")
             return None
+
         except Exception as e:
             print(f"Error getting order details: {str(e)}")
             import traceback
