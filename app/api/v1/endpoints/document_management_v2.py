@@ -1789,81 +1789,6 @@ async def get_ipid_documents(
         )
 
 
-# Add a helper function to get documents by operation
-@router.get("/by-operation/{production_order}/{operation_number}", response_model=List[DocumentResponse])
-def get_documents_by_operation(
-        production_order: str,
-        operation_number: int,
-        current_user: User = Depends(get_current_user)
-):
-    """Get all documents (including IPID) for a specific operation of a production order"""
-    try:
-        with db_session:
-            # Re-fetch user within session
-            user = User[current_user.id]
-
-            # Get the order and operation
-            order = Order.get(production_order=production_order)
-            if not order:
-                raise HTTPException(status_code=404, detail="Production order not found")
-
-            operation = Operation.get(order=order, operation_number=operation_number)
-            if not operation:
-                raise HTTPException(status_code=404, detail="Operation not found")
-
-            # Get all documents for this operation
-            documents = select(d for d in Document
-                               if d.is_active and
-                               d.part_number_id == order and
-                               d.latest_version
-                               )[:]
-
-            # Prepare response data
-            response_data = []
-            for doc in documents:
-                metadata = doc.latest_version.metadata
-                if isinstance(metadata, dict) and metadata.get("operation_number") == operation_number:
-                    # Log access
-                    DocumentAccessLog(
-                        document=doc,
-                        version=doc.latest_version,
-                        user=user,
-                        action_type="view"
-                    )
-
-                    # Create response dictionary matching DocumentResponse model
-                    response_data.append({
-                        "id": doc.id,
-                        "name": doc.document_name,  # Changed from document_name to name
-                        "folder_id": doc.folder.id,
-                        "doc_type_id": doc.doc_type.id,
-                        "description": doc.description,
-                        "part_number": order.production_order,  # Use production_order as part_number
-                        "production_order_id": order.id,
-                        "created_at": doc.created_at,
-                        "created_by_id": doc.created_by.id,
-                        "is_active": doc.is_active,
-                        "latest_version": {
-                            "id": doc.latest_version.id,
-                            "document_id": doc.id,
-                            "version_number": doc.latest_version.version_number,
-                            "minio_path": doc.latest_version.minio_object_id,
-                            "file_size": doc.latest_version.file_size,
-                            "checksum": doc.latest_version.checksum,
-                            "created_at": doc.latest_version.created_at,
-                            "created_by_id": doc.latest_version.created_by.id,
-                            "is_active": doc.latest_version.status == 'active',
-                            "metadata": doc.latest_version.metadata
-                        } if doc.latest_version else None
-                    })
-
-            commit()
-            return response_data
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 @router.get("/ipid/download/{production_order}/{operation_number}")
 def download_ipid_document(
         production_order: str,
@@ -1951,52 +1876,87 @@ def download_ipid_document(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# Optional: Add an endpoint to list available documents before downloading
-@router.get("/ipid/available/{production_order}/{operation_number}")
-def list_available_ipid_documents(
+@router.get("/ipid/by-po/{production_order}", response_model=List[DocumentResponse])
+async def get_ipid_documents_by_po(
         production_order: str,
-        operation_number: int,
         current_user: User = Depends(get_current_user)
 ):
-    """List all available IPID documents for a specific production order and operation"""
+    """Get all IPID documents for a specific production order across all operations"""
     try:
         with db_session:
+            # Get IPID document type using DocumentTypes enum
+            doc_type = DocumentTypeV2.get(name=DocumentTypes.IPID.value)
+            if not doc_type:
+                raise HTTPException(status_code=404, detail="IPID document type not found")
+
             # Get the order
             order = Order.get(production_order=production_order)
             if not order:
                 raise HTTPException(status_code=404, detail="Production order not found")
 
-            # Get IPID document type
-            doc_type = DocType.get(type_name="IPID")
-            if not doc_type:
-                return []
+            # Query documents using production_order
+            documents = select(d for d in DocumentV2
+                               if d.production_order == order
+                               and d.doc_type == doc_type
+                               and d.is_active == True)[:]
 
-            # Get all documents
-            documents = select(d for d in Document
-                               if d.is_active and
-                               d.part_number_id == order and
-                               d.doc_type == doc_type and
-                               d.latest_version
-                               ).order_by(lambda d: desc(d.created_at))[:]
-
-            # Filter and prepare response
-            response_data = []
+            # Format response according to DocumentResponse model
+            response = []
             for doc in documents:
-                metadata = doc.latest_version.metadata
-                if isinstance(metadata, dict) and metadata.get("operation_number") == operation_number:
-                    response_data.append({
-                        "id": doc.id,
-                        "document_name": doc.document_name,
-                        "created_at": doc.created_at,
-                        "version": doc.latest_version.version_number,
-                        "file_size": doc.latest_version.file_size,
-                        "created_by": doc.created_by.id
-                    })
+                if not doc.latest_version:
+                    continue
 
-            return response_data
+                # Extract operation number from metadata if available
+                operation_number = None
+                if doc.latest_version.metadata and isinstance(doc.latest_version.metadata, dict):
+                    operation_number = doc.latest_version.metadata.get("operation_number")
+
+                doc_response = {
+                    "id": doc.id,
+                    "name": doc.name,
+                    "folder_id": doc.folder.id,
+                    "doc_type_id": doc.doc_type.id,
+                    "description": doc.description,
+                    "part_number": doc.part_number,
+                    "production_order_id": doc.production_order.id if doc.production_order else None,
+                    "created_at": doc.created_at,
+                    "created_by_id": doc.created_by.id,
+                    "is_active": doc.is_active,
+                    "latest_version": {
+                        "id": doc.latest_version.id,
+                        "document_id": doc.id,
+                        "version_number": doc.latest_version.version_number,
+                        "minio_path": doc.latest_version.minio_path,
+                        "file_size": doc.latest_version.file_size,
+                        "checksum": doc.latest_version.checksum,
+                        "created_at": doc.latest_version.created_at,
+                        "created_by_id": doc.latest_version.created_by.id,
+                        "is_active": doc.latest_version.is_active,
+                        "metadata": {
+                            **(doc.latest_version.metadata or {}),
+                            "operation_number": operation_number
+                        }
+                    }
+                }
+                response.append(doc_response)
+
+            # Sort response by operation number if available
+            response.sort(
+                key=lambda x: (
+                    int(x["latest_version"]["metadata"].get("operation_number", 999999))
+                    if x["latest_version"]["metadata"].get("operation_number") is not None
+                    else 999999
+                )
+            )
+
+            return response
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error retrieving IPID documents: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error retrieving IPID documents: {str(e)}"
+        )
 
 
 @router.get("/documents/download-latest_new/{part_number}/{doc_type}")
@@ -4670,6 +4630,74 @@ async def list_deleted_folders(
         )
 
 
+@router.get("/ipid/all", response_model=List[DocumentResponse])
+async def get_all_ipid_documents(
+        current_user: User = Depends(get_current_user)
+):
+    """Get all IPID documents across all production orders and operations"""
+    try:
+        with db_session:
+            # Get IPID document type using DocumentTypes enum
+            doc_type = DocumentTypeV2.get(name=DocumentTypes.IPID.value)
+            if not doc_type:
+                raise HTTPException(status_code=404, detail="IPID document type not found")
+
+            # Query all active IPID documents, ordered by most recent first
+            documents = select(d for d in DocumentV2
+                               if d.doc_type == doc_type
+                               and d.is_active == True
+                               ).order_by(lambda d: desc(d.created_at))[:]
+
+            # Format response according to DocumentResponse model
+            response = []
+            for doc in documents:
+                if not doc.latest_version:
+                    continue
+
+                # Extract operation number from metadata if available
+                operation_number = None
+                if doc.latest_version.metadata and isinstance(doc.latest_version.metadata, dict):
+                    operation_number = doc.latest_version.metadata.get("operation_number")
+
+                doc_response = {
+                    "id": doc.id,
+                    "name": doc.name,
+                    "folder_id": doc.folder.id,
+                    "doc_type_id": doc.doc_type.id,
+                    "description": doc.description,
+                    "part_number": doc.part_number,
+                    "production_order_id": doc.production_order.id if doc.production_order else None,
+                    "created_at": doc.created_at,
+                    "created_by_id": doc.created_by.id,
+                    "is_active": doc.is_active,
+                    "latest_version": {
+                        "id": doc.latest_version.id,
+                        "document_id": doc.id,
+                        "version_number": doc.latest_version.version_number,
+                        "minio_path": doc.latest_version.minio_path,
+                        "file_size": doc.latest_version.file_size,
+                        "checksum": doc.latest_version.checksum,
+                        "created_at": doc.latest_version.created_at,
+                        "created_by_id": doc.latest_version.created_by.id,
+                        "is_active": doc.latest_version.is_active,
+                        "metadata": {
+                            **(doc.latest_version.metadata or {}),
+                            "operation_number": operation_number
+                        }
+                    }
+                }
+                response.append(doc_response)
+
+            return response
+
+    except Exception as e:
+        logger.error(f"Error retrieving IPID documents: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error retrieving IPID documents: {str(e)}"
+        )
+
+
 @router.get("/ipid/structure/{po_number}")
 async def get_ipid_folder_structure(
         po_number: str,
@@ -4809,7 +4837,7 @@ async def get_ipid_folder_structure(
             }
 
     except Exception as e:
-        print(f"Error retrieving IPID folder structure: {str(e)}")
+        logger.error(f"Error retrieving IPID folder structure: {str(e)}")
         raise HTTPException(
             status_code=500,
             detail=f"Error retrieving IPID folder structure: {str(e)}"

@@ -391,8 +391,13 @@ class FTPCRUD:
         Sets is_completed to True for all FTP entries.
         """
         try:
-            # Get the master_boc entry for this ipid
-            master_boc = MasterBoc.get(order_id=order_id, ipid=ipid)
+            # Get the order first
+            order = Order.get(id=order_id)
+            if not order:
+                raise ValueError(f"Order with ID {order_id} not found")
+
+            # Get the master_boc entry for this ipid using the order relationship
+            master_boc = select(m for m in MasterBoc if m.order == order and m.ipid == ipid).first()
             if not master_boc:
                 raise ValueError(f"No master_boc found for order_id {order_id} and ipid {ipid}")
 

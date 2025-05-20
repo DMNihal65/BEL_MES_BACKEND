@@ -1138,8 +1138,8 @@ def delete_order(order_id: int):
     # Delete all related child entities
     for op in order.operations:
         op.delete()
-    for doc in order.documents:
-        doc.delete()
+    # for doc in order.documents:
+    #     doc.delete()
     for tool in order.tools:
         tool.delete()
     for jig in order.jigs_fixtures:
@@ -1150,21 +1150,35 @@ def delete_order(order_id: int):
         psi.delete()
     for req in order.inventory_requests:
         req.delete()
-    for docv2 in order.documents_v2:
-        docv2.delete()
+    # for docv2 in order.documents_v2:
+    #     docv2.delete()
     for ot in order.order_tools:
         ot.delete()
-    for boc in order.master_bocs:
-        boc.delete()
+    # for boc in order.master_bocs:
+    #     boc.delete()
+    for req in order.inventory_requests:
+        req.delete()
 
-    # Delete the order
+    # Handle DocumentV2 entities - preserve IPID documents
+    for docv2 in order.documents_v2:
+        # Skip IPID documents
+        if docv2.doc_type.name == "IPID":
+            # Just remove the order reference but keep the document
+            docv2.production_order = None
+        elif docv2.doc_type.name == "REPORT":
+            # Just remove the order reference but keep the document
+            docv2.production_order = None
+        else:
+            # Delete non-IPID documents
+            docv2.delete()
+
+    # Delete the order itself
     order.delete()
 
-    # Delete raw_material and project only if no more orders reference them
-    if not raw_material_ref.orders:
+    # Clean up orphaned references if they're not used by other orders
+    if raw_material_ref and not raw_material_ref.orders:
         raw_material_ref.delete()
-
-    if not project_ref.orders:
+    if project_ref and not project_ref.orders:
         project_ref.delete()
 
     commit()

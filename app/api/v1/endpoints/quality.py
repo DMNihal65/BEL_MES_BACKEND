@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, Depends, Path, Query
 from typing import Any, List
 import os
 import subprocess
-from pony.orm import db_session, commit, flush, select
+from pony.orm import db_session, commit, flush, select, desc
 
 from app.core.security import get_current_user
 from app.models import Operation, Order, User
@@ -425,7 +425,7 @@ def create_connectivity(
 @router.get(
     "/connectivity/instrument/{instrument_name}",
     response_model=ConnectivityResponse,
-    summary="Get connectivity information by instrument name"
+    summary="Get most recent connectivity information by instrument name"
 )
 @db_session
 def get_connectivity_by_instrument(
@@ -433,13 +433,13 @@ def get_connectivity_by_instrument(
         current_user=Depends(get_current_user)
 ) -> Any:
     """
-    Get connectivity information for a specific instrument by its name.
+    Get the most recent connectivity information for a specific instrument by its name.
 
     Parameters:
     - instrument_name: Name of the instrument to search for
 
     Returns:
-    - Connectivity information including address and UUID
+    - Most recent connectivity information including address and UUID
 
     Example response:
     ```json
@@ -454,8 +454,8 @@ def get_connectivity_by_instrument(
     ```
     """
     try:
-        # Query the connectivity record by instrument name
-        connectivity = select(c for c in Connectivity if c.instrument == instrument_name).first()
+        # Query the most recent connectivity record by instrument name
+        connectivity = select(c for c in Connectivity if c.instrument == instrument_name).order_by(lambda c: desc(c.created_at)).first()
 
         if not connectivity:
             raise HTTPException(
@@ -562,4 +562,3 @@ async def get_all_ftp_by_order(
             status_code=500,
             detail=f"Error retrieving FTP statuses: {str(e)}"
         )
-

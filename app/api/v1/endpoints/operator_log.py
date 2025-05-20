@@ -82,7 +82,7 @@ def create_production_log(log_data: ProductionLogCreate):
 # Pydantic model for request body
 class MachineStatusInput(BaseModel):
     machine_id: int
-    # operation_id: int
+    operation_id: int
 
 @router.post("/machine-raw-live/")
 @db_session

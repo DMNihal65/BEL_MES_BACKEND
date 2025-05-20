@@ -4,6 +4,7 @@ from ..database.connection import db
 from .user import User
 from .master_order import Order
 
+
 class FolderV2(db.Entity):
     """Represents a folder in the document management system"""
     _table_ = ("document_management_v2", "folders")
@@ -18,6 +19,7 @@ class FolderV2(db.Entity):
     is_active = Required(bool, default=True)
     documents = Set('DocumentV2')
 
+
 class DocumentTypeV2(db.Entity):
     """Defines different types of documents and their allowed extensions"""
     _table_ = ("document_management_v2", "document_types")
@@ -29,6 +31,9 @@ class DocumentTypeV2(db.Entity):
     is_active = Required(bool, default=True)
     documents = Set('DocumentV2')
     master_bocs = Set('MasterBoc', reverse='document')
+
+    master_bocs = Set('MasterBoc', reverse='document')
+
 
 class DocumentV2(db.Entity):
     """Main document entity that can be linked to folders, part numbers, or production orders"""
@@ -52,6 +57,7 @@ class DocumentV2(db.Entity):
     versions = Set('DocumentVersionV2', reverse='document')
     access_logs = Set('DocumentAccessLogV2')
 
+
 class DocumentVersionV2(db.Entity):
     """Stores version information for documents"""
     _table_ = ("document_management_v2", "document_versions")
@@ -70,6 +76,7 @@ class DocumentVersionV2(db.Entity):
     is_active = Required(bool, default=True)
 
     access_logs = Set('DocumentAccessLogV2')
+
 
 class DocumentAccessLogV2(db.Entity):
     """Tracks all document access and modifications"""
