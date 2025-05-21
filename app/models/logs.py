@@ -299,4 +299,3 @@ class InstrumentCalibrationLog(db.Entity):
             print(f"Error scheduling instrument notification for log ID {self.id}: {str(e)}")
             import traceback
             traceback.print_exc()
-

@@ -382,7 +382,8 @@ def get_machine_operations(
             "work_center": {
                 "id": machine.work_center.id,
                 "code": machine.work_center.code,
-                "name": machine.work_center.work_center_name if machine.work_center.work_center_name else ""
+                "name": machine.work_center.work_center_name if machine.work_center.work_center_name else "",
+                "is_schedulable": machine.work_center.is_schedulable if machine.work_center else False
             } if machine.work_center else None
         }
 
@@ -395,8 +396,8 @@ def get_machine_operations(
 
         # First, get all unique operations for this machine
         operations_query = select((o.id, o.operation_number, o.operation_description, o.setup_time, o.ideal_cycle_time,
-                                   o.order.id, o.order.production_order, o.order.part_number, o.order.part_description)
-                                  for o in Operation if o.machine.id == machine_id)
+                                  o.order.id, o.order.production_order, o.order.part_number, o.order.part_description)
+                                 for o in Operation if o.machine.id == machine_id)
 
         operations_data = []
         try:
@@ -431,8 +432,8 @@ def get_machine_operations(
             try:
                 # Get the corresponding planned schedule item
                 schedule_item_query = select(psi for psi in PlannedScheduleItem
-                                             if psi.operation.id == op_id
-                                             and psi.machine.id == machine_id)
+                                            if psi.operation.id == op_id
+                                            and psi.machine.id == machine_id)
 
                 schedule_items = list(schedule_item_query)
                 if not schedule_items:
@@ -443,8 +444,8 @@ def get_machine_operations(
 
                 # Find the active schedule version for this schedule item
                 schedule_version_query = select(sv for sv in ScheduleVersion
-                                                if sv.schedule_item.id == schedule_item.id
-                                                and sv.is_active == True)
+                                               if sv.schedule_item.id == schedule_item.id
+                                               and sv.is_active == True)
 
                 schedule_versions = list(schedule_version_query)
 
@@ -647,6 +648,7 @@ def get_machine_operations(
                 "schedule_info": {
                     "planned_start_time": operation["planned_start_time"].isoformat(),
                     "planned_end_time": planned_end_time.isoformat() if planned_end_time else None,
+                    "is_schedulable": machine.work_center.is_schedulable if machine.work_center else False
                     # "planned_quantity": operation["planned_quantity"],
                     # "completed_quantity": operation["completed_quantity"],
                     # "remaining_quantity": operation["remaining_quantity"],
@@ -759,6 +761,7 @@ def get_machine_operations(
             status_code=500,
             detail=f"Error retrieving machine operations at step {debug_step}: {str(e)}"
         )
+
 # Function to asynchronously send notifications
 async def send_machine_notification(machine_id, machine_make, status_name, description, created_by):
     """Send a machine notification with direct parameters instead of database entity"""
