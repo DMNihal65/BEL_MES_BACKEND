@@ -7,7 +7,7 @@ from app.schemas.comp_maintainance import (
     RawMaterialNotificationsResponse, RawMaterialNotification, MachineNotificationsResponse, MachineNotification,
     OperatorMachineUpdate, OperatorRawMaterialUpdate
 )
-from app.models import MachineStatus, Status, Machine, RawMaterial, InventoryStatus, Order, Unit
+from app.models import MachineStatus, Status, Machine, RawMaterial, InventoryStatus, Order, Unit, User
 from app.models.logs import MachineStatusLog, RawMaterialStatusLog  # Import the new log models
 from typing import Optional, Dict, List
 from datetime import datetime, timedelta
@@ -694,3 +694,199 @@ async def update_machine_status(machine_id: int, status_update: UpdateMachineSta
             status_code=500,
             detail=f"Error updating machine status: {str(e)}"
         )
+
+# @router.get("/supervisor1/machine-notifications/", response_model=MachineNotificationsResponse)
+# async def get_supervisor_machine_notifications(
+#         hours: Optional[int] = Query(None, description="Get notifications from the last X hours"),
+#         status: Optional[str] = Query(None, description="Filter by status name (e.g., 'stopped', 'running')"),
+#         machine_id: Optional[int] = Query(None, description="Filter by machine ID"),
+#         limit: Optional[int] = Query(None, description="Limit the number of results"),
+#         acknowledged: Optional[bool] = Query(None, description="Filter by acknowledgment status")
+# ):
+#     """
+#     Get machine status notifications for supervisors from logs schema.
+#     Returns all notifications sent by operators with filtering options.
+#     """
+#     try:
+#         with db_session:
+#             # Start with a base query
+#             query = select(log for log in MachineStatusLog)
+#
+#             # Apply time filter if specified
+#             if hours:
+#                 time_threshold = datetime.now() - timedelta(hours=hours)
+#                 query = query.filter(lambda log: log.updated_at >= time_threshold)
+#
+#             # Apply status filter if specified
+#             if status:
+#                 status_lower = status.lower()
+#                 query = query.filter(lambda log: status_lower in log.status_name.lower())
+#
+#             # Apply machine_id filter if specified
+#             if machine_id:
+#                 query = query.filter(lambda log: log.machine_id == machine_id)
+#
+#             # Apply acknowledgment filter if specified
+#             if acknowledged is not None:
+#                 query = query.filter(lambda log: log.is_acknowledged == acknowledged)
+#
+#             # Order by timestamp, newest first
+#             query = query.order_by(lambda log: desc(log.updated_at))
+#
+#             # Apply limit if specified
+#             if limit:
+#                 query = query.limit(limit)
+#
+#             # Execute query and convert to notification objects
+#             log_entities = list(query)
+#             notifications = []
+#
+#             for entity in log_entities:
+#                 # Fetch username for the created_by user ID if it exists
+#                 creator_info = entity.created_by
+#                 if entity.created_by:
+#                     # Try to find the user by ID
+#                     user = select(u for u in User if str(u.id) == entity.created_by).first()
+#                     if user:
+#                         # Format as "user_id (username)"
+#                         creator_info = f"{entity.created_by} ({user.username})"
+#
+#                 # Only set acknowledger_info if the notification is acknowledged
+#                 acknowledger_info = None  # Default to None when not acknowledged
+#                 if entity.is_acknowledged and entity.acknowledged_by:
+#                     # Try to find the user by ID
+#                     user = select(u for u in User if str(u.id) == entity.acknowledged_by).first()
+#                     if user:
+#                         # Format as "user_id (username)"
+#                         acknowledger_info = f"{entity.acknowledged_by} ({user.username})"
+#                     else:
+#                         # If acknowledged but no user found, just use the ID
+#                         acknowledger_info = entity.acknowledged_by
+#
+#                 # Create notification with explicit ID and usernames
+#                 notification = MachineNotification(
+#                     id=entity.id,
+#                     machine_id=entity.machine_id,
+#                     machine_make=entity.machine_make,
+#                     status_name=entity.status_name,
+#                     description=entity.description,
+#                     updated_at=entity.updated_at,
+#                     created_by=creator_info,
+#                     is_acknowledged=entity.is_acknowledged,
+#                     acknowledged_by=acknowledger_info,
+#                     acknowledged_at=entity.acknowledged_at
+#                 )
+#                 notifications.append(notification)
+#
+#             return MachineNotificationsResponse(
+#                 total_notifications=len(notifications),
+#                 notifications=notifications
+#             )
+#
+#     except Exception as e:
+#         raise HTTPException(
+#             status_code=500,
+#             detail=f"Error fetching machine notifications: {str(e)}"
+#         )
+#
+#
+# # Updated endpoint for raw material notifications - using logs schema
+# @router.get("/supervisor1/raw-material-notifications/", response_model=RawMaterialNotificationsResponse)
+# async def get_supervisor_raw_material_notifications(
+#         hours: Optional[int] = Query(None, description="Get notifications from the last X hours"),
+#         status: Optional[str] = Query(None, description="Filter by status name (e.g., 'unavailable', 'available')"),
+#         material_id: Optional[int] = Query(None, description="Filter by raw material ID"),
+#         part_number: Optional[str] = Query(None, description="Filter by part number"),
+#         limit: Optional[int] = Query(None, description="Limit the number of results"),
+#         acknowledged: Optional[bool] = Query(None, description="Filter by acknowledgment status")
+# ):
+#     """
+#     Get raw material status notifications for supervisors from logs schema.
+#     Returns all notifications sent by operators with filtering options.
+#     """
+#     try:
+#         with db_session:
+#             # Start with a base query
+#             query = select(log for log in RawMaterialStatusLog)
+#
+#             # Apply time filter if specified
+#             if hours:
+#                 time_threshold = datetime.now() - timedelta(hours=hours)
+#                 query = query.filter(lambda log: log.updated_at >= time_threshold)
+#
+#             # Apply status filter if specified
+#             if status:
+#                 status_lower = status.lower()
+#                 query = query.filter(lambda log: status_lower in log.status_name.lower())
+#
+#             # Apply material_id filter if specified
+#             if material_id:
+#                 query = query.filter(lambda log: log.material_id == material_id)
+#
+#             # Apply part_number filter if specified
+#             if part_number and part_number.strip():
+#                 part_number_lower = part_number.lower()
+#                 query = query.filter(lambda log: log.part_number and part_number_lower in log.part_number.lower())
+#
+#             # Apply acknowledgment filter if specified
+#             if acknowledged is not None:
+#                 query = query.filter(lambda log: log.is_acknowledged == acknowledged)
+#
+#             # Order by timestamp, newest first
+#             query = query.order_by(lambda log: desc(log.updated_at))
+#
+#             # Apply limit if specified
+#             if limit:
+#                 query = query.limit(limit)
+#
+#             # Execute query and convert to notification objects
+#             log_entities = list(query)
+#             notifications = []
+#
+#             for entity in log_entities:
+#                 # Fetch username for the created_by user ID if it exists
+#                 creator_info = entity.created_by
+#                 if entity.created_by:
+#                     # Try to find the user by ID
+#                     user = select(u for u in User if str(u.id) == entity.created_by).first()
+#                     if user:
+#                         # Format as "user_id (username)"
+#                         creator_info = f"{entity.created_by} ({user.username})"
+#
+#                 # Only set acknowledger_info if the notification is acknowledged
+#                 acknowledger_info = None  # Default to None when not acknowledged
+#                 if entity.is_acknowledged and entity.acknowledged_by:
+#                     # Try to find the user by ID
+#                     user = select(u for u in User if str(u.id) == entity.acknowledged_by).first()
+#                     if user:
+#                         # Format as "user_id (username)"
+#                         acknowledger_info = f"{entity.acknowledged_by} ({user.username})"
+#                     else:
+#                         # If acknowledged but no user found, just use the ID
+#                         acknowledger_info = entity.acknowledged_by
+#
+#                 # Create notification with explicit ID and usernames
+#                 notification = RawMaterialNotification(
+#                     id=entity.id,  # Explicitly include notification ID
+#                     material_id=entity.material_id,
+#                     part_number=entity.part_number,
+#                     status_name=entity.status_name,
+#                     description=entity.description,
+#                     updated_at=entity.updated_at,
+#                     created_by=creator_info,
+#                     is_acknowledged=entity.is_acknowledged,
+#                     acknowledged_by=acknowledger_info,
+#                     acknowledged_at=entity.acknowledged_at
+#                 )
+#                 notifications.append(notification)
+#
+#             return RawMaterialNotificationsResponse(
+#                 total_notifications=len(notifications),
+#                 notifications=notifications
+#             )
+#
+#     except Exception as e:
+#         raise HTTPException(
+#             status_code=500,
+#             detail=f"Error fetching raw material notifications: {str(e)}"
+#         )

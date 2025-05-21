@@ -1065,3 +1065,215 @@ async def get_instrument_calibration_notifications(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error fetching notifications: {str(e)}")
+
+
+# @router.get("/machine-calibrations1")
+# async def get_machine_calibration_notifications(
+#         from_date: Optional[date] = None,
+#         to_date: Optional[date] = None,
+#         limit: int = Query(100, gt=0, le=1000)
+# ):
+#     """
+#     Get machine calibration notifications with optional date filtering.
+#     If no dates are provided, returns the most recent notifications.
+#     """
+#     try:
+#         with db_session:
+#             # Import Machine model inside the db_session
+#             from app.models.master_order import Machine
+#
+#             # First get all MachineCalibrationLogs
+#             query = select(n for n in MachineCalibrationLog)
+#
+#             # Apply date filters if provided
+#             if from_date and to_date:
+#                 query = query.filter(lambda n: n.timestamp.date() >= from_date and n.timestamp.date() <= to_date)
+#             elif from_date:
+#                 query = query.filter(lambda n: n.timestamp.date() >= from_date)
+#             elif to_date:
+#                 query = query.filter(lambda n: n.timestamp.date() <= to_date)
+#
+#             # Order by timestamp descending (newest first)
+#             query = query.order_by(lambda n: desc(n.timestamp))
+#
+#             # Apply limit
+#             notifications = list(query.limit(limit))
+#
+#             notification_dicts = []
+#             for n in notifications:
+#                 # Default machine details
+#                 machine_id = None
+#                 machine_name = None
+#                 machine_type = None
+#                 machine_make = None
+#
+#                 # Get the machine_id value first (this could be an int or an Entity)
+#                 machine_reference = n.machine_id
+#
+#                 # If we have a machine reference, try to get full details
+#                 if machine_reference is not None:
+#                     try:
+#                         # Check if machine_reference is already a Machine entity or just an ID
+#                         if isinstance(machine_reference, Machine):
+#                             machine = machine_reference
+#                         else:
+#                             # If it's just an ID, query the Machine entity
+#                             machine_id_value = machine_reference.id if hasattr(machine_reference,
+#                                                                                'id') else machine_reference
+#                             machine = Machine.get(id=machine_id_value)
+#
+#                         if machine:
+#                             machine_id = machine.id
+#                             machine_type = machine.type
+#                             machine_make = machine.make
+#                             machine_name = f"{machine.make} {machine.model}"
+#                     except Exception as e:
+#                         print(f"Error fetching machine details: {str(e)}")
+#                         # If we couldn't get the full machine object, at least try to get the ID
+#                         if hasattr(machine_reference, 'id'):
+#                             machine_id = machine_reference.id
+#                         else:
+#                             machine_id = machine_reference
+#
+#                 notification_dict = {
+#                     "id": n.id,
+#                     "timestamp": n.timestamp.isoformat(),
+#                     "calibration_due_date": n.calibration_due_date.isoformat() if n.calibration_due_date else None,
+#                     "machine_id": machine_id,
+#                     "machine_name": machine_name,
+#                     "machine_type": machine_type,
+#                     "machine_make": machine_make
+#                 }
+#                 notification_dicts.append(notification_dict)
+#
+#             return {
+#                 "total_notifications": len(notification_dicts),
+#                 "notifications": notification_dicts
+#             }
+#     except Exception as e:
+#         print(f"Error fetching machine calibration notifications: {str(e)}")
+#         import traceback
+#         traceback.print_exc()
+#         raise HTTPException(status_code=500, detail=f"Error fetching notifications: {str(e)}")
+#
+#
+# @router.get("/instrument-calibrations1")
+# async def get_instrument_calibration_notifications(
+#         from_date: Optional[date] = None,
+#         to_date: Optional[date] = None,
+#         limit: int = Query(100, gt=0, le=1000)
+# ):
+#     """
+#     Get instrument calibration notifications with optional date filtering.
+#     If no dates are provided, returns the most recent notifications.
+#     """
+#     try:
+#         with db_session:
+#             # Import models inside db_session
+#             from app.models.inventoryv1 import CalibrationSchedule, InventoryItem
+#
+#             query = select(n for n in InstrumentCalibrationLog)
+#
+#             # Apply date filters if provided
+#             if from_date and to_date:
+#                 query = query.filter(lambda n: n.timestamp.date() >= from_date and n.timestamp.date() <= to_date)
+#             elif from_date:
+#                 query = query.filter(lambda n: n.timestamp.date() >= from_date)
+#             elif to_date:
+#                 query = query.filter(lambda n: n.timestamp.date() <= to_date)
+#
+#             # Order by timestamp descending (newest first)
+#             query = query.order_by(lambda n: desc(n.timestamp))
+#
+#             # Apply limit and materialize the query
+#             notifications = list(query.limit(limit))
+#
+#             notification_dicts = []
+#             for n in notifications:
+#                 # Default instrument details
+#                 instrument_id = None
+#                 item_name = None
+#                 last_calibration = None
+#                 next_calibration = None
+#                 calibration_type = None
+#                 trade_name = None
+#                 bel_part_number = None
+#
+#                 # Get the instrument_id value (this could be an int or an Entity)
+#                 instrument_reference = n.instrument_id
+#
+#                 # If we have an instrument reference, try to get full details
+#                 if instrument_reference is not None:
+#                     try:
+#                         # Check if instrument_reference is already a CalibrationSchedule entity or just an ID
+#                         if isinstance(instrument_reference, CalibrationSchedule):
+#                             calib_schedule = instrument_reference
+#                         else:
+#                             # If it's just an ID, query the CalibrationSchedule entity
+#                             instrument_id_value = instrument_reference.id if hasattr(instrument_reference,
+#                                                                                      'id') else instrument_reference
+#                             calib_schedule = CalibrationSchedule.get(id=instrument_id_value)
+#
+#                         if calib_schedule:
+#                             instrument_id = calib_schedule.id
+#                             last_calibration = calib_schedule.last_calibration.isoformat() if calib_schedule.last_calibration else None
+#                             next_calibration = calib_schedule.next_calibration.isoformat() if calib_schedule.next_calibration else None
+#                             calibration_type = calib_schedule.calibration_type
+#
+#                             # Get item name from inventory item if available
+#                             if calib_schedule.inventory_item:
+#                                 inv_item = calib_schedule.inventory_item
+#                                 item_name = inv_item.item_code
+#
+#                                 # Extract additional details from dynamic_data if available
+#                                 if hasattr(inv_item, 'dynamic_data') and inv_item.dynamic_data:
+#                                     try:
+#                                         dynamic_data = inv_item.dynamic_data
+#                                         if isinstance(dynamic_data, dict):
+#                                             # Try to get name from dynamic data
+#                                             if 'name' in dynamic_data:
+#                                                 item_name = dynamic_data['name']
+#
+#                                             # Get Trade Name
+#                                             if 'Trade Name' in dynamic_data:
+#                                                 trade_name = dynamic_data['Trade Name']
+#
+#                                             # Get BEL Part Number (check both variants)
+#                                             if 'BEL Part Number ' in dynamic_data:
+#                                                 bel_part_number = dynamic_data['BEL Part Number ']
+#                                             elif 'BEL Part Number' in dynamic_data:
+#                                                 bel_part_number = dynamic_data['BEL Part Number']
+#                                     except Exception as e:
+#                                         print(f"Error parsing dynamic_data for instrument {inv_item.id}: {str(e)}")
+#                     except Exception as e:
+#                         print(f"Error fetching instrument details: {str(e)}")
+#                         # If we couldn't get the full object, at least try to get the ID
+#                         if hasattr(instrument_reference, 'id'):
+#                             instrument_id = instrument_reference.id
+#                         else:
+#                             instrument_id = instrument_reference
+#
+#                 notification_dict = {
+#                     "id": n.id,
+#                     "timestamp": n.timestamp.isoformat(),
+#                     "calibration_due_date": n.calibration_due_date.isoformat() if n.calibration_due_date else None,
+#                     "instrument_id": instrument_id,
+#                     "item_name": item_name,
+#                     "last_calibration": last_calibration,
+#                     "next_calibration": next_calibration,
+#                     "calibration_type": calibration_type,
+#                     "trade_name": trade_name,
+#                     "bel_part_number": bel_part_number
+#                 }
+#                 notification_dicts.append(notification_dict)
+#
+#             return {
+#                 "total_notifications": len(notification_dicts),
+#                 "notifications": notification_dicts
+#             }
+#     except Exception as e:
+#         print(f"Error fetching instrument calibration notifications: {str(e)}")
+#         import traceback
+#         traceback.print_exc()
+#         raise HTTPException(status_code=500, detail=f"Error fetching notifications: {str(e)}")
+

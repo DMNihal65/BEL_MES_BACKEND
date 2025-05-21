@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import Optional, List
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 class MachineStatusBase(BaseModel):
     machine_make: str
@@ -82,15 +82,15 @@ class ReferenceDataResponse(BaseModel):
     statuses: List[StatusResponse1]
     units: List[UnitResponse]
 
-# Updated notification models with acknowledgment fields
+# Updated notification models with acknowledgment fields and username
 class MachineNotification(BaseModel):
     id: Optional[int] = None  # Notification ID
     machine_id: int
     machine_make: str
     status_name: str
-    description: Optional[str]
-    updated_at: Optional[datetime]
-    created_by: Optional[str] = None
+    description: Optional[str] = None
+    updated_at: Optional[datetime] = None
+    created_by: Optional[str] = None  # Now holds username instead of user ID
     is_acknowledged: bool = False
     acknowledged_by: Optional[str] = None
     acknowledged_at: Optional[datetime] = None
@@ -98,11 +98,11 @@ class MachineNotification(BaseModel):
 class RawMaterialNotification(BaseModel):
     id: Optional[int] = None  # Notification ID
     material_id: int  # Added material_id field
-    part_number: Optional[str]  # From associated order if available
+    part_number: Optional[str] = None  # From associated order if available
     status_name: str
-    description: Optional[str]
-    updated_at: Optional[datetime]
-    created_by: Optional[str] = None
+    description: Optional[str] = None
+    updated_at: Optional[datetime] = None
+    created_by: Optional[str] = None  # Now holds username instead of user ID
     is_acknowledged: bool = False
     acknowledged_by: Optional[str] = None
     acknowledged_at: Optional[datetime] = None
