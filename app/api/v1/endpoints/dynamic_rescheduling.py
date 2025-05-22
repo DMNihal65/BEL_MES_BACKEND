@@ -621,15 +621,11 @@ async def dynamic_reschedule():
                     else:
                         machine_name = machine.make
 
-                # Get production order from the order
-                production_order = order.production_order if order and hasattr(order, 'production_order') else None
-
-                # Group logs by part_number, operation, machine_name, and production_order
+                # Group logs by part_number, operation, and machine_name
                 group_key = (
                     order.part_number if order else None,
                     operation.operation_description if operation else None,
-                    machine_name,
-                    production_order
+                    machine_name
                 )
 
                 if group_key not in combined_logs:
@@ -641,7 +637,7 @@ async def dynamic_reschedule():
                         'quantity_rejected': 0,
                         'operator_id': operator.id if operator else None,
                         'part_number': order.part_number if order else None,
-                        'production_order': production_order,
+                        'production_order': order.production_order if order else None,  # Added this line
                         'operation_description': operation.operation_description if operation else None,
                         'machine_name': machine_name,
                         'notes': []
@@ -677,7 +673,7 @@ async def dynamic_reschedule():
                     # Join all notes with a separator
                     notes = " | ".join(group_data['notes']) if group_data['notes'] else ""
 
-                    # Create the log entry with production_order included
+                    # Create the log entry with production_order field
                     log_entry = ProductionLogResponse(
                         id=log_id,
                         operator_id=group_data['operator_id'],
@@ -686,7 +682,7 @@ async def dynamic_reschedule():
                         quantity_completed=group_data['quantity_completed'],
                         quantity_rejected=group_data['quantity_rejected'],
                         part_number=group_data['part_number'],
-                        production_order=group_data['production_order'],  # Include production_order in response
+                        production_order=group_data['production_order'],  # This field was missing
                         operation_description=group_data['operation_description'],
                         machine_name=group_data['machine_name'],
                         notes=notes,
@@ -759,6 +755,15 @@ async def dynamic_reschedule():
                     for order in Order.select()
                 }
 
+                # Create a mapping for part descriptions
+                part_descriptions = {}
+                for order in Order.select():
+                    if hasattr(order, 'part_description') and order.part_description:
+                        part_descriptions[order.part_number] = order.part_description
+                    else:
+                        # Fallback to part number if no description available
+                        part_descriptions[order.part_number] = order.part_number
+
                 for _, row in schedule_df.iterrows():
                     # Skip operations in non-schedulable work centers
                     machine_id = row['machine_id']
@@ -826,9 +831,13 @@ async def dynamic_reschedule():
                 end_time = data['operation_end'] if data['operation_end'] else data['setup_end']
                 if end_time and data['setup_start']:
                     quantity_str = f"Process({data['current_qty']}/{data['total_qty']}pcs, Today: {data['today_qty']}pcs)"
+                    # Get part description, defaulting to component if not found
+                    part_description = part_descriptions.get(component, component)
+
                     scheduled_operations.append(
                         ScheduledOperation(
                             component=component,
+                            part_description=part_description,  # Add the part_description field
                             description=description,
                             machine=machine,
                             start_time=data['setup_start'],
@@ -838,7 +847,7 @@ async def dynamic_reschedule():
                         )
                     )
 
-                # Modified this section to preserve the is_schedulable flag from the database
+            # Modified this section to preserve the is_schedulable flag from the database
             work_center_data = []
             for work_center in WorkCenter.select():
                 machines_in_wc = []
@@ -888,6 +897,7 @@ async def dynamic_reschedule():
             status_code=500,
             detail=f"Error during rescheduling: {str(e)}"
         )
+
 
 @router.get("/reschedule-actual-planned-combined", response_model=CombinedScheduleResponse)
 async def get_combined_schedule():

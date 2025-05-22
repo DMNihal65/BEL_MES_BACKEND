@@ -381,6 +381,7 @@ class AcknowledgeRequest(BaseModel):
     id: int
     acknowledged_by: str  # Assuming string ID for user
 
+
 @router.post("/machine-status-logs/acknowledge")
 async def acknowledge_machine_notification(payload: AcknowledgeRequest):
     try:
@@ -397,10 +398,29 @@ async def acknowledge_machine_notification(payload: AcknowledgeRequest):
             notification.acknowledged_by = payload.acknowledged_by
             notification.acknowledged_at = datetime.now()
 
-            return {"message": "Machine notification acknowledged successfully"}
+            # Send notification using notification ID instead of machine ID
+            notification_data = {
+                "notification_id": notification.id,  # Using notification ID
+                "type": "machine_status_acknowledged",
+                "machine_id": notification.machine_id,  # Still include machine_id for reference
+                "acknowledged_by": payload.acknowledged_by,
+                "acknowledged_at": notification.acknowledged_at.isoformat(),
+                "status_name": notification.status_name,  # Fixed: using status_name instead of status
+                "message": f"Machine notification {notification.id} has been acknowledged"
+            }
+
+            # Send notification with notification_id as prefix/identifier
+            await send_notification(f"notification_{notification.id}", notification_data)
+
+            return {
+                "message": "Machine notification acknowledged successfully",
+                "notification_id": notification.id,
+                "acknowledged_at": notification.acknowledged_at
+            }
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error acknowledging machine notification: {str(e)}")
+
 
 @router.post("/raw_material_status_logs/acknowledge")
 async def acknowledge_raw_material_notification(payload: AcknowledgeRequest):
@@ -418,7 +438,41 @@ async def acknowledge_raw_material_notification(payload: AcknowledgeRequest):
             notification.acknowledged_by = payload.acknowledged_by
             notification.acknowledged_at = datetime.now()
 
-            return {"message": "Raw material notification acknowledged successfully"}
+            # Send notification using notification ID instead of raw material ID
+            notification_data = {
+                "notification_id": notification.id,  # Using notification ID
+                "type": "raw_material_status_acknowledged",
+                "material_id": notification.material_id,  # Still include material_id for reference
+                "acknowledged_by": payload.acknowledged_by,
+                "acknowledged_at": notification.acknowledged_at.isoformat(),
+                "status_name": notification.status_name,  # Fixed: using status_name instead of status
+                "message": f"Raw material notification {notification.id} has been acknowledged"
+            }
+
+            # Send notification with notification_id as prefix/identifier
+            await send_notification(f"notification_{notification.id}", notification_data)
+
+            return {
+                "message": "Raw material notification acknowledged successfully",
+                "notification_id": notification.id,
+                "acknowledged_at": notification.acknowledged_at
+            }
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error acknowledging raw material notification: {str(e)}")
+
+
+# Helper function for sending notifications (you'll need to implement this based on your notification system)
+async def send_notification(prefix: str, data: dict):
+    """
+    Send notification with notification ID as prefix instead of machine/raw_material ID
+
+    Args:
+        prefix: notification prefix (e.g., "notification_123")
+        data: notification data dictionary
+    """
+    # Implementation depends on your notification system
+    # This could be WebSocket, Redis pub/sub, etc.
+    print(f"Sending notification with prefix: {prefix}")
+    print(f"Notification data: {data}")
+    # Your notification sending logic here
