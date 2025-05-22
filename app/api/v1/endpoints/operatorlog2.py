@@ -252,16 +252,16 @@ def get_operation_sequence_status(operation_id: int):
     }
 
 
-@router.get("/order-operations-status/{order_id}")
+@router.get("/production-order-operations-status/{production_order}")
 @db_session
-def get_order_operations_status(order_id: int):
+def get_production_order_operations_status(production_order: str):
     """
-    Get the status of all operations for a specific order.
+    Get the status of all operations for a specific production order.
     Shows which operations are ready for logging.
     """
-    order = Order.get(id=order_id)
+    order = Order.get(production_order=production_order)
     if not order:
-        raise HTTPException(status_code=404, detail="Order not found")
+        raise HTTPException(status_code=404, detail="Production order not found")
 
     operations = select(op for op in Operation if op.order == order).order_by(Operation.operation_number)
 
@@ -285,7 +285,10 @@ def get_order_operations_status(order_id: int):
             "rejected_quantity": total_rejected,
             "required_quantity": order.required_quantity,
             "remaining_quantity": max(0, order.required_quantity - total_completed),
-            "is_complete": total_completed >= order.required_quantity
+            "is_complete": total_completed >= order.required_quantity,
+            "setup_time": float(op.setup_time),  # Convert Decimal to float
+            "ideal_cycle_time": float(op.ideal_cycle_time),  # Convert Decimal to float
+            "operation_time": float(op.ideal_cycle_time) * order.required_quantity  # Calculate total operation time
         })
 
     return {

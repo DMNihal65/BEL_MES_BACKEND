@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 
 from app.models import User
-from app.models.inventoryv1 import InventoryItem
+from app.models.inventoryv1 import InventoryItem, CalibrationSchedule
 from app.models.logs import MachineStatusLog, MachineCalibrationLog, InstrumentCalibrationLog, RawMaterialStatusLog
 from app.schemas.comp_maintainance import RawMaterialNotificationsResponse, RawMaterialNotification, \
     MachineNotification, MachineNotificationsResponse
@@ -109,6 +109,9 @@ def get_machine_calibration_logs(
     return result
 
 
+
+
+
 @router.get("/instrument-calibration-logs", response_model=List[InstrumentCalibrationLogResponse])
 @db_session
 def get_instrument_calibration_logs(
@@ -128,7 +131,28 @@ def get_instrument_calibration_logs(
 
     # Apply filters if provided
     if instrument_id is not None:
-        query = query.filter(lambda log: log.instrument_id.id == instrument_id if log.instrument_id else False)
+        # First, we need to determine the correct relationship
+        # If InstrumentCalibrationLog has a direct relationship to CalibrationSchedule
+        # it might be named differently. Let's try common variations:
+
+        # Option 1: If it has a calibration_schedule_id or schedule field
+        try:
+            query = query.filter(lambda log: log.schedule.inventory_item.id == instrument_id if hasattr(log,
+                                                                                                        'schedule') and log.schedule else False)
+        except:
+            try:
+                # Option 2: If it has a calibration_schedule_id field
+                query = query.filter(lambda log: log.calibration_schedule_id and
+                                                 CalibrationSchedule.get(id=log.calibration_schedule_id) and
+                                                 CalibrationSchedule.get(
+                                                     id=log.calibration_schedule_id).inventory_item.id == instrument_id)
+            except:
+                # Option 3: If we need to join through a different relationship
+                # We'll filter the logs that have matching calibration schedules
+                calibration_schedule_ids = select(
+                    cs.id for cs in CalibrationSchedule if cs.inventory_item.id == instrument_id)
+                query = query.filter(lambda log: log.calibration_schedule_id in calibration_schedule_ids if hasattr(log,
+                                                                                                                    'calibration_schedule_id') else False)
 
     if start_date is not None:
         query = query.filter(lambda log: log.timestamp >= start_date)
@@ -152,32 +176,53 @@ def get_instrument_calibration_logs(
     result = []
     for log in logs:
         instrument_details = None
-        if log.instrument_id:
-            inventory_item = InventoryItem.get(id=log.instrument_id.id)
-            if inventory_item:
-                instrument_details = {
-                    "id": inventory_item.id,
-                    "item_code": inventory_item.item_code,
-                    "status": inventory_item.status,
-                    "quantity": inventory_item.quantity,
-                    "available_quantity": inventory_item.available_quantity,
-                    "subcategory_id": inventory_item.subcategory.id,
-                    "dynamic_data": inventory_item.dynamic_data,
-                    "subcategory_name": inventory_item.subcategory.name if hasattr(inventory_item.subcategory,
-                                                                                   'name') else None
-                }
+        instrument_id_value = None
+
+        # Try to get calibration schedule and inventory item
+        calibration_schedule = None
+
+        # Method 1: Direct relationship
+        if hasattr(log, 'schedule') and log.schedule:
+            calibration_schedule = log.schedule
+        # Method 2: Through ID
+        elif hasattr(log, 'calibration_schedule_id') and log.calibration_schedule_id:
+            calibration_schedule = CalibrationSchedule.get(id=log.calibration_schedule_id)
+        # Method 3: Search by matching calibration logs (reverse lookup)
+        else:
+            # Find calibration schedule that has this log in its notification set
+            calibration_schedule = select(cs for cs in CalibrationSchedule if log in cs.notification).first()
+
+        if calibration_schedule and calibration_schedule.inventory_item:
+            inventory_item = calibration_schedule.inventory_item
+            instrument_id_value = inventory_item.id
+
+            instrument_details = {
+                "id": inventory_item.id,
+                "item_code": inventory_item.item_code,
+                "status": inventory_item.status,
+                "quantity": inventory_item.quantity,
+                "available_quantity": inventory_item.available_quantity,
+                "subcategory_id": inventory_item.subcategory.id,
+                "dynamic_data": inventory_item.dynamic_data,
+                "subcategory_name": inventory_item.subcategory.name if hasattr(inventory_item.subcategory,
+                                                                               'name') else None,
+                "calibration_schedule_id": calibration_schedule.id,
+                "calibration_type": calibration_schedule.calibration_type,
+                "frequency_days": calibration_schedule.frequency_days,
+                "last_calibration": calibration_schedule.last_calibration,
+                "next_calibration": calibration_schedule.next_calibration
+            }
 
         log_dict = {
             "id": log.id,
             "timestamp": log.timestamp,
             "calibration_due_date": log.calibration_due_date,
-            "instrument_id": log.instrument_id.id if log.instrument_id else None,
+            "instrument_id": instrument_id_value,
             "instrument_details": instrument_details
         }
         result.append(log_dict)
 
     return result
-
 
 @router.get("machine-status-logs", response_model=MachineNotificationsResponse)
 async def get_supervisor_machine_notifications(
