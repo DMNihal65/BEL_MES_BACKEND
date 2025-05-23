@@ -173,3 +173,21 @@ class SaveDataRequest(BaseModel):
 
 class ProjectPriorityUpdateRequest(BaseModel):
     priority: int
+
+
+class OrderUpdate_Request(BaseModel):
+    part_description: Optional[str] = None
+    wbs_element: Optional[str] = None
+    launched_quantity: Optional[int] = None
+    project_name: Optional[str] = None
+    sale_order: Optional[str] = None
+
+class OrderUpdate_Response(BaseModel):
+    id: int
+    production_order: str
+    part_description: Optional[str]
+    wbs_element: Optional[str]
+    launched_quantity: int
+    project_name: str
+    sale_order: Optional[str]
+    updated_at: datetime

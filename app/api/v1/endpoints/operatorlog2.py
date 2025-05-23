@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pony.orm import db_session, commit, select, desc
 
 from app.api.v1.endpoints.dynamic_rescheduling import dynamic_reschedule
-from app.models import ProductionLog, User, Operation, ScheduleVersion, Machine, PlannedScheduleItem, Order
+from app.models import ProductionLog, User, Operation, ScheduleVersion, Machine, PlannedScheduleItem, Order, WorkCenter
 from app.models.production import MachineRawLive
 from app.schemas.scheduled1 import CombinedScheduleResponse
 
@@ -609,5 +609,96 @@ def get_production_order_operations_status(production_order: str):
         "project": order.project.name,
         "required_quantity": order.required_quantity,
         "sale_order": order.sale_order,
+        "operations": operation_statuses
+    }
+
+
+@router.get("/production-order-operations-status/{work_center_id}/{production_order}")
+@db_session
+def get_production_order_operations_status(work_center_id: int, production_order: str):
+    """
+    Get the status of all operations for a specific production order filtered by work center.
+    Shows only operations that belong to the specified work center and have machines assigned.
+    """
+    # First, check if the work center exists
+    work_center = WorkCenter.get(id=work_center_id)
+    if not work_center:
+        raise HTTPException(status_code=404, detail="Work center not found")
+
+    # Check if work center has machines
+    machines_in_work_center = select(m for m in Machine if m.work_center == work_center)
+    if not machines_in_work_center:
+        raise HTTPException(status_code=404, detail="No machines found for this work center")
+
+    # Get the order
+    order = Order.get(production_order=production_order)
+    if not order:
+        raise HTTPException(status_code=404, detail="Production order not found")
+
+    # Get operations that belong to the specified work center and have machines assigned
+    operations = select(
+        op for op in Operation
+        if op.order == order
+        and op.work_center == work_center
+        and op.machine in machines_in_work_center
+    ).order_by(Operation.operation_number)
+
+    if not operations:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No operations found for production order {production_order} in work center {work_center_id} with assigned machines"
+        )
+
+    operation_statuses = []
+
+    for op in operations:
+        logs = select(log for log in ProductionLog if log.operation == op)
+        total_completed = sum(log.quantity_completed or 0 for log in logs)
+        total_rejected = sum(log.quantity_rejected or 0 for log in logs)
+        is_complete = total_completed >= order.required_quantity
+
+        # Get validation from sequence check
+        can_log, validation_reason = validate_operation_sequence(op.id)
+
+        # Override can_log to False if operation is already completed
+        if is_complete:
+            can_log = False
+            validation_reason = "Operation is already completed"
+
+        operation_statuses.append({
+            "operation_id": op.id,
+            "operation_number": op.operation_number,
+            "description": op.operation_description,
+            "work_center_id": op.work_center.id,
+            "work_center_code": op.work_center.code,
+            "work_center_name": op.work_center.work_center_name or op.work_center.code,
+            "work_center_schedulable": op.work_center.is_schedulable,
+            # "machine_id": op.machine.id,
+            # "machine_type": op.machine.type,
+            # "machine_make": op.machine.make,
+            # "machine_model": op.machine.model,
+            "can_log": can_log,
+            "validation_reason": validation_reason,
+            "completed_quantity": total_completed,
+            "rejected_quantity": total_rejected,
+            "required_quantity": order.required_quantity,
+            "remaining_quantity": max(0, order.required_quantity - total_completed),
+            "is_complete": is_complete,
+            "setup_time": float(op.setup_time),  # Convert Decimal to float
+            "ideal_cycle_time": float(op.ideal_cycle_time),  # Convert Decimal to float
+            "operation_time": float(op.ideal_cycle_time) * order.required_quantity  # Calculate total operation time
+        })
+
+    return {
+        "work_center_id": work_center.id,
+        "work_center_code": work_center.code,
+        "work_center_name": work_center.work_center_name or work_center.code,
+        "production_order": order.production_order,
+        "part_number": order.part_number,
+        "priority": order.project.priority,
+        "project": order.project.name,
+        "required_quantity": order.required_quantity,
+        "sale_order": order.sale_order,
+        "total_operations_in_work_center": len(operation_statuses),
         "operations": operation_statuses
     }

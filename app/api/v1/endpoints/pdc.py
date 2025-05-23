@@ -1,10 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException
-from pony.orm import db_session, select
+from pony.orm import db_session, select, desc
 from typing import List, Dict, Any
 from datetime import datetime
 
 from app.api.v1.endpoints.dynamic_rescheduling import get_combined_schedule
-from app.models import ScheduleVersion
+from app.api.v1.endpoints.operatorlog2 import validate_operation_sequence
+from app.models import ScheduleVersion, Order, Operation, ProductionLog
 
 router = APIRouter(prefix="/api/v1/scheduling", tags=["scheduling"])
 
@@ -209,3 +210,121 @@ async def get_part_production_pdc():
             status_code=500,
             detail=f"Error calculating PDC: {str(e)}"
         )
+
+
+from pydantic import BaseModel
+from typing import Optional
+
+
+class OrderCompletionRequest(BaseModel):
+    part_number: str
+    production_order: str
+
+
+class OrderCompletionResponse(BaseModel):
+    is_order_completed: bool
+    completion_status: str
+    part_number: str
+    production_order: str
+    total_operations: int
+    completed_operations: int
+    pending_operations: int
+    completion_percentage: float
+    project_name: str
+    priority: int
+    required_quantity: int
+    total_completed_quantity: int
+    total_rejected_quantity: int
+    operations_summary: list
+    order_completion_date: Optional[str] = None
+
+
+
+@router.post("/check-order-completion-simple/{part_number}/{production_order}")
+@db_session
+def check_order_completion_status_simple(part_number: str, production_order: str):
+    """
+    Simplified version - Check if all operations for a production order are completed.
+    Returns basic completion status with overall completion date.
+    """
+    # Get the order
+    order = Order.get(production_order=production_order)
+    if not order:
+        raise HTTPException(status_code=404, detail="Production order not found")
+
+    # Validate part number matches
+    if order.part_number != part_number:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Part number mismatch. Expected: {order.part_number}, Provided: {part_number}"
+        )
+
+    # Get all operations for this order
+    operations = select(op for op in Operation if op.order == order)
+
+    if not operations:
+        raise HTTPException(status_code=404, detail="No operations found for this production order")
+
+    # Check if all eligible operations are completed
+    all_eligible_operations_completed = True
+    completed_count = 0
+    eligible_operations = []
+    all_completion_end_times = []
+
+    for op in operations:
+        logs = select(log for log in ProductionLog if log.operation == op)
+        operation_completed_qty = sum(log.quantity_completed or 0 for log in logs)
+        is_operation_complete = operation_completed_qty >= order.required_quantity
+
+        # Check if this operation can be logged (sequence validation)
+        can_log, validation_reason = validate_operation_sequence(op.id)
+
+        # Override can_log if operation is already completed
+        if is_operation_complete:
+            can_log = False
+            validation_reason = "Operation is already completed"
+
+        # Only consider operations that are either:
+        # 1. Currently eligible for logging (can_log = True), OR
+        # 2. Already completed (meaning they were previously eligible and now finished)
+        is_eligible_operation = can_log or is_operation_complete
+
+        if is_eligible_operation:
+            eligible_operations.append(op)
+            if is_operation_complete:
+                completed_count += 1
+
+                # Collect all end_times from logs for this completed operation
+                for log in logs:
+                    if log.end_time:
+                        all_completion_end_times.append(log.end_time)
+            else:
+                all_eligible_operations_completed = False
+
+    if not eligible_operations:
+        raise HTTPException(
+            status_code=400,
+            detail="No operations are currently eligible for logging based on sequence validation"
+        )
+
+    total_eligible = len(eligible_operations)
+
+    # Calculate overall completion date
+    overall_completion_date = None
+    if all_eligible_operations_completed and all_completion_end_times:
+        # Only set completion date if ALL eligible operations are completed
+        overall_completion_date = max(all_completion_end_times)
+
+    return {
+        "is_order_completed": all_eligible_operations_completed,
+        "message": "ORDER COMPLETED - All eligible operations finished" if all_eligible_operations_completed else f"ORDER IN PROGRESS - {completed_count}/{total_eligible} eligible operations completed",
+        "part_number": order.part_number,
+        "production_order": order.production_order,
+        "project_name": order.project.name,
+        "completed_operations": completed_count,
+        "total_eligible_operations": total_eligible,
+        "total_all_operations": len(operations),
+        "completion_percentage": round((completed_count / total_eligible) * 100, 2) if total_eligible > 0 else 0,
+        "overall_completion_date": overall_completion_date,
+        "completion_date_status": "Fully Completed" if all_eligible_operations_completed and overall_completion_date else "In Progress"
+    }
