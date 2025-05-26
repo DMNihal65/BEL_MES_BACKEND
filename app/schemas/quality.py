@@ -228,3 +228,12 @@ class FTPResponse(FTPBase):
 
     class Config:
         from_attributes = True
+
+class StageInspectionWithUserResponse(StageInspectionBase):
+    """Response schema for Stage Inspection with User details"""
+    id: int
+    created_at: datetime
+    operator: Optional[OperatorInfo] = None
+
+    class Config:
+        from_attributes = True

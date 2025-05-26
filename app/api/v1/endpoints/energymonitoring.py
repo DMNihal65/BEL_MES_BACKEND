@@ -460,7 +460,9 @@ class SingleMachineParameterTracker:
 async def get_single_machine_parameters(machine_id: int):
     """Helper function to get parameters of a specific machine"""
     with db_session:
-        machine_name = f"Machine-{machine_id}"  # Simplified machine name
+        # Get machine name from Machine table
+        machine = Machine.get(id=machine_id)
+        machine_name = machine.make if machine else f"Unknown Machine {machine_id}"
 
         live_status = MachineEMSLive.get(machine_id=machine_id)
         if not live_status:
@@ -630,9 +632,12 @@ class HistoricalDataTracker:
                                    if h.machine_id == self.machine_id).order_by(lambda h: desc(h.timestamp)).first()
 
             if not latest_record:
+                # Get machine name even if no history exists
+                machine = Machine.get(id=self.machine_id)
+                machine_name = machine.make if machine else f"Unknown Machine {self.machine_id}"
                 return {
                     "machine_id": self.machine_id,
-                    "machine_name": f"Machine-{self.machine_id}",
+                    "machine_name": machine_name,
                     "parameter": self.parameter,
                     "data_points": []
                 }
@@ -647,10 +652,9 @@ class HistoricalDataTracker:
                            h.timestamp <= current_time)
             history_data = list(query.order_by(lambda h: h.timestamp)[:])
 
-            # Get machine name
+            # Get machine name from Machine table
             machine = Machine.get(id=self.machine_id)
-            machine_name = f"{machine.work_center.code}-{machine.make}" if hasattr(machine,
-                                                                                   'work_center') else f"Machine-{self.machine_id}"
+            machine_name = machine.make if machine else f"Unknown Machine {self.machine_id}"
 
             # Format response data
             response_data = {
@@ -699,10 +703,9 @@ class HistoricalDataTracker:
             if not window_data:
                 return None
 
-            # Get machine name
+            # Get machine name from Machine table
             machine = Machine.get(id=self.machine_id)
-            machine_name = f"{machine.work_center.code}-{machine.make}" if hasattr(machine,
-                                                                                   'work_center') else f"Machine-{self.machine_id}"
+            machine_name = machine.make if machine else f"Unknown Machine {self.machine_id}"
 
             # Format response data
             response_data = {
@@ -988,10 +991,13 @@ async def get_all_shiftwise_energy():
     with db_session:
         live_data = select(s for s in ShiftwiseEnergyLive)[:]
 
+        # Get all machines for name lookup
+        machines = {m.id: m.make for m in select(m for m in Machine)[:]}
+
         return [
             {
                 "machine_id": data.machine_id,
-                "machine_name": f"Machine-{data.machine_id}",
+                "machine_name": machines.get(data.machine_id, f"Unknown Machine {data.machine_id}"),
                 "timestamp": data.timestamp.isoformat(),
                 "first_shift": data.first_shift,
                 "second_shift": data.second_shift,
@@ -1097,6 +1103,9 @@ async def get_combined_history(
                                         if h.timestamp == target_datetime)[:]
             all_machine_ids = list(set(shiftwise_machines))
 
+            # Get machine names from Machine table
+            machines = {m.id: m.make for m in select(m for m in Machine)[:]}
+
             # Get total energy data directly from the database
             total_query = select((
                                      sum(h.first_shift),
@@ -1137,7 +1146,7 @@ async def get_combined_history(
             for machine_id in all_machine_ids:
                 machine_data = {
                     "machine_id": machine_id,
-                    "machine_name": f"Machine-{machine_id}"
+                    "machine_name": machines.get(machine_id, f"Unknown Machine {machine_id}")
                 }
 
                 # Get shiftwise energy data
@@ -1183,3 +1192,4 @@ async def get_combined_history(
             status_code=500,
             detail=f"Internal server error: {str(e)}"
         )
+
