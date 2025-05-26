@@ -328,3 +328,112 @@ def check_order_completion_status_simple(part_number: str, production_order: str
         "overall_completion_date": overall_completion_date,
         "completion_date_status": "Fully Completed" if all_eligible_operations_completed and overall_completion_date else "In Progress"
     }
+
+
+@router.get("/check-order-completion-simple")
+@db_session
+def get_all_orders_completion_status():
+    """
+    Get completion status for all production orders.
+    Returns list of all orders with their completion status.
+    """
+    # Get all orders
+    all_orders = select(order for order in Order)
+
+    if not all_orders:
+        return {
+            "message": "No production orders found",
+            "orders": []
+        }
+
+    completed_orders_status = []
+
+    for order in all_orders:
+        # Get all operations for this order
+        operations = select(op for op in Operation if op.order == order)
+
+        if not operations:
+            # Skip orders with no operations since they can't be completed
+            continue
+
+        # Check if all eligible operations are completed
+        all_eligible_operations_completed = True
+        completed_count = 0
+        eligible_operations = []
+        all_completion_end_times = []
+
+        for op in operations:
+            logs = select(log for log in ProductionLog if log.operation == op)
+            operation_completed_qty = sum(log.quantity_completed or 0 for log in logs)
+            is_operation_complete = operation_completed_qty >= order.required_quantity
+
+            # Check if this operation can be logged (sequence validation)
+            can_log, validation_reason = validate_operation_sequence(op.id)
+
+            # Override can_log if operation is already completed
+            if is_operation_complete:
+                can_log = False
+                validation_reason = "Operation is already completed"
+
+            # Only consider operations that are either:
+            # 1. Currently eligible for logging (can_log = True), OR
+            # 2. Already completed (meaning they were previously eligible and now finished)
+            is_eligible_operation = can_log or is_operation_complete
+
+            if is_eligible_operation:
+                eligible_operations.append(op)
+                if is_operation_complete:
+                    completed_count += 1
+
+                    # Collect all end_times from logs for this completed operation
+                    for log in logs:
+                        if log.end_time:
+                            all_completion_end_times.append(log.end_time)
+                else:
+                    all_eligible_operations_completed = False
+
+        if not eligible_operations:
+            # Skip orders with no eligible operations since they can't be completed
+            continue
+
+        total_eligible = len(eligible_operations)
+
+        # Calculate overall completion date
+        overall_completion_date = None
+        if all_eligible_operations_completed and all_completion_end_times:
+            # Only set completion date if ALL eligible operations are completed
+            overall_completion_date = max(all_completion_end_times)
+
+        # Only add to results if order is completed
+        if all_eligible_operations_completed:
+            completed_orders_status.append({
+                "part_number": order.part_number,
+                "production_order": order.production_order,
+                "project_name": order.project.name if order.project else "Unknown",
+                "is_order_completed": True,
+                "message": "ORDER COMPLETED - All eligible operations finished",
+                "completed_operations": completed_count,
+                "total_eligible_operations": total_eligible,
+                "total_all_operations": len(operations),
+                "completion_percentage": 100.0,
+                "overall_completion_date": overall_completion_date,
+                "completion_date_status": "Fully Completed"
+            })
+
+    # Check if any completed orders found
+    if not completed_orders_status:
+        return {
+            "message": "No completed production orders found",
+            "completed_orders": []
+        }
+
+    # Summary statistics
+    total_completed_orders = len(completed_orders_status)
+
+    return {
+        "message": f"Retrieved {total_completed_orders} completed production orders",
+        "summary": {
+            "total_completed_orders": total_completed_orders
+        },
+        "completed_orders": completed_orders_status
+    }
