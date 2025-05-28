@@ -1,5 +1,5 @@
 from fastapi import FastAPI, File, UploadFile, APIRouter, HTTPException, Query
-from pony.orm import db_session, select, commit, count
+from pony.orm import db_session, select, commit, count, get
 from datetime import datetime, timedelta
 from typing import List, Optional
 import PyPDF2
@@ -13,7 +13,7 @@ from app.models import (
     Unit, RawMaterial, InventoryStatus, PartScheduleStatus, MachineStatus, MachineShift, Status
 )
 from app.schemas.planning import CreateOperationRequest, CreateOrderRequest, OrderUpdateRequest, OperationUpdateRequest, \
-    SaveDataRequest, ProjectPriorityUpdateRequest
+    SaveDataRequest, ProjectPriorityUpdateRequest, OrderUpdate_Response, OrderUpdate_Request
 
 router = APIRouter(prefix="/api/v1/planning", tags=["planning"])
 
@@ -1183,3 +1183,83 @@ def delete_order(order_id: int):
 
     commit()
     return {"message": "Order and related entities deleted successfully."}
+
+
+
+@router.put("/orders/{order_id}", response_model=OrderUpdate_Response)
+@db_session
+def update_order(order_id: int, order_update: OrderUpdate_Request):
+    """
+    Update editable fields of an existing order.
+
+    Editable fields:
+    - part_description
+    - wbs_element
+    - launched_quantity
+    - project_name (updates the associated project)
+    - sale_order
+    """
+    try:
+        # Get the order by ID
+        order = get(o for o in Order if o.id == order_id)
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        # Track if any changes were made
+        changes_made = False
+
+        # Update part_description if provided
+        if order_update.part_description is not None:
+            order.part_description = order_update.part_description
+            changes_made = True
+
+        # Update wbs_element if provided
+        if order_update.wbs_element is not None:
+            order.wbs_element = order_update.wbs_element
+            changes_made = True
+
+        # Update launched_quantity if provided
+        if order_update.launched_quantity is not None:
+            if order_update.launched_quantity < 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Launched quantity cannot be negative"
+                )
+            order.launched_quantity = order_update.launched_quantity
+            changes_made = True
+
+        # Update sale_order if provided
+        if order_update.sale_order is not None:
+            order.sale_order = order_update.sale_order
+            changes_made = True
+
+        # Update project_name if provided
+        if order_update.project_name is not None:
+            # Update the name of the existing project associated with this order
+            order.project.name = order_update.project_name
+            changes_made = True
+
+        if not changes_made:
+            raise HTTPException(
+                status_code=400,
+                detail="No valid fields provided for update"
+            )
+
+        # Commit changes (handled by @db_session decorator)
+
+        # Return updated order data
+        return OrderUpdate_Response(
+            id=order.id,
+            production_order=order.production_order,
+            part_description=order.part_description,
+            wbs_element=order.wbs_element,
+            launched_quantity=order.launched_quantity,
+            project_name=order.project.name,
+            sale_order=order.sale_order,
+            updated_at=datetime.now()
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")

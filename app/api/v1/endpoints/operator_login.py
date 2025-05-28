@@ -3,7 +3,7 @@ from datetime import timedelta
 from pony.orm import db_session, select
 import json
 from ....config.settings import settings
-from ....core.security import create_access_token
+from ....core.security import create_access_token, verify_password
 from ....models.user import User, MachineCredential
 from ....models.master_order import Machine
 from pydantic import BaseModel
@@ -200,14 +200,14 @@ async def machine_operator_login(auth_data: MachineOperatorAuth = Body(...)) -> 
 
             # For development, bypass password check
             # REMOVE OR UNCOMMENT THIS IN PRODUCTION:
-            """
+
             # Check password
             if not verify_password(auth_data.password, user.hashed_password):
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Invalid operator credentials - incorrect password"
                 )
-            """
+
 
             print("Bypassing password check for development")
 

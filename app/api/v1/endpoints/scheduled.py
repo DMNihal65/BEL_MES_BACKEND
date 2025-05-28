@@ -1412,11 +1412,16 @@ async def get_part_production_timeline():
                 ))
 
             # Sort by part number alphabetically
-            results.sort(key=lambda x: x.part_number)
+
+            # Filter only scheduled statuses
+            filtered_results = [item for item in results if item.status == "scheduled"]
+
+            # Sort by part number alphabetically
+            filtered_results.sort(key=lambda x: x.part_number)
 
             return PartProductionResponse(
-                items=results,
-                total_parts=len(results)
+                items=filtered_results,
+                total_parts=len(filtered_results)
             )
 
     except Exception as e:
