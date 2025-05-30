@@ -285,23 +285,30 @@ def determine_work_center_schedulability(work_center: WorkCenter) -> bool:
 
 
 @router.post("/dynamic-reschedule")
+
+
 async def dynamic_reschedule():
     """Dynamically reschedule operations based on production logs with improved handling of is_schedulable flag"""
     try:
         with db_session:
-            # Build machine schedulability lookup dict first
+            # Build machine schedulability lookup dict first - OPTIMIZED with prefetch
             machine_schedulability = {}
-            for work_center in WorkCenter.select():
+            work_centers = select(wc for wc in WorkCenter).prefetch(WorkCenter.machines)[:]
+            for work_center in work_centers:
                 for machine in work_center.machines:
                     machine_schedulability[machine.id] = work_center.is_schedulable
 
-            schedule_items = select(p for p in PlannedScheduleItem
-                                    ).order_by(lambda p: (p.operation.operation_number, p.id))[:]
+            # OPTIMIZED: Use prefetch to reduce N+1 queries
+            schedule_items = select(p for p in PlannedScheduleItem).prefetch(
+                PlannedScheduleItem.operation,
+                PlannedScheduleItem.machine,
+                PlannedScheduleItem.order
+            ).order_by(lambda p: (p.operation.operation_number, p.id))[:]
 
             if not schedule_items:
                 # Return empty response with work center info when no schedule items exist
                 empty_work_centers = []
-                for work_center in WorkCenter.select():
+                for work_center in work_centers:
                     machines_in_wc = []
                     for machine in work_center.machines:
                         machines_in_wc.append({
@@ -338,21 +345,44 @@ async def dynamic_reschedule():
             grouped_items = {}
             processed_operations = set()
 
-            # Collect valid part numbers based on production logs
+            # OPTIMIZED: Bulk fetch all schedule versions and production logs
+            all_versions = select(v for v in ScheduleVersion).prefetch(ScheduleVersion.schedule_item)[:]
+            version_by_item = {}
+            for version in all_versions:
+                if version.schedule_item.id not in version_by_item:
+                    version_by_item[version.schedule_item.id] = []
+                version_by_item[version.schedule_item.id].append(version)
+
+            all_production_logs = select(l for l in ProductionLog).prefetch(
+                ProductionLog.schedule_version,
+                ProductionLog.operation
+            )[:]
+
+            # Create lookup dictionaries for faster access
+            logs_by_version = {}
+            logs_by_operation = {}
+            for log in all_production_logs:
+                if log.schedule_version:
+                    if log.schedule_version.id not in logs_by_version:
+                        logs_by_version[log.schedule_version.id] = []
+                    logs_by_version[log.schedule_version.id].append(log)
+                elif log.operation:
+                    if log.operation.id not in logs_by_operation:
+                        logs_by_operation[log.operation.id] = []
+                    logs_by_operation[log.operation.id].append(log)
+
+            # Collect valid part numbers based on production logs - OPTIMIZED
             for item in schedule_items:
-                versions = select(v for v in ScheduleVersion
-                                  if v.schedule_item == item)[:]
+                versions = version_by_item.get(item.id, [])
                 has_logs = False
                 for version in versions:
-                    logs = select(l for l in ProductionLog
-                                  if l.schedule_version == version)[:]
+                    logs = logs_by_version.get(version.id, [])
                     if logs:
                         has_logs = True
                         valid_part_numbers.add(item.order.part_number)
                         break
                 if not has_logs:
-                    logs = select(l for l in ProductionLog
-                                  if l.schedule_version is None and l.operation == item.operation)[:]
+                    logs = logs_by_operation.get(item.operation.id, [])
                     if logs:
                         valid_part_numbers.add(item.order.part_number)
 
@@ -384,28 +414,29 @@ async def dynamic_reschedule():
                     items.sort(key=lambda x: x.id)
                     last_item = items[-1]
 
-                    current_version = select(v for v in ScheduleVersion
-                                             if v.schedule_item == last_item and
-                                             v.is_active == True).first()
+                    # OPTIMIZED: Use pre-fetched versions
+                    item_versions = version_by_item.get(last_item.id, [])
+                    current_version = None
+                    for v in item_versions:
+                        if v.is_active:
+                            current_version = v
+                            break
 
                     if not current_version:
                         continue
 
-                    # Get all logs for the operation
+                    # Get all logs for the operation - OPTIMIZED using pre-built lookups
                     all_operation_logs = []
 
                     # Get logs that are connected to versions of this item
                     for item in items:
-                        versions = select(v for v in ScheduleVersion if v.schedule_item == item)[:]
-                        for version in versions:
-                            logs = select(l for l in ProductionLog if l.schedule_version == version)[:]
+                        item_versions = version_by_item.get(item.id, [])
+                        for version in item_versions:
+                            logs = logs_by_version.get(version.id, [])
                             all_operation_logs.extend(logs)
 
                     # Get logs that are connected directly to the operation without version
-                    operation_id = last_item.operation.id
-                    operation_logs_no_version = select(l for l in ProductionLog
-                                                       if l.schedule_version is None and
-                                                       l.operation.id == operation_id)[:]
+                    operation_logs_no_version = logs_by_operation.get(last_item.operation.id, [])
                     all_operation_logs.extend(operation_logs_no_version)
 
                     # Filter out logs without completed quantities
@@ -437,6 +468,8 @@ async def dynamic_reschedule():
                         completed_operations[part_number] = []
 
                     operation_id = last_item.operation.id if last_item.operation else last_item.id
+
+                    # OPTIMIZED: Fetch dependent operations once
                     dependent_ops = select(o for o in Operation
                                            if o.order == last_item.order
                                            ).order_by(lambda o: o.operation_number)[:]
@@ -572,9 +605,18 @@ async def dynamic_reschedule():
                 else:
                     print(f"Removing update for machine {machine_id} as it's in a non-schedulable work center")
 
-            logs_query = []
-            for log in ProductionLog.select():
+            # OPTIMIZED: Process logs with bulk operations and reduce redundant queries
+            combined_logs = {}
+            production_logs = []
+            total_completed = 0
+            total_rejected = 0
+
+            # Process logs and create combined logs - OPTIMIZED using pre-fetched data
+            for log in all_production_logs:
                 try:
+                    if log.end_time is None:
+                        continue
+
                     operator = log.operator
                     if log.schedule_version:
                         schedule_item = log.schedule_version.schedule_item
@@ -589,80 +631,59 @@ async def dynamic_reschedule():
                         version_number = None
                         schedule_item = None
 
-                    logs_query.append((
-                        log,
-                        operator,
-                        log.schedule_version,
-                        schedule_item,
-                        machine,
-                        operation,
-                        order,
-                        version_number
-                    ))
+                    machine_name = None
+                    if machine:
+                        if hasattr(machine, 'work_center') and machine.work_center:
+                            machine_name = f"{machine.work_center.code}-{machine.make}"
+                        else:
+                            machine_name = machine.make
+
+                    # Group logs by part_number, operation, and machine_name
+                    group_key = (
+                        order.part_number if order else None,
+                        operation.operation_description if operation else None,
+                        machine_name
+                    )
+
+                    if group_key not in combined_logs:
+                        combined_logs[group_key] = {
+                            'logs': [],
+                            'start_time': None,
+                            'end_time': None,
+                            'quantity_completed': 0,
+                            'quantity_rejected': 0,
+                            'operator_id': operator.id if operator else None,
+                            'part_number': order.part_number if order else None,
+                            'production_order': order.production_order if order else None,
+                            'operation_description': operation.operation_description if operation else None,
+                            'machine_name': machine_name,
+                            'notes': []
+                        }
+
+                    # Add the log to the group
+                    combined_logs[group_key]['logs'].append(log)
+
+                    # Update the aggregate data
+                    if log.start_time and (combined_logs[group_key]['start_time'] is None or
+                                           log.start_time < combined_logs[group_key]['start_time']):
+                        combined_logs[group_key]['start_time'] = log.start_time
+
+                    if log.end_time and (combined_logs[group_key]['end_time'] is None or
+                                         log.end_time > combined_logs[group_key]['end_time']):
+                        combined_logs[group_key]['end_time'] = log.end_time
+
+                    if log.quantity_completed:
+                        combined_logs[group_key]['quantity_completed'] += log.quantity_completed
+
+                    if log.quantity_rejected:
+                        combined_logs[group_key]['quantity_rejected'] += log.quantity_rejected
+
+                    if log.notes:
+                        combined_logs[group_key]['notes'].append(log.notes)
+
                 except Exception as e:
                     print(f"Error processing log ID {log.id}: {e}")
                     continue
-
-            combined_logs = {}
-            production_logs = []
-            total_completed = 0
-            total_rejected = 0
-
-            # Process logs and create combined logs
-            for result in logs_query:
-                log, operator, version, schedule_item, machine, operation, order, version_number = result
-                if log.end_time is None:
-                    continue
-
-                machine_name = None
-                if machine:
-                    if hasattr(machine, 'work_center') and machine.work_center:
-                        machine_name = f"{machine.work_center.code}-{machine.make}"
-                    else:
-                        machine_name = machine.make
-
-                # Group logs by part_number, operation, and machine_name
-                group_key = (
-                    order.part_number if order else None,
-                    operation.operation_description if operation else None,
-                    machine_name
-                )
-
-                if group_key not in combined_logs:
-                    combined_logs[group_key] = {
-                        'logs': [],
-                        'start_time': None,
-                        'end_time': None,
-                        'quantity_completed': 0,
-                        'quantity_rejected': 0,
-                        'operator_id': operator.id if operator else None,
-                        'part_number': order.part_number if order else None,
-                        'production_order': order.production_order if order else None,  # Added this line
-                        'operation_description': operation.operation_description if operation else None,
-                        'machine_name': machine_name,
-                        'notes': []
-                    }
-
-                # Add the log to the group
-                combined_logs[group_key]['logs'].append(log)
-
-                # Update the aggregate data
-                if log.start_time and (combined_logs[group_key]['start_time'] is None or
-                                       log.start_time < combined_logs[group_key]['start_time']):
-                    combined_logs[group_key]['start_time'] = log.start_time
-
-                if log.end_time and (combined_logs[group_key]['end_time'] is None or
-                                     log.end_time > combined_logs[group_key]['end_time']):
-                    combined_logs[group_key]['end_time'] = log.end_time
-
-                if log.quantity_completed:
-                    combined_logs[group_key]['quantity_completed'] += log.quantity_completed
-
-                if log.quantity_rejected:
-                    combined_logs[group_key]['quantity_rejected'] += log.quantity_rejected
-
-                if log.notes:
-                    combined_logs[group_key]['notes'].append(log.notes)
 
             # Create the production log response from the combined data
             for group_key, group_data in combined_logs.items():
@@ -682,11 +703,11 @@ async def dynamic_reschedule():
                         quantity_completed=group_data['quantity_completed'],
                         quantity_rejected=group_data['quantity_rejected'],
                         part_number=group_data['part_number'],
-                        production_order=group_data['production_order'],  # This field was missing
+                        production_order=group_data['production_order'],
                         operation_description=group_data['operation_description'],
                         machine_name=group_data['machine_name'],
                         notes=notes,
-                        version_number=None  # Version number is not critical for aggregated logs
+                        version_number=None
                     )
 
                     production_logs.append(log_entry)
@@ -734,34 +755,30 @@ async def dynamic_reschedule():
             scheduled_operations = []
 
             if not schedule_df.empty:
-                # Get mapping of machine IDs to work centers for checking schedulability
+                # OPTIMIZED: Build lookup dictionaries once
                 machine_to_work_center = {}
-                for machine in Machine.select():
+                machine_details = {}
+                for machine in Machine.select().prefetch(Machine.work_center):
                     if hasattr(machine, 'work_center') and machine.work_center:
                         machine_to_work_center[machine.id] = {
                             'code': machine.work_center.code,
                             'name': machine.make,
                             'is_schedulable': machine.work_center.is_schedulable
                         }
+                        machine_details[machine.id] = f"{machine.work_center.code}-{machine.make}"
 
-                machine_details = {
-                    machine.id: f"{machine.work_center.code}-{machine.make}"
-                    for machine in Machine.select()
-                    if hasattr(machine, 'work_center') and machine.work_center
-                }
-
+                # OPTIMIZED: Build orders map once
                 orders_map = {
                     order.part_number: order.production_order
                     for order in Order.select()
                 }
 
-                # Create a mapping for part descriptions
+                # Create a mapping for part descriptions - OPTIMIZED
                 part_descriptions = {}
                 for order in Order.select():
                     if hasattr(order, 'part_description') and order.part_description:
                         part_descriptions[order.part_number] = order.part_description
                     else:
-                        # Fallback to part number if no description available
                         part_descriptions[order.part_number] = order.part_number
 
                 for _, row in schedule_df.iterrows():
@@ -831,13 +848,12 @@ async def dynamic_reschedule():
                 end_time = data['operation_end'] if data['operation_end'] else data['setup_end']
                 if end_time and data['setup_start']:
                     quantity_str = f"Process({data['current_qty']}/{data['total_qty']}pcs, Today: {data['today_qty']}pcs)"
-                    # Get part description, defaulting to component if not found
                     part_description = part_descriptions.get(component, component)
 
                     scheduled_operations.append(
                         ScheduledOperation(
                             component=component,
-                            part_description=part_description,  # Add the part_description field
+                            part_description=part_description,
                             description=description,
                             machine=machine,
                             start_time=data['setup_start'],
@@ -847,9 +863,9 @@ async def dynamic_reschedule():
                         )
                     )
 
-            # Modified this section to preserve the is_schedulable flag from the database
+            # OPTIMIZED: Use pre-fetched work center data
             work_center_data = []
-            for work_center in WorkCenter.select():
+            for work_center in work_centers:
                 machines_in_wc = []
                 for machine in work_center.machines:
                     machines_in_wc.append({
@@ -863,7 +879,7 @@ async def dynamic_reschedule():
                         work_center_code=work_center.code,
                         work_center_name=work_center.work_center_name or "",
                         machines=machines_in_wc,
-                        is_schedulable=work_center.is_schedulable  # Use the actual value from the database
+                        is_schedulable=work_center.is_schedulable
                     )
                 )
 
@@ -878,8 +894,8 @@ async def dynamic_reschedule():
                         update['operation_id'] = hash_value % 1000000
 
             return CombinedScheduleResponse(
-                reschedule=final_updates,
-                total_updates=len(final_updates),
+                reschedule=schedulable_updates,
+                total_updates=len(schedulable_updates),
                 production_logs=production_logs,
                 scheduled_operations=scheduled_operations,
                 overall_end_time=overall_end_time,

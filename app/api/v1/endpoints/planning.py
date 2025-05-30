@@ -353,32 +353,49 @@ def save_to_database(data):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from fastapi import HTTPException
+from pony.orm import db_session, select
+
+# Create a thread pool executor for database operations
+executor = ThreadPoolExecutor(max_workers=10)
+
+
 @router.get("/all_orders")
-@db_session
-def get_all_orders():
+async def get_all_orders():
     try:
-        orders = select(o for o in Order)[:]
-        return [
-            {
-                "id": order.id,
-                "production_order": order.production_order,
-                "sale_order": order.sale_order,
-                "wbs_element": order.wbs_element,
-                "part_number": order.part_number,
-                "part_description": order.part_description,
-                "total_operations": order.total_operations,
-                "required_quantity": order.required_quantity,
-                "launched_quantity": order.launched_quantity,
-                "plant_id": order.plant_id,
-                "project": {
-                    "id": order.project.id,
-                    "name": order.project.name,
-                    "priority": order.project.priority,
-                    "delivery_date": order.project.delivery_date
-                } if order.project else None
-            }
-            for order in orders
-        ]
+        # Run the database query in a thread pool to avoid blocking
+        def get_orders_sync():
+            with db_session:
+                orders = select(o for o in Order)[:]
+                return [
+                    {
+                        "id": order.id,
+                        "production_order": order.production_order,
+                        "sale_order": order.sale_order,
+                        "wbs_element": order.wbs_element,
+                        "part_number": order.part_number,
+                        "part_description": order.part_description,
+                        "total_operations": order.total_operations,
+                        "required_quantity": order.required_quantity,
+                        "launched_quantity": order.launched_quantity,
+                        "plant_id": order.plant_id,
+                        "project": {
+                            "id": order.project.id,
+                            "name": order.project.name,
+                            "priority": order.project.priority,
+                            "delivery_date": order.project.delivery_date
+                        } if order.project else None
+                    }
+                    for order in orders
+                ]
+
+        # Execute the database operation in a thread pool
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(executor, get_orders_sync)
+        return result
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

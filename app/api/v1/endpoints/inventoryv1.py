@@ -39,7 +39,7 @@ from app.core.security import get_current_user  # Import the auth dependency
 from app.models.master_order import Order, Operation
 from pony.orm import desc
 
-router = APIRouter(prefix="/api/inventory", tags=["inventory"])
+router = APIRouter(prefix="/api/v1/inventory", tags=["inventory"])
 
 
 # Inventory Category Endpoints

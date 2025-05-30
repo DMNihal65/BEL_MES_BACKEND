@@ -55,14 +55,14 @@ app.include_router(quality.router)
 app.include_router(notification_service.router)
 app.include_router(pokayoke.router)
 app.include_router(daily_production.router)
-app.include_router(inventoryv1.router, prefix="/api/v1")
+app.include_router(inventoryv1.router)
 app.include_router(mttr_mtbf.router)
 app.include_router(energymonitoring.router)
 
 
 #######
 app.include_router(document_management_v2.router, prefix="/api/v1/document-management", tags=["documents"])
-app.include_router(inventoryv1.router, prefix="/api/v1")
+# app.include_router(inventoryv1.router, prefix="/api/v1")
 app.include_router(production_monitoring.router, tags=["production_monitoring"])
 app.include_router(toolsprograms.router)
 
@@ -73,12 +73,12 @@ def read_root():
 
 
 # uvicorn app.main:app --reload
-# uvicorn app.main:app --host 172.18.7.88 --port 5654 --reload
-# uvicorn app.main:app --host 172.18.7.88 --port 8888 --reload
+# uvicorn app.main:app --host 172.18.7.88 --port 7613 --reload
+# uvicorn app.main:app --host 172.18.7.88 --port 1717 --reload
 # uvicorn app.main:app --host 172.18.7.88 --port 6575 --reload
-# uvicorn app.main:app --host 172.18.7.88 --port 6666 --reload
+# uvicorn app.main:app --host 172.18.7.88 --port 7799 --reload
 
-# uvicorn app.main:app --host 172.18.7.88 --port 6565 --reload
+# uvicorn app.main:app --host 172.18.7.88 --port 5554 --reload
 
 
 # uvicorn app.main:app --host 172.18.7.88 --port 5598 --reload
