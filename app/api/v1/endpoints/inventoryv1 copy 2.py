@@ -32,15 +32,14 @@ from app.models.inventoryv1 import (
     CalibrationHistory,
     InventoryRequest,
     InventoryTransaction,
-
+    
 )
 from app.models.user import User
 from app.core.security import get_current_user  # Import the auth dependency
-from app.models.master_order import Order, Operation
+from app.models.master_order import Order,Operation
 from pony.orm import desc
 
 router = APIRouter(prefix="/api/inventory", tags=["inventory"])
-
 
 # Inventory Category Endpoints
 @router.post("/categories/", response_model=InventoryCategoryResponse)
@@ -48,7 +47,7 @@ router = APIRouter(prefix="/api/inventory", tags=["inventory"])
 def create_category(category: InventoryCategoryCreate):
     """
     Create a new inventory category.
-
+    
     Sample request:
     ```json
     {
@@ -61,7 +60,7 @@ def create_category(category: InventoryCategoryCreate):
     user = User.get(id=category.created_by)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-
+    
     new_category = InventoryCategory(
         name=category.name,
         description=category.description,
@@ -70,7 +69,6 @@ def create_category(category: InventoryCategoryCreate):
     )
     commit()
     return new_category.to_dict()
-
 
 @router.get("/categories/{category_id}", response_model=InventoryCategoryResponse)
 @db_session
@@ -86,14 +84,13 @@ def get_category(category_id: int):
         "created_by": category.created_by.id
     }
 
-
 # Inventory SubCategory Endpoints
 @router.post("/subcategories/", response_model=InventorySubCategoryResponse)
 @db_session
 def create_subcategory(subcategory: InventorySubCategoryCreate):
     """
     Create a new inventory subcategory.
-
+    
     Sample request:
     ```json
     {
@@ -113,11 +110,11 @@ def create_subcategory(subcategory: InventorySubCategoryCreate):
     category = InventoryCategory.get(id=subcategory.category_id)
     if not category:
         raise HTTPException(status_code=404, detail="Category not found")
-
+    
     user = User.get(id=subcategory.created_by)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-
+    
     new_subcategory = InventorySubCategory(
         category=category,
         name=subcategory.name,
@@ -127,7 +124,7 @@ def create_subcategory(subcategory: InventorySubCategoryCreate):
         created_at=datetime.utcnow()
     )
     commit()
-
+    
     # Create a response dictionary with the correct structure
     response_data = {
         "id": new_subcategory.id,
@@ -139,7 +136,6 @@ def create_subcategory(subcategory: InventorySubCategoryCreate):
         "created_by": new_subcategory.created_by.id
     }
     return response_data
-
 
 # Inventory Item Endpoints
 @router.post("/items/", response_model=InventoryItemResponse)
@@ -186,7 +182,7 @@ def create_item(item: InventoryItemCreate):
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow()
         )
-
+        
         flush()  # Flush to get the ID before commit
 
         response_data = {
@@ -201,7 +197,7 @@ def create_item(item: InventoryItemCreate):
             "updated_at": new_item.updated_at,
             "created_by": user.id
         }
-
+        
         commit()
         return response_data
 
@@ -214,7 +210,6 @@ def create_item(item: InventoryItemCreate):
                 detail=f"Item with code '{item.item_code}' already exists"
             )
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @router.post("/items/bulk/", response_model=List[InventoryItemResponse])
 @db_session
@@ -243,7 +238,7 @@ def create_bulk_items(bulk_items: BulkInventoryItemCreate):
 
         # Check for existing item codes in database
         existing_codes = select(i.item_code for i in InventoryItem
-                                if i.item_code in item_codes)[:]
+                             if i.item_code in item_codes)[:]
         if existing_codes:
             raise HTTPException(
                 status_code=400,
@@ -317,14 +312,13 @@ def create_bulk_items(bulk_items: BulkInventoryItemCreate):
             detail=f"An unexpected error occurred: {str(e)}"
         )
 
-
 # Calibration Schedule Endpoints
 @router.post("/calibrations/", response_model=CalibrationScheduleResponse)
 @db_session
 def create_calibration_schedule(calibration: CalibrationScheduleCreate):
     """
     Create a new calibration schedule.
-
+    
     Sample request:
     ```json
     {
@@ -341,18 +335,18 @@ def create_calibration_schedule(calibration: CalibrationScheduleCreate):
     item = InventoryItem.get(id=calibration.inventory_item_id)
     if not item:
         raise HTTPException(status_code=404, detail="Inventory item not found")
-
+    
     user = User.get(id=calibration.created_by)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-
+    
     # Validate that next_calibration is after last_calibration
     if calibration.last_calibration and calibration.next_calibration <= calibration.last_calibration:
         raise HTTPException(
             status_code=400,
             detail="Next calibration date must be after last calibration date"
         )
-
+    
     new_calibration = CalibrationSchedule(
         inventory_item=item,
         calibration_type=calibration.calibration_type,
@@ -365,7 +359,7 @@ def create_calibration_schedule(calibration: CalibrationScheduleCreate):
         updated_at=datetime.utcnow()
     )
     commit()
-
+    
     response_data = {
         "id": new_calibration.id,
         "calibration_type": new_calibration.calibration_type,
@@ -380,13 +374,12 @@ def create_calibration_schedule(calibration: CalibrationScheduleCreate):
     }
     return response_data
 
-
 # Inventory Request Endpoints
 @router.post("/requests/", response_model=InventoryRequestResponse)
 @db_session
 def create_inventory_request(
-        request: InventoryRequestCreate,
-        current_user: User = Depends(get_current_user)
+    request: InventoryRequestCreate,
+    current_user: User = Depends(get_current_user)
 ):
     """
     Create a new inventory request.
@@ -394,34 +387,34 @@ def create_inventory_request(
     try:
         # Get current time in UTC
         current_time = datetime.now(timezone.utc)
-
+        
         # Get the item
         item = InventoryItem.get(id=request.inventory_item_id)
         if not item:
             raise HTTPException(status_code=404, detail="Inventory item not found")
-
+        
         # Validate available quantity
         if request.quantity > item.available_quantity:
             raise HTTPException(
                 status_code=400,
                 detail=f"Requested quantity ({request.quantity}) exceeds available quantity ({item.available_quantity})"
             )
-
+        
         # Get order
         order = Order.get(id=request.order_id)
         if not order:
             raise HTTPException(status_code=404, detail="Order not found")
-
+        
         # Get operation if provided
         operation = None
         if request.operation_id:
             operation = Operation.get(id=request.operation_id)
             if not operation:
                 raise HTTPException(status_code=404, detail="Operation not found")
-
+        
         # Ensure expected_return_date is in UTC
         expected_return_date = request.expected_return_date.replace(tzinfo=timezone.utc)
-
+        
         # Create new request
         new_request = InventoryRequest(
             inventory_item=item,
@@ -438,14 +431,13 @@ def create_inventory_request(
             approved_by=None,
             approved_at=None
         )
-
+        
         flush()
-
+        
         response_data = {
             "id": new_request.id,
             "inventory_item_id": item.id,
             "requested_by": current_user.id,
-            "requested_by_username": current_user.username,
             "order_id": order.id,
             "operation_id": operation.id if operation else None,
             "quantity": new_request.quantity,
@@ -460,7 +452,7 @@ def create_inventory_request(
             "approved_by": None,
             "approved_at": None
         }
-
+        
         commit()
         return response_data
 
@@ -471,11 +463,10 @@ def create_inventory_request(
         rollback()
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.post("/transactions/", response_model=InventoryTransactionResponse)
 def create_transaction(
-        transaction: InventoryTransactionCreate,
-        current_user: User = Depends(get_current_user)
+    transaction: InventoryTransactionCreate,
+    current_user: User = Depends(get_current_user)
 ):
     """
     Create a new inventory transaction and update the reference request status if provided.
@@ -561,7 +552,6 @@ def create_transaction(
                 "quantity": quantity,
                 "reference_request_id": request_id,
                 "performed_by": user_id,
-                "performed_by_username": user.username,
                 "remarks": remarks,
                 "created_at": current_time
             }
@@ -571,15 +561,14 @@ def create_transaction(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.get("/transactions/by-item/{item_id}", response_model=List[InventoryTransactionResponse])
 @db_session
 def get_item_transactions(
-        item_id: int,
-        transaction_type: Optional[str] = Query(None, enum=[t.value for t in TransactionType]),
-        start_date: Optional[datetime] = None,
-        end_date: Optional[datetime] = None,
-        limit: int = Query(20, gt=0, le=100)
+    item_id: int,
+    transaction_type: Optional[str] = Query(None, enum=[t.value for t in TransactionType]),
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+    limit: int = Query(20, gt=0, le=100)
 ):
     """
     Get transaction history for a specific inventory item with optional filters.
@@ -608,19 +597,17 @@ def get_item_transactions(
             "quantity": t.quantity,
             "reference_request_id": t.reference_request.id if t.reference_request else None,
             "performed_by": t.performed_by.id,
-            "performed_by_username": t.performed_by.username,
             "remarks": t.remarks,
             "created_at": t.created_at
         }
         for t in transactions
     ]
 
-
 @router.post("/transactions/bulk-return/", response_model=List[InventoryTransactionResponse])
 @db_session
 def bulk_return_items(
-        request_ids: List[int],
-        current_user: User = Depends(get_current_user)
+    request_ids: List[int],
+    current_user: User = Depends(get_current_user)
 ):
     """
     Process bulk returns for multiple inventory requests.
@@ -674,7 +661,6 @@ def bulk_return_items(
                 "quantity": t.quantity,
                 "reference_request_id": t.reference_request.id,
                 "performed_by": current_user.id,
-                "performed_by_username": current_user.username,
                 "remarks": t.remarks,
                 "created_at": t.created_at
             }
@@ -685,12 +671,11 @@ def bulk_return_items(
         rollback()
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.get("/transactions/summary/daily", response_model=List[TransactionSummary])
 @db_session
 def get_daily_transaction_summary(
-        start_date: datetime,
-        end_date: Optional[datetime] = None
+    start_date: datetime,
+    end_date: Optional[datetime] = None
 ):
     """
     Get daily transaction summary within a date range.
@@ -712,7 +697,6 @@ def get_daily_transaction_summary(
         for t_type, quantity in transactions
     ]
 
-
 # Inventory Category Endpoints
 @router.get("/categories/", response_model=List[InventoryCategoryResponse])
 @db_session
@@ -729,23 +713,21 @@ def get_all_categories():
         for c in categories
     ]
 
-
 @router.put("/categories/{category_id}", response_model=InventoryCategoryResponse)
 @db_session
 def update_category(category_id: int, category: InventoryCategoryUpdate):
     db_category = InventoryCategory.get(id=category_id)
     if not db_category:
         raise HTTPException(status_code=404, detail="Category not found")
-
+    
     if category.name is not None:
         db_category.name = category.name
     if category.description is not None:
         db_category.description = category.description
-
+    
     db_category.updated_at = datetime.utcnow()
     commit()
     return db_category.to_dict()
-
 
 @router.delete("/categories/{category_id}", status_code=204)
 @db_session
@@ -755,7 +737,6 @@ def delete_category(category_id: int):
         raise HTTPException(status_code=404, detail="Category not found")
     category.delete()
     commit()
-
 
 # Inventory SubCategory Endpoints
 @router.get("/subcategories/", response_model=List[InventorySubCategoryResponse])
@@ -775,7 +756,6 @@ def get_all_subcategories():
         for s in subcategories
     ]
 
-
 @router.get("/subcategories/{subcategory_id}", response_model=InventorySubCategoryResponse)
 @db_session
 def get_subcategory(subcategory_id: int):
@@ -792,44 +772,28 @@ def get_subcategory(subcategory_id: int):
         "created_by": subcategory.created_by.id
     }
 
-
 @router.put("/subcategories/{subcategory_id}", response_model=InventorySubCategoryResponse)
 @db_session
 def update_subcategory(subcategory_id: int, subcategory: InventorySubCategoryUpdate):
-    try:
-        db_subcategory = InventorySubCategory.get(id=subcategory_id)
-        if not db_subcategory:
-            raise HTTPException(status_code=404, detail="Subcategory not found")
-
-        if subcategory.name is not None:
-            db_subcategory.name = subcategory.name
-        if subcategory.description is not None:
-            db_subcategory.description = subcategory.description
-        if subcategory.dynamic_fields is not None:
-            db_subcategory.dynamic_fields = subcategory.dynamic_fields
-        if subcategory.category_id is not None:
-            new_category = InventoryCategory.get(id=subcategory.category_id)
-            if not new_category:
-                raise HTTPException(status_code=404, detail="New category not found")
-            db_subcategory.category = new_category
-
-        db_subcategory.updated_at = datetime.utcnow()
-        commit()
-        # Return only serializable fields
-        return {
-            "id": db_subcategory.id,
-            "name": db_subcategory.name,
-            "description": db_subcategory.description,
-            "dynamic_fields": db_subcategory.dynamic_fields,
-            "category_id": db_subcategory.category.id,
-            "created_at": db_subcategory.created_at,
-            "created_by": db_subcategory.created_by.id
-        }
-    except Exception as e:
-        import traceback
-        print(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=str(e))
-
+    db_subcategory = InventorySubCategory.get(id=subcategory_id)
+    if not db_subcategory:
+        raise HTTPException(status_code=404, detail="Subcategory not found")
+    
+    if subcategory.name is not None:
+        db_subcategory.name = subcategory.name
+    if subcategory.description is not None:
+        db_subcategory.description = subcategory.description
+    if subcategory.dynamic_fields is not None:
+        db_subcategory.dynamic_fields = subcategory.dynamic_fields
+    if subcategory.category_id is not None:
+        new_category = InventoryCategory.get(id=subcategory.category_id)
+        if not new_category:
+            raise HTTPException(status_code=404, detail="New category not found")
+        db_subcategory.category = new_category
+    
+    db_subcategory.updated_at = datetime.utcnow()
+    commit()
+    return db_subcategory.to_dict()
 
 @router.delete("/subcategories/{subcategory_id}", status_code=204)
 @db_session
@@ -839,7 +803,6 @@ def delete_subcategory(subcategory_id: int):
         raise HTTPException(status_code=404, detail="Subcategory not found")
     subcategory.delete()
     commit()
-
 
 # Inventory Item Endpoints
 @router.get("/items/", response_model=List[InventoryItemResponse])
@@ -862,7 +825,6 @@ def get_all_items():
         })
     return response_data
 
-
 @router.get("/items/{item_id}", response_model=InventoryItemResponse)
 @db_session
 def get_item(item_id: int):
@@ -882,14 +844,13 @@ def get_item(item_id: int):
         "created_by": item.created_by.id
     }
 
-
 @router.put("/items/{item_id}", response_model=InventoryItemResponse)
 @db_session
 def update_item(item_id: int, item: InventoryItemUpdate):
     db_item = InventoryItem.get(id=item_id)
     if not db_item:
         raise HTTPException(status_code=404, detail="Item not found")
-
+    
     if item.item_code is not None:
         db_item.item_code = item.item_code
     if item.dynamic_data is not None:
@@ -905,10 +866,10 @@ def update_item(item_id: int, item: InventoryItemUpdate):
         if not new_subcat:
             raise HTTPException(status_code=404, detail="Subcategory not found")
         db_item.subcategory = new_subcat
-
+    
     db_item.updated_at = datetime.utcnow()
     commit()
-
+    
     return {
         "id": db_item.id,
         "item_code": db_item.item_code,
@@ -922,7 +883,6 @@ def update_item(item_id: int, item: InventoryItemUpdate):
         "created_by": db_item.created_by.id
     }
 
-
 @router.delete("/items/{item_id}", status_code=204)
 @db_session
 def delete_item(item_id: int):
@@ -931,7 +891,6 @@ def delete_item(item_id: int):
         raise HTTPException(status_code=404, detail="Item not found")
     item.delete()
     commit()
-
 
 # Calibration Schedule Endpoints
 @router.get("/calibrations/", response_model=List[CalibrationScheduleResponse])
@@ -954,7 +913,6 @@ def get_all_calibrations():
         for c in calibrations
     ]
 
-
 @router.get("/calibrations/{calibration_id}", response_model=CalibrationScheduleResponse)
 @db_session
 def get_calibration(calibration_id: int):
@@ -974,14 +932,13 @@ def get_calibration(calibration_id: int):
         "created_by": calibration.created_by.id
     }
 
-
 @router.put("/calibrations/{calibration_id}", response_model=CalibrationScheduleResponse)
 @db_session
 def update_calibration(calibration_id: int, calibration: CalibrationScheduleUpdate):
     db_calibration = CalibrationSchedule.get(id=calibration_id)
     if not db_calibration:
         raise HTTPException(status_code=404, detail="Calibration schedule not found")
-
+    
     if calibration.calibration_type is not None:
         db_calibration.calibration_type = calibration.calibration_type
     if calibration.frequency_days is not None:
@@ -992,7 +949,7 @@ def update_calibration(calibration_id: int, calibration: CalibrationScheduleUpda
         db_calibration.next_calibration = calibration.next_calibration
     if calibration.remarks is not None:
         db_calibration.remarks = calibration.remarks
-
+    
     db_calibration.updated_at = datetime.utcnow()
     commit()
 
@@ -1009,7 +966,6 @@ def update_calibration(calibration_id: int, calibration: CalibrationScheduleUpda
         "created_by": db_calibration.created_by.id
     }
 
-
 @router.delete("/calibrations/{calibration_id}", status_code=204)
 @db_session
 def delete_calibration(calibration_id: int):
@@ -1019,14 +975,13 @@ def delete_calibration(calibration_id: int):
     calibration.delete()
     commit()
 
-
 # Calibration History Endpoints
 @router.post("/calibration-history/", response_model=CalibrationHistoryResponse)
 @db_session
 def create_calibration_history(history: CalibrationHistoryCreate):
     """
     Create a new calibration history entry.
-
+    
     Sample request:
     ```json
     {
@@ -1043,18 +998,18 @@ def create_calibration_history(history: CalibrationHistoryCreate):
     schedule = CalibrationSchedule.get(id=history.calibration_schedule_id)
     if not schedule:
         raise HTTPException(status_code=404, detail="Calibration schedule not found")
-
+    
     performer = User.get(id=history.performed_by)
     if not performer:
         raise HTTPException(status_code=404, detail="User not found")
-
+    
     # Validate that next_due_date is after calibration_date
     if history.next_due_date <= history.calibration_date:
         raise HTTPException(
             status_code=400,
             detail="Next due date must be after calibration date"
         )
-
+    
     new_history = CalibrationHistory(
         calibration_schedule=schedule,
         calibration_date=history.calibration_date,
@@ -1066,7 +1021,7 @@ def create_calibration_history(history: CalibrationHistoryCreate):
         created_at=datetime.utcnow()
     )
     commit()
-
+    
     response_data = {
         "id": new_history.id,
         "calibration_schedule_id": schedule.id,
@@ -1076,11 +1031,9 @@ def create_calibration_history(history: CalibrationHistoryCreate):
         "remarks": new_history.remarks,
         "next_due_date": new_history.next_due_date,
         "performed_by": performer.id,
-        "performed_by_username": performer.username,
         "created_at": new_history.created_at
     }
     return response_data
-
 
 @router.get("/calibration-history/", response_model=List[CalibrationHistoryResponse])
 @db_session
@@ -1096,12 +1049,10 @@ def get_all_calibration_history():
             "remarks": h.remarks,
             "next_due_date": h.next_due_date,
             "performed_by": h.performed_by.id,
-            "performed_by_username": h.performed_by.username,
             "created_at": h.created_at
         }
         for h in histories
     ]
-
 
 @router.get("/calibration-history/{history_id}", response_model=CalibrationHistoryResponse)
 @db_session
@@ -1118,10 +1069,8 @@ def get_calibration_history(history_id: int):
         "remarks": history.remarks,
         "next_due_date": history.next_due_date,
         "performed_by": history.performed_by.id,
-        "performed_by_username": history.performed_by.username,
         "created_at": history.created_at
     }
-
 
 # Inventory Request Endpoints
 @router.get("/requests/", response_model=List[InventoryRequestResponse])
@@ -1144,16 +1093,14 @@ def get_all_requests():
             response_data.append({
                 "id": r.id,
                 "inventory_item_id": r.inventory_item.id,
-                "inventory_item_code": r.inventory_item.item_code,
+                "inventory_item_code":r.inventory_item.item_code,
                 "requested_by": r.requested_by.id,
-                "requested_by_username": r.requested_by.username,
                 "order_id": r.order.id,
                 "operation_id": r.operation.id if r.operation else None,
                 "quantity": r.quantity,
                 "purpose": r.purpose,
                 "status": status,  # Use the mapped status
                 "approved_by": r.approved_by.id if r.approved_by else None,
-                "approved_by_username": r.approved_by.username if r.approved_by else None,
                 "approved_at": r.approved_at,
                 "expected_return_date": r.expected_return_date,
                 "actual_return_date": r.actual_return_date,
@@ -1161,15 +1108,11 @@ def get_all_requests():
                 "created_at": r.created_at,
                 "updated_at": r.updated_at
             })
-        print(response_data)
 
         return response_data
 
-
-
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @router.get("/requests/{request_id}", response_model=InventoryRequestResponse)
 @db_session
@@ -1181,15 +1124,13 @@ def get_request(request_id: int):
         "id": request.id,
         "inventory_item_id": request.inventory_item.id,
         "requested_by": request.requested_by.id,
-        "requested_by_username": request.requested_by.username,
-        "inventory_item_code": request.inventory_item.item_code,
+        "inventory_item_code":request.inventory_item.item_code,
         "order_id": request.order.id,
         "operation_id": request.operation.id if request.operation else None,
         "quantity": request.quantity,
         "purpose": request.purpose,
         "status": request.status,
         "approved_by": request.approved_by.id if request.approved_by else None,
-        "approved_by_username": request.approved_by.username if request.approved_by else None,
         "approved_at": request.approved_at,
         "expected_return_date": request.expected_return_date,
         "actual_return_date": request.actual_return_date,
@@ -1198,14 +1139,13 @@ def get_request(request_id: int):
         "updated_at": request.updated_at
     }
 
-
 @router.put("/requests/{request_id}", response_model=InventoryRequestResponse)
 @db_session
 def update_request(request_id: int, request: InventoryRequestUpdate):
     db_request = InventoryRequest.get(id=request_id)
     if not db_request:
         raise HTTPException(status_code=404, detail="Request not found")
-
+    
     if request.quantity is not None:
         db_request.quantity = request.quantity
     if request.purpose is not None:
@@ -1225,11 +1165,10 @@ def update_request(request_id: int, request: InventoryRequestUpdate):
         db_request.approved_by = approver
     if request.approved_at is not None:
         db_request.approved_at = request.approved_at
-
+    
     db_request.updated_at = datetime.utcnow()
     commit()
     return db_request.to_dict()
-
 
 # Analytics Endpoints
 @router.get("/analytics/items-by-status", response_model=List[StatusCount])
@@ -1241,7 +1180,6 @@ def get_items_by_status():
         status_counts[status] = status_counts.get(status, 0) + 1
     return [{"status": k, "count": v} for k, v in status_counts.items()]
 
-
 @router.get("/analytics/requests-by-status", response_model=List[StatusCount])
 @db_session
 def get_requests_by_status():
@@ -1251,16 +1189,15 @@ def get_requests_by_status():
         status_counts[status] = status_counts.get(status, 0) + 1
     return [{"status": k, "count": v} for k, v in status_counts.items()]
 
-
 @router.get("/analytics/upcoming-calibrations", response_model=List[CalibrationDue])
 @db_session
 def get_upcoming_calibrations(days: int = 7):
     cutoff_date = datetime.utcnow() + timedelta(days=days)
     calibrations = select(
-        c for c in CalibrationSchedule
+        c for c in CalibrationSchedule 
         if c.next_calibration <= cutoff_date
     )[:]
-
+    
     return [
         {
             "item_id": c.inventory_item.id,
@@ -1269,7 +1206,6 @@ def get_upcoming_calibrations(days: int = 7):
         }
         for c in calibrations
     ]
-
 
 @router.get("/analytics/transaction-summary", response_model=List[TransactionSummary])
 @db_session
@@ -1280,24 +1216,23 @@ def get_transaction_summary():
         summary[t_type] = summary.get(t_type, 0) + t.quantity
     return [{"transaction_type": k, "total_quantity": v} for k, v in summary.items()]
 
-
 # Add this new endpoint after the existing subcategories endpoints
 @router.get("/categories/{category_id}/subcategories", response_model=List[InventorySubCategoryResponse])
 @db_session
 def get_subcategories_by_category(category_id: int):
     """
     Get all subcategories for a specific category.
-
+    
     Parameters:
     - category_id: ID of the category to get subcategories for
-
+    
     Returns a list of subcategories belonging to the specified category.
     If the category doesn't exist, returns a 404 error.
     """
     category = InventoryCategory.get(id=category_id)
     if not category:
         raise HTTPException(status_code=404, detail="Category not found")
-
+    
     subcategories = select(s for s in InventorySubCategory if s.category.id == category_id)[:]
     return [
         {
@@ -1312,13 +1247,12 @@ def get_subcategories_by_category(category_id: int):
         for s in subcategories
     ]
 
-
 # Add these new analytics endpoints
 @router.get("/analytics/transaction-metrics", response_model=dict)
 @db_session
 def get_transaction_metrics(
-        start_date: Optional[datetime] = None,
-        end_date: Optional[datetime] = None
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None
 ):
     """
     Get comprehensive transaction metrics including:
@@ -1335,7 +1269,7 @@ def get_transaction_metrics(
 
         # Get all transactions in date range
         transactions = select(t for t in InventoryTransaction
-                              if t.created_at >= start_date and t.created_at <= end_date)[:]
+            if t.created_at >= start_date and t.created_at <= end_date)[:]
 
         # Initialize metrics
         metrics = {
@@ -1355,8 +1289,7 @@ def get_transaction_metrics(
         item_transaction_counts = {}
         for t in transactions:
             # Count by transaction type
-            metrics["transaction_by_type"][t.transaction_type] = metrics["transaction_by_type"].get(t.transaction_type,
-                                                                                                    0) + 1
+            metrics["transaction_by_type"][t.transaction_type] = metrics["transaction_by_type"].get(t.transaction_type, 0) + 1
 
             # Track quantities by type
             if t.transaction_type == "Issue":
@@ -1385,7 +1318,7 @@ def get_transaction_metrics(
 
         # Calculate request metrics
         requests = select(r for r in InventoryRequest
-                          if r.created_at >= start_date and r.created_at <= end_date)[:]
+            if r.created_at >= start_date and r.created_at <= end_date)[:]
 
         total_requests = len(requests)
         fulfilled_requests = sum(1 for r in requests if r.status in ["Approved", "Issued"])
@@ -1428,7 +1361,6 @@ def get_transaction_metrics(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.get("/analytics/inventory-utilization", response_model=dict)
 @db_session
 def get_inventory_utilization(time_period: Optional[int] = 30):
@@ -1453,9 +1385,9 @@ def get_inventory_utilization(time_period: Optional[int] = 30):
         for item in items:
             # Get transactions for this item
             transactions = select(t for t in InventoryTransaction
-                                  if t.inventory_item == item and
-                                  t.created_at >= start_date and
-                                  t.created_at <= end_date)[:]
+                if t.inventory_item == item and
+                t.created_at >= start_date and
+                t.created_at <= end_date)[:]
 
             total_issued = sum(t.quantity for t in transactions if t.transaction_type == TransactionType.ISSUE.value)
             utilization_rate = (total_issued / item.quantity * 100) if item.quantity > 0 else 0
@@ -1533,13 +1465,12 @@ def get_inventory_utilization(time_period: Optional[int] = 30):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.get("/analytics/transaction-summary", response_model=dict)
 @db_session
 def get_transaction_summary(
-        start_date: Optional[datetime] = None,
-        end_date: Optional[datetime] = None,
-        category_id: Optional[int] = None
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+    category_id: Optional[int] = None
 ):
     """
     Get transaction summary with detailed metrics
@@ -1552,15 +1483,15 @@ def get_transaction_summary(
 
         # Base query for transactions
         query = lambda: select(t for t in InventoryTransaction
-                               if t.created_at >= start_date and
-                               t.created_at <= end_date)
+            if t.created_at >= start_date and
+            t.created_at <= end_date)
 
         # Add category filter if specified
         if category_id:
             query = lambda: select(t for t in InventoryTransaction
-                                   if t.created_at >= start_date and
-                                   t.created_at <= end_date and
-                                   t.inventory_item.subcategory.category.id == category_id)
+                if t.created_at >= start_date and
+                t.created_at <= end_date and
+                t.inventory_item.subcategory.category.id == category_id)
 
         transactions = query()[:]
 
@@ -1643,12 +1574,12 @@ def get_transaction_summary(
 @router.get("/analytics/transaction-history", response_model=dict)
 @db_session
 def get_transaction_history(
-        start_date: Optional[datetime] = None,
-        end_date: Optional[datetime] = None,
-        item_id: Optional[int] = None,
-        transaction_type: Optional[TransactionType] = None,
-        limit: int = 100,
-        offset: int = 0
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+    item_id: Optional[int] = None,
+    transaction_type: Optional[TransactionType] = None,
+    limit: int = 100,
+    offset: int = 0
 ):
     """
     Get detailed transaction history with simplified item details.
@@ -1662,8 +1593,8 @@ def get_transaction_history(
 
         # Build base query
         query = select(t for t in InventoryTransaction
-                       if t.created_at >= start_date and
-                       t.created_at <= end_date)
+                      if t.created_at >= start_date and
+                      t.created_at <= end_date)
 
         # Apply filters
         if item_id:
@@ -1762,16 +1693,15 @@ def get_transaction_history(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.get("/analytics/transaction-history2", response_model=dict)
 @db_session
 def get_transaction_history(
-        start_date: Optional[datetime] = None,
-        end_date: Optional[datetime] = None,
-        item_id: Optional[int] = None,
-        transaction_type: Optional[TransactionType] = None,
-        limit: int = 100,
-        offset: int = 0
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+    item_id: Optional[int] = None,
+    transaction_type: Optional[TransactionType] = None,
+    limit: int = 100,
+    offset: int = 0
 ):
     """
     Get simplified transaction history with item details for table display.
@@ -1785,8 +1715,8 @@ def get_transaction_history(
 
         # Build base query with prefetch for InventoryRequest
         query = select(t for t in InventoryTransaction
-                       if t.created_at >= start_date and
-                       t.created_at <= end_date).prefetch(InventoryRequest)
+                      if t.created_at >= start_date and
+                      t.created_at <= end_date).prefetch(InventoryRequest)
 
         # Apply filters
         if item_id:
@@ -1824,11 +1754,6 @@ def get_transaction_history(
                 "performed_by_username": performer.username,
                 "item_id": item.id,
                 "item_code": item.item_code,
-                "dynamic_data": item.dynamic_data,
-                "subcategory_id": item.subcategory.id,
-                "subcategory_name": item.subcategory.name,
-                "category_id": item.subcategory.category.id,
-                "category_name": item.subcategory.category.name,
                 "current_quantity": item.quantity,
                 "available_quantity": item.available_quantity,
                 "request_id": t.reference_request.id if t.reference_request else None

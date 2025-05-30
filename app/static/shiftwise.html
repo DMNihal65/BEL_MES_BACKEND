@@ -6,7 +6,7 @@
 <body>
     <div id="data"></div>
     <script>
-        const eventSource = new EventSource('http://172.18.7.93:8989/api/v1/energy-monitoring/shiftwise-energy-stream');
+        const eventSource = new EventSource('http://172.18.7.93:8800/api/v1/energy-monitoring/shiftwise-energy-stream');
 
         eventSource.onmessage = function(event) {
             const data = JSON.parse(event.data);

@@ -203,7 +203,7 @@
             }
 
             reconnectAttempts = 0;
-            const serverUrl = 'http://172.18.7.93:9999';
+            const serverUrl = 'http://172.18.7.93:8800';
             eventSource = new EventSource(
                 `${serverUrl}/api/v1/energy-monitoring/machine/${machineId}/parameter/${parameter}/history-stream`
             );

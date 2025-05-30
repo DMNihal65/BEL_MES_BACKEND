@@ -9,7 +9,8 @@ from app.models import Operation, Order, User
 from app.schemas.quality import MasterBocCreate, MasterBocResponse, StageInspectionResponse, \
     StageInspectionCreate, QualityInspectionResponse, DetailedQualityInspectionResponse, \
     OrderIPIDResponse, MasterBocIPIDInfo, MeasurementInstrumentsResponse, \
-    ConnectivityCreate, ConnectivityResponse, StageInspectionDetail, FTPResponse
+    ConnectivityCreate, ConnectivityResponse, StageInspectionDetail, FTPResponse, \
+    StageInspectionWithUserResponse, OperatorInfo
 from app.crud.quality import MasterBocCRUD, StageInspectionCRUD, QualityInspectionCRUD, FTPCRUD
 from app.models.quality import Connectivity, StageInspection
 from app.models.inventoryv1 import InventoryItem
@@ -225,7 +226,7 @@ async def get_detailed_quality_inspection(
     summary="Get stage inspection data grouped by operation number"
 )
 @db_session
-async def get_stage_inspection_grouped(
+def get_stage_inspection_grouped(
         order_id: int = Path(..., gt=0),
         current_user=Depends(get_current_user)
 ) -> Any:
@@ -561,5 +562,88 @@ async def get_all_ftp_by_order(
         raise HTTPException(
             status_code=500,
             detail=f"Error retrieving FTP statuses: {str(e)}"
+        )
+
+
+@router.get(
+    "/stage-inspection/filter",
+    response_model=List[StageInspectionWithUserResponse],
+    summary="Get stage inspections by order, quantity and operation number"
+)
+@db_session
+def get_stage_inspections_by_filter(
+    order_id: int = Query(..., gt=0, description="Order ID"),
+    quantity_no: int = Query(..., gt=0, description="Quantity number"),
+    op_no: int = Query(..., gt=0, description="Operation number")
+) -> Any:
+    """
+    Get stage inspection data filtered by order ID, quantity number, and operation number.
+    Includes operator (user) details for each inspection.
+    
+    Parameters:
+    - order_id: ID of the order
+    - quantity_no: Quantity number of the inspection
+    - op_no: Operation number
+    
+    Returns:
+    - List of stage inspections with operator details matching the criteria
+    """
+    try:
+        # Query stage inspections with all filters
+        stage_inspections = select(si for si in StageInspection 
+                                 if si.order_id == order_id 
+                                 and si.quantity_no == quantity_no 
+                                 and si.op_no == op_no)[:]
+        
+        if not stage_inspections:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No stage inspections found for order {order_id}, quantity {quantity_no}, operation {op_no}"
+            )
+        
+        # Prepare response with user details
+        response_data = []
+        for si in stage_inspections:
+            # Get operator information
+            operator = User.get(id=si.op_id)
+            operator_info = None
+            if operator:
+                operator_info = OperatorInfo(
+                    id=operator.id,
+                    username=operator.username,
+                    email=operator.email
+                )
+            
+            # Create response object
+            inspection_data = {
+                "id": si.id,
+                "op_id": si.op_id,
+                "nominal_value": si.nominal_value,
+                "uppertol": si.uppertol,
+                "lowertol": si.lowertol,
+                "zone": si.zone,
+                "dimension_type": si.dimension_type,
+                "measured_1": si.measured_1,
+                "measured_2": si.measured_2,
+                "measured_3": si.measured_3,
+                "measured_mean": si.measured_mean,
+                "measured_instrument": si.measured_instrument,
+                "used_inst": si.used_inst,
+                "op_no": si.op_no,
+                "order_id": si.order_id,
+                "quantity_no": si.quantity_no,
+                "created_at": si.created_at,
+                "operator": operator_info
+            }
+            response_data.append(StageInspectionWithUserResponse(**inspection_data))
+        
+        return response_data
+        
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error retrieving stage inspection data: {str(e)}"
         )
 
