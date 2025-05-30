@@ -55,14 +55,14 @@ app.include_router(quality.router)
 app.include_router(notification_service.router)
 app.include_router(pokayoke.router)
 app.include_router(daily_production.router)
-app.include_router(inventoryv1.router, prefix="/api/v1")
+app.include_router(inventoryv1.router)
 app.include_router(mttr_mtbf.router)
 app.include_router(energymonitoring.router)
 
 
 #######
 app.include_router(document_management_v2.router, prefix="/api/v1/document-management", tags=["documents"])
-app.include_router(inventoryv1.router, prefix="/api/v1")
+# app.include_router(inventoryv1.router, prefix="/api/v1")
 app.include_router(production_monitoring.router, tags=["production_monitoring"])
 app.include_router(toolsprograms.router)
 

@@ -1,0 +1,74 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bel-fastapi-deployment
+  labels:
+    app: bel-fastapi
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: bel-fastapi
+  template:
+    metadata:
+      labels:
+        app: bel-fastapi
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+      - name: bel-fastapi-container
+        image: bel-fastapi-app:v1.0.3
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 8002
+        env:
+        - name: DB_HOST
+          value: "172.18.7.89"
+        - name: DB_PORT
+          value: "5433"
+        - name: DB_NAME
+          value: "BEL_MES3"
+        - name: DB_USER
+          value: "postgres"
+        - name: DB_PASSWORD
+          value: "password"
+        - name: SECRET_KEY
+          value: "BEL_MES_25"
+        - name: ALGORITHM
+          value: "HS256"
+        - name: ACCESS_TOKEN_EXPIRE_MINUTES
+          value: "30"
+        - name: REFRESH_TOKEN_EXPIRE_DAYS
+          value: "7"
+        - name: MINIO_ENDPOINT
+          value: "172.18.7.89:9000"
+        - name: MINIO_ACCESS_KEY
+          value: "SkSfn28fOBig7L7nraY4"
+        - name: MINIO_SECRET_KEY
+          value: "4oSBg8nSsabb3kF0ZwG0IBz3Sfhkyb4EHLeTZKHn"
+        - name: MINIO_BUCKET_NAME
+          value: "documents3"
+        - name: MINIO_SECURE
+          value: "false"
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bel-fastapi-service
+spec:
+  selector:
+    app: bel-fastapi
+  ports:
+    - protocol: TCP
+      port: 8002
+      targetPort: 8002
+      nodePort: 32000
+  type: NodePort

@@ -1,0 +1,69 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bel-mes-backend
+  labels:
+    app: bel-mes-backend
+spec:
+  replicas: 3  # Start with 3 replicas
+  selector:
+    matchLabels:
+      app: bel-mes-backend
+  template:
+    metadata:
+      labels:
+        app: bel-mes-backend
+    spec:
+      containers:
+      - name: bel-mes-backend
+        image: bel-mes-backend:latest
+        ports:
+        - containerPort: 8002
+        env:
+        - name: DB_HOST
+          value: "172.16.0.203"
+        - name: DB_PORT
+          value: "5432"
+        - name: DB_NAME
+          value: "BEL_DEMO3"
+        - name: DB_USER
+          value: "cmtismc"
+        - name: DB_PASSWORD
+          value: "cmtismc@2025"
+        - name: SECRET_KEY
+          value: "BEL_MES_25"
+        - name: ALGORITHM
+          value: "HS256"
+        - name: ACCESS_TOKEN_EXPIRE_MINUTES
+          value: "30"
+        - name: REFRESH_TOKEN_EXPIRE_DAYS
+          value: "7"
+        - name: MINIO_ENDPOINT
+          value: "172.16.0.203:9000"
+        - name: MINIO_ACCESS_KEY
+          value: "MrKxgiZXGyBArDz8bEnl"
+        - name: MINIO_SECRET_KEY
+          value: "DJnTcMpypd6x75DlQfCM2MocFIjRON0jU06OgKnn"
+        - name: MINIO_BUCKET_NAME
+          value: "documents"
+        - name: MINIO_SECURE
+          value: "false"
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8002
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8002
+          initialDelaySeconds: 15
+          periodSeconds: 20

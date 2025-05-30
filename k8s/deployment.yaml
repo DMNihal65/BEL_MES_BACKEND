@@ -1,0 +1,29 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bel-mes-backend
+  labels:
+    app: bel-mes-backend
+spec:
+  replicas: 3  # Start with 3 replicas for load balancing
+  selector:
+    matchLabels:
+      app: bel-mes-backend
+  template:
+    metadata:
+      labels:
+        app: bel-mes-backend
+    spec:
+      containers:
+      - name: bel-mes-backend
+        image: bel-mes-backend:latest
+        imagePullPolicy: IfNotPresent  # Use local image
+        ports:
+        - containerPort: 8002
+        resources:
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+          requests:
+            cpu: "200m"
+            memory: "256Mi"

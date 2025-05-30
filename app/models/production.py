@@ -62,15 +62,15 @@ class MachineRawLive(db.Entity):
             # First approach: Use actual_job if available
             if self.actual_job:
                 try:
-                    print(f"\n=== Debug: Using actual_job with ID {self.actual_job.id} ===")
+                    # print(f"\n=== Debug: Using actual_job with ID {self.actual_job.id} ===")
                     operation = self.actual_job
                     if operation:
-                        print(f"Found operation: ID={operation.id}, Number={operation.operation_number}")
+                        # print(f"Found operation: ID={operation.id}, Number={operation.operation_number}")
 
                         # Get order from operation
                         order = operation.order
                         if order:
-                            print(f"Found order: PO={order.production_order}, Part={order.part_number}")
+                            # print(f"Found order: PO={order.production_order}, Part={order.part_number}")
                             return {
                                 'production_order': order.production_order,
                                 'part_number': order.part_number,

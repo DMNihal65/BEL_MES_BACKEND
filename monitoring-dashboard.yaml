@@ -1,0 +1,43 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kube-dashboard
+  labels:
+    app: kube-dashboard
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kube-dashboard
+  template:
+    metadata:
+      labels:
+        app: kube-dashboard
+    spec:
+      containers:
+      - name: kube-dashboard
+        image: weaveworks/scope:1.13.2
+        args:
+          - '--no-probe'
+          - '--weave=false'
+        ports:
+        - containerPort: 4040
+        resources:
+          requests:
+            cpu: 100m
+            memory: 200Mi
+          limits:
+            cpu: 200m
+            memory: 400Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kube-dashboard
+spec:
+  selector:
+    app: kube-dashboard
+  ports:
+  - port: 4040
+    targetPort: 4040
+  type: NodePort

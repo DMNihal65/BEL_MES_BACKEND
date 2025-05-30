@@ -39,7 +39,7 @@ from app.core.security import get_current_user  # Import the auth dependency
 from app.models.master_order import Order,Operation
 from pony.orm import desc
 
-router = APIRouter(prefix="/api/inventory", tags=["inventory"])
+router = APIRouter(prefix="/api/v1/inventory", tags=["inventory"])
 
 # Inventory Category Endpoints
 @router.post("/categories/", response_model=InventoryCategoryResponse)
@@ -438,6 +438,7 @@ def create_inventory_request(
             "id": new_request.id,
             "inventory_item_id": item.id,
             "requested_by": current_user.id,
+            "requested_by_username": current_user.username,
             "order_id": order.id,
             "operation_id": operation.id if operation else None,
             "quantity": new_request.quantity,
@@ -552,6 +553,7 @@ def create_transaction(
                 "quantity": quantity,
                 "reference_request_id": request_id,
                 "performed_by": user_id,
+                "performed_by_username": user.username,
                 "remarks": remarks,
                 "created_at": current_time
             }
@@ -597,6 +599,7 @@ def get_item_transactions(
             "quantity": t.quantity,
             "reference_request_id": t.reference_request.id if t.reference_request else None,
             "performed_by": t.performed_by.id,
+            "performed_by_username": t.performed_by.username,
             "remarks": t.remarks,
             "created_at": t.created_at
         }
@@ -661,6 +664,7 @@ def bulk_return_items(
                 "quantity": t.quantity,
                 "reference_request_id": t.reference_request.id,
                 "performed_by": current_user.id,
+                "performed_by_username": current_user.username,
                 "remarks": t.remarks,
                 "created_at": t.created_at
             }
@@ -775,25 +779,39 @@ def get_subcategory(subcategory_id: int):
 @router.put("/subcategories/{subcategory_id}", response_model=InventorySubCategoryResponse)
 @db_session
 def update_subcategory(subcategory_id: int, subcategory: InventorySubCategoryUpdate):
-    db_subcategory = InventorySubCategory.get(id=subcategory_id)
-    if not db_subcategory:
-        raise HTTPException(status_code=404, detail="Subcategory not found")
-    
-    if subcategory.name is not None:
-        db_subcategory.name = subcategory.name
-    if subcategory.description is not None:
-        db_subcategory.description = subcategory.description
-    if subcategory.dynamic_fields is not None:
-        db_subcategory.dynamic_fields = subcategory.dynamic_fields
-    if subcategory.category_id is not None:
-        new_category = InventoryCategory.get(id=subcategory.category_id)
-        if not new_category:
-            raise HTTPException(status_code=404, detail="New category not found")
-        db_subcategory.category = new_category
-    
-    db_subcategory.updated_at = datetime.utcnow()
-    commit()
-    return db_subcategory.to_dict()
+    try:
+        db_subcategory = InventorySubCategory.get(id=subcategory_id)
+        if not db_subcategory:
+            raise HTTPException(status_code=404, detail="Subcategory not found")
+        
+        if subcategory.name is not None:
+            db_subcategory.name = subcategory.name
+        if subcategory.description is not None:
+            db_subcategory.description = subcategory.description
+        if subcategory.dynamic_fields is not None:
+            db_subcategory.dynamic_fields = subcategory.dynamic_fields
+        if subcategory.category_id is not None:
+            new_category = InventoryCategory.get(id=subcategory.category_id)
+            if not new_category:
+                raise HTTPException(status_code=404, detail="New category not found")
+            db_subcategory.category = new_category
+        
+        db_subcategory.updated_at = datetime.utcnow()
+        commit()
+        # Return only serializable fields
+        return {
+            "id": db_subcategory.id,
+            "name": db_subcategory.name,
+            "description": db_subcategory.description,
+            "dynamic_fields": db_subcategory.dynamic_fields,
+            "category_id": db_subcategory.category.id,
+            "created_at": db_subcategory.created_at,
+            "created_by": db_subcategory.created_by.id
+        }
+    except Exception as e:
+        import traceback
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.delete("/subcategories/{subcategory_id}", status_code=204)
 @db_session
@@ -1031,6 +1049,7 @@ def create_calibration_history(history: CalibrationHistoryCreate):
         "remarks": new_history.remarks,
         "next_due_date": new_history.next_due_date,
         "performed_by": performer.id,
+        "performed_by_username": performer.username,
         "created_at": new_history.created_at
     }
     return response_data
@@ -1049,6 +1068,7 @@ def get_all_calibration_history():
             "remarks": h.remarks,
             "next_due_date": h.next_due_date,
             "performed_by": h.performed_by.id,
+            "performed_by_username": h.performed_by.username,
             "created_at": h.created_at
         }
         for h in histories
@@ -1069,6 +1089,7 @@ def get_calibration_history(history_id: int):
         "remarks": history.remarks,
         "next_due_date": history.next_due_date,
         "performed_by": history.performed_by.id,
+        "performed_by_username": history.performed_by.username,
         "created_at": history.created_at
     }
 
@@ -1093,14 +1114,16 @@ def get_all_requests():
             response_data.append({
                 "id": r.id,
                 "inventory_item_id": r.inventory_item.id,
-                "inventory_item_code":r.inventory_item.item_code,
+                "inventory_item_code": r.inventory_item.item_code,
                 "requested_by": r.requested_by.id,
+                "requested_by_username": r.requested_by.username,
                 "order_id": r.order.id,
                 "operation_id": r.operation.id if r.operation else None,
                 "quantity": r.quantity,
                 "purpose": r.purpose,
                 "status": status,  # Use the mapped status
                 "approved_by": r.approved_by.id if r.approved_by else None,
+                "approved_by_username": r.approved_by.username if r.approved_by else None,
                 "approved_at": r.approved_at,
                 "expected_return_date": r.expected_return_date,
                 "actual_return_date": r.actual_return_date,
@@ -1108,8 +1131,11 @@ def get_all_requests():
                 "created_at": r.created_at,
                 "updated_at": r.updated_at
             })
+        print(response_data)
 
         return response_data
+        
+    
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1124,13 +1150,15 @@ def get_request(request_id: int):
         "id": request.id,
         "inventory_item_id": request.inventory_item.id,
         "requested_by": request.requested_by.id,
-        "inventory_item_code":request.inventory_item.item_code,
+        "requested_by_username": request.requested_by.username,
+        "inventory_item_code": request.inventory_item.item_code,
         "order_id": request.order.id,
         "operation_id": request.operation.id if request.operation else None,
         "quantity": request.quantity,
         "purpose": request.purpose,
         "status": request.status,
         "approved_by": request.approved_by.id if request.approved_by else None,
+        "approved_by_username": request.approved_by.username if request.approved_by else None,
         "approved_at": request.approved_at,
         "expected_return_date": request.expected_return_date,
         "actual_return_date": request.actual_return_date,
@@ -1754,6 +1782,11 @@ def get_transaction_history(
                 "performed_by_username": performer.username,
                 "item_id": item.id,
                 "item_code": item.item_code,
+                "dynamic_data": item.dynamic_data,
+                "subcategory_id": item.subcategory.id,
+                "subcategory_name": item.subcategory.name,
+                "category_id": item.subcategory.category.id,
+                "category_name": item.subcategory.category.name,
                 "current_quantity": item.quantity,
                 "available_quantity": item.available_quantity,
                 "request_id": t.reference_request.id if t.reference_request else None

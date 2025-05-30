@@ -1,0 +1,32 @@
+FROM python:3.10-slim
+
+WORKDIR /app
+
+# Install dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY . .
+
+# Create .env file with the correct settings
+RUN echo "DB_HOST=172.18.7.89" > .env && \
+    echo "DB_PORT=5433" >> .env && \
+    echo "DB_NAME=BEL_MES3" >> .env && \
+    echo "DB_USER=postgres" >> .env && \
+    echo "DB_PASSWORD=password" >> .env && \
+    echo "SECRET_KEY=BEL_MES_25" >> .env && \
+    echo "ALGORITHM=HS256" >> .env && \
+    echo "ACCESS_TOKEN_EXPIRE_MINUTES=30" >> .env && \
+    echo "REFRESH_TOKEN_EXPIRE_DAYS=7" >> .env && \
+    echo "MINIO_ENDPOINT=172.18.7.89:9000" >> .env && \
+    echo "MINIO_ACCESS_KEY=SkSfn28fOBig7L7nraY4" >> .env && \
+    echo "MINIO_SECRET_KEY=4oSBg8nSsabb3kF0ZwG0IBz3Sfhkyb4EHLeTZKHn" >> .env && \
+    echo "MINIO_BUCKET_NAME=documents3" >> .env && \
+    echo "MINIO_SECURE=false" >> .env
+
+# Expose port 8002
+EXPOSE 8002
+
+# Command to run the application
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8002"]

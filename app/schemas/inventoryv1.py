@@ -223,9 +223,11 @@ class InventoryRequestResponse(InventoryRequestBase):
     inventory_item_id: int
     inventory_item_code: str
     requested_by: int
+    requested_by_username: str
     order_id: int
     operation_id: Optional[int]
     approved_by: Optional[int]
+    approved_by_username: Optional[str]
     approved_at: Optional[datetime]
     created_at: datetime
     updated_at: datetime

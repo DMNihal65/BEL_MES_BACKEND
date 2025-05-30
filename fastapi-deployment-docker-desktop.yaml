@@ -1,0 +1,43 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bel-fastapi-deployment
+  labels:
+    app: bel-fastapi
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: bel-fastapi
+  template:
+    metadata:
+      labels:
+        app: bel-fastapi
+    spec:
+      containers:
+      - name: bel-fastapi-container
+        image: bel-fastapi-app:v1.0.3
+        imagePullPolicy: Never  # Use local image
+        ports:
+        - containerPort: 8002
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bel-fastapi-service
+spec:
+  selector:
+    app: bel-fastapi
+  ports:
+    - protocol: TCP
+      port: 8002
+      targetPort: 8002
+      nodePort: 32000  # Fixed port for easy access
+  type: NodePort
