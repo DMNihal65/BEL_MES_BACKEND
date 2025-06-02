@@ -458,7 +458,8 @@ def create_inventory_request(
             "created_at": new_request.created_at,
             "updated_at": new_request.updated_at,
             "approved_by": None,
-            "approved_at": None
+            "approved_at": None,
+            "approved_by_username":None,
         }
 
         commit()
