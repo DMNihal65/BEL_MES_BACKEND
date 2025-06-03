@@ -231,3 +231,12 @@ class MachineDowntimes(db.Entity):
     closed_dt = Optional(datetime)
     reported_by = Optional(int)
     action_taken = Optional(str, nullable=True)
+
+
+class OEEIssue(db.Entity):
+    _table_ = ('production', 'oee_issue')
+    category = Required(str)
+    description = Required(str)
+    machine = Required(int)  # just an ID, not a foreign key
+    timestamp = Required(datetime, default=datetime.utcnow)
+    reported_by = Required(int)

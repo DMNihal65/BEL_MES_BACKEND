@@ -1,13 +1,12 @@
 import traceback
-
 from fastapi import APIRouter, HTTPException, Query, Depends, BackgroundTasks
 from pony.orm import db_session, select, commit, desc
 from typing import Dict, Optional, List, Set, Any
 from datetime import datetime, timedelta
-
 from app.core.security import get_current_user
+from app.models.production import OEEIssue
 from app.schemas.comp_maintainance import (
-    MachineStatusResponse, MachineStatusOut, UpdateMachineStatusRequest,
+    MachineStatusResponse, MachineStatusOut, UpdateMachineStatusRequest, IssueIn,
 )
 from app.models import MachineStatus, Status, ProductionLog, ScheduleVersion, PlannedScheduleItem, Machine, Operation, \
     Order
@@ -940,3 +939,21 @@ async def update_material_status(
             status_code=500,
             detail=f"Error updating material status: {str(e)}"
         )
+
+@router.post("/issues/")
+@db_session
+def create_issue(issue: IssueIn):
+    try:
+        new_issue = OEEIssue(
+            category=issue.category,
+            description=issue.description,
+            machine=issue.machine,
+            reported_by=issue.reported_by
+            # timestamp is automatically added
+        )
+        return {
+            "message": "Issue created successfully",
+            "timestamp": new_issue.timestamp.isoformat()
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

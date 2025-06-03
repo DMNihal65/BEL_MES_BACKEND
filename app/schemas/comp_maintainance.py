@@ -119,3 +119,9 @@ class RawMaterialNotificationsResponse(BaseModel):
 class NotificationAcknowledgmentRequest(BaseModel):
     notification_id: int
     user_id: str  # User acknowledging the notification
+
+class IssueIn(BaseModel):
+    category: str
+    description: str
+    machine: int
+    reported_by: int

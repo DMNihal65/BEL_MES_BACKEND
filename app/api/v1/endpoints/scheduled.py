@@ -1412,7 +1412,6 @@ async def get_part_production_timeline():
                 ))
 
             # Sort by part number alphabetically
-
             # Filter only scheduled statuses
             filtered_results = [item for item in results if item.status == "scheduled"]
 
@@ -1423,6 +1422,7 @@ async def get_part_production_timeline():
                 items=filtered_results,
                 total_parts=len(filtered_results)
             )
+
 
     except Exception as e:
         print(f"Error retrieving part production timeline: {str(e)}")
