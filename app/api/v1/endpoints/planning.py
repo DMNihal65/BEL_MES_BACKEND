@@ -13,7 +13,7 @@ from app.models import (
     Unit, RawMaterial, InventoryStatus, PartScheduleStatus, MachineStatus, MachineShift, Status
 )
 from app.schemas.planning import CreateOperationRequest, CreateOrderRequest, OrderUpdateRequest, OperationUpdateRequest, \
-    SaveDataRequest, ProjectPriorityUpdateRequest, OrderUpdate_Response, OrderUpdate_Request
+    SaveDataRequest, ProjectPriorityUpdateRequest, OrderUpdate_Response, OrderUpdate_Request, CreateOrderRequest_new
 
 router = APIRouter(prefix="/api/v1/planning", tags=["planning"])
 
@@ -751,7 +751,7 @@ async def create_order(order_data: CreateOrderRequest):
 
 
 @router.post("/create_order1")
-async def create_order(order_data: CreateOrderRequest):
+async def create_order(order_data: CreateOrderRequest_new):
     """Create a new order"""
     try:
         with db_session:
@@ -779,12 +779,12 @@ async def create_order(order_data: CreateOrderRequest):
                 )
 
             # Get or create inventory status based on user input
-            raw_material_status = InventoryStatus.get(name=order_data.raw_material_status_name)
-            if not raw_material_status:
-                raw_material_status = InventoryStatus(
-                    name=order_data.raw_material_status_name,
-                    description=f"Status: {order_data.raw_material_status_name}"
-                )
+            # raw_material_status = InventoryStatus.get(name=order_data.raw_material_status_name)
+            # if not raw_material_status:
+            #     raw_material_status = InventoryStatus(
+            #         name=order_data.raw_material_status_name,
+            #         description=f"Status: {order_data.raw_material_status_name}"
+            #     )
 
             # Get or create unit based on user input
             raw_material_unit = Unit.get(name=order_data.raw_material_unit_name)
@@ -800,14 +800,22 @@ async def create_order(order_data: CreateOrderRequest):
                     detail=f"Raw material with part number '{order_data.raw_material_part_number}' already exists"
                 )
 
+            # Get or create default inventory status
+            default_status = InventoryStatus.get(name="Available")
+            if not default_status:
+                default_status = InventoryStatus(
+                    name="Available",
+                    description="Material is available for use"
+                )
+
             # Create new raw material with user-provided data
             raw_material = RawMaterial(
                 child_part_number=order_data.raw_material_part_number,
                 description=order_data.raw_material_description,
                 quantity=order_data.raw_material_quantity,
                 unit=raw_material_unit,
-                status=raw_material_status,
-                available_from=order_data.raw_material_available_from or current_date
+                status=default_status,
+                available_from=datetime(2024, 1, 2, 9, 0)  # Hardcoded available_from date
             )
 
             # Create new order

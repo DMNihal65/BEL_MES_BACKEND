@@ -74,13 +74,6 @@ class CreateOrderRequest(BaseModel):
     plant_id: int
     project_name: str
 
-    # # Raw material fields
-    # raw_material_part_number: str
-    # raw_material_description: str
-    # raw_material_quantity: float
-    # raw_material_unit_name: str  # e.g., "KG", "PCS", "MT", etc.
-    # raw_material_status_name: str  # e.g., "Available", "Out of Stock", "Pending", etc.
-    # raw_material_available_from: Optional[datetime] = None  # Optional, will use current date if not provided
 
 
 # Request model for creating new operation
@@ -199,3 +192,24 @@ class OrderUpdate_Response(BaseModel):
     project_name: str
     sale_order: Optional[str]
     updated_at: datetime
+
+
+# Request model for creating new order
+class CreateOrderRequest_new(BaseModel):
+    production_order: str
+    sale_order: str
+    wbs_element: str
+    part_number: str
+    part_description: str
+    total_operations: int
+    required_quantity: int
+    launched_quantity: int
+    plant_id: int
+    project_name: str
+
+    # Raw material fields
+    raw_material_part_number: str
+    raw_material_description: str
+    raw_material_quantity: float
+    raw_material_unit_name: str  # e.g., "KG", "PCS", "MT", etc.
+
