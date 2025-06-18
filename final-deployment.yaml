@@ -1,0 +1,77 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bel-fastapi-deployment
+  labels:
+    app: bel-fastapi
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: bel-fastapi
+  template:
+    metadata:
+      labels:
+        app: bel-fastapi
+    spec:
+      # Removed hostNetwork to allow multiple replicas
+      dnsPolicy: ClusterFirst
+      containers:
+      - name: bel-fastapi-container
+        image: bel-fastapi-app:v1.0.4
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 8002
+        env:
+        - name: MINIO_ENDPOINT
+          value: "host.docker.internal:9000"
+        - name: DB_HOST
+          value: "host.docker.internal"
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 8002
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8002
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bel-fastapi-service
+spec:
+  selector:
+    app: bel-fastapi
+  ports:
+    - protocol: TCP
+      port: 8002
+      targetPort: 8002
+  type: ClusterIP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bel-fastapi-nodeport
+spec:
+  selector:
+    app: bel-fastapi
+  ports:
+    - protocol: TCP
+      port: 8002
+      targetPort: 8002
+      nodePort: 32000
+  type: NodePort

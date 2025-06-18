@@ -1,0 +1,86 @@
+[
+  {
+    "part_number": "213301840171",
+    "old_priority": 3,
+    "new_priority": 1,
+    "timestamp": "2025-02-28T12:03:19.098133"
+  },
+  {
+    "part_number": "213301840171",
+    "old_priority": 1,
+    "new_priority": 2,
+    "timestamp": "2025-02-28T12:10:38.632718"
+  },
+  {
+    "part_number": "213301840171",
+    "old_priority": 2,
+    "new_priority": 1,
+    "timestamp": "2025-02-28T12:11:30.515556"
+  },
+  {
+    "part_number": "213511100114",
+    "old_priority": 1,
+    "new_priority": 3,
+    "timestamp": "2025-02-28T12:11:57.449432"
+  },
+  {
+    "part_number": "213511100114",
+    "old_priority": 3,
+    "new_priority": 1,
+    "timestamp": "2025-02-28T14:08:28.282619"
+  },
+  {
+    "part_number": "213511100114",
+    "old_priority": 1,
+    "new_priority": 3,
+    "timestamp": "2025-02-28T14:24:29.981337"
+  },
+  {
+    "part_number": "213511100114",
+    "old_priority": 3,
+    "new_priority": 1,
+    "timestamp": "2025-02-28T14:25:03.125211"
+  },
+  {
+    "part_number": "213511100114",
+    "old_priority": 1,
+    "new_priority": 3,
+    "timestamp": "2025-02-28T14:31:04.882781"
+  },
+  {
+    "part_number": "213511100114",
+    "old_priority": 3,
+    "new_priority": 1,
+    "timestamp": "2025-02-28T14:31:55.770145"
+  },
+  {
+    "part_number": "213511100114",
+    "old_priority": 1,
+    "new_priority": 2,
+    "timestamp": "2025-03-03T11:54:05.083862"
+  },
+  {
+    "part_number": "62805080AA",
+    "old_priority": 4,
+    "new_priority": 1,
+    "timestamp": "2025-03-04T11:10:25.874669"
+  },
+  {
+    "part_number": "213001220002",
+    "old_priority": 2,
+    "new_priority": 1,
+    "timestamp": "2025-03-04T11:11:08.386908"
+  },
+  {
+    "part_number": "213001220002",
+    "old_priority": 4,
+    "new_priority": 3,
+    "timestamp": "2025-03-19T15:46:19.610121"
+  },
+  {
+    "part_number": "213001220002",
+    "old_priority": 3,
+    "new_priority": 1,
+    "timestamp": "2025-03-19T15:47:01.145830"
+  }
+]
