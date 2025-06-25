@@ -58,18 +58,33 @@ def extract_oarc_details(pdf_content):
         data["Part Desc"] = sale_match.group(2).strip()
 
     # Plant and sequence numbers
-    plant_match = re.search(r"Plant\s*:([^R]+)Rtg Seq No\s*:([^S]+)Sequence No\s*:([^\n]+)", text)
-    if plant_match:
+    plant_match = re.search(r"Plant\s*:([^R]+)Rtg\s+Seq\s*No\s*:([^S]+)Sequence\s*No\s*:([^\n]+)", text)
+    if plant_match.group(1):
         data["Plant"] = plant_match.group(1).strip()
         data["Rtg Seq No"] = plant_match.group(2).strip()
         data["Sequence No"] = plant_match.group(3).strip()
+    else:
+        data["Plant"] = plant_match.group(4).strip()
+        data["Rtg Seq No"] = plant_match.group(5).strip()
+        data["Sequence No"] = plant_match.group(6).strip()
 
     # Required Qty, Launched Qty, and Prod Order No
-    qty_match = re.search(r"Required Qty\s*:([^L]+)Launched Qty\s*:([^P]+)Prod Order No\s*:([^\n]+)", text)
+    qty_match = re.search(
+        r"Required\s*Qty\s*:\s*([^\n]+?)\s*"
+        r"Launched\s*Qty\s*:\s*([^\n]+?)\s*"
+        r"Prod\s*Order\s*No\s*:\s*([^\n]+)",
+        text
+    )
+
     if qty_match:
-        data["Required Qty"] = qty_match.group(1).strip()
-        data["Launched Qty"] = qty_match.group(2).strip()
-        data["Prod Order No"] = qty_match.group(3).strip()
+        if qty_match.group(1):
+            data["Required Qty"] = qty_match.group(1).strip()
+            data["Launched Qty"] = qty_match.group(2).strip()
+            data["Prod Order No"] = qty_match.group(3).strip()
+        else:
+            data["Required Qty"] = qty_match.group(4).strip()
+            data["Launched Qty"] = qty_match.group(5).strip()
+            data["Prod Order No"] = qty_match.group(6).strip()
 
     # Extract operations
     lines = text.split('\n')
@@ -151,7 +166,7 @@ def extract_oarc_details(pdf_content):
         line = line.strip()
 
         # Check if we've reached the raw materials section
-        if "Item" in line and "Child Part No" in line:
+        if "Item" in line and ("Child Part No" in line or "Child" in line):
             raw_materials_started = True
             continue
 
@@ -172,6 +187,8 @@ def extract_oarc_details(pdf_content):
         # End raw materials section if we hit another section
         if raw_materials_started and line.startswith('SPECIAL NOTE'):
             raw_materials_started = False
+
+    print(f"\n\n{'$' * 50}\n{data}\n{'$' * 50}\n\n")
 
     return data
 
@@ -603,320 +620,6 @@ async def update_operation(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/create_order")
-async def create_order(order_data: CreateOrderRequest):
-    """Create a new order"""
-    try:
-        with db_session:
-            # Check if order already exists
-            existing_order = Order.get(production_order=order_data.production_order)
-            if existing_order:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Production order already exists"
-                )
-
-            # Current date for project dates
-            current_date = datetime.now()
-
-            # Get or create project
-            project = Project.get(name=order_data.project_name)
-            if not project:
-                max_priority = select(max(p.priority) for p in Project).first() or 0
-                project = Project(
-                    name=order_data.project_name,
-                    priority=max_priority + 1,  # Auto-increment
-                    start_date=current_date,
-                    end_date=current_date,
-                    delivery_date=current_date
-                )
-
-            # Get or create default inventory status
-            default_status = InventoryStatus.get(name="Available")
-            if not default_status:
-                default_status = InventoryStatus(
-                    name="Available",
-                    description="Material is available for use"
-                )
-
-            # Create raw material with hardcoded available_from date
-            raw_material = RawMaterial(
-                child_part_number=f"RM-{order_data.part_number}",  # Generate a default part number
-                description=f"Raw Material for {order_data.part_number}",
-                quantity=float(order_data.required_quantity),  # Use required quantity as default
-                unit=Unit.get(name="KG") or Unit(name="KG"),  # Get or create PCS unit
-                status=default_status,
-                available_from=datetime(2024, 1, 2, 9, 0)  # Hardcoded available_from date
-            )
-
-            # Create new order
-            order = Order(
-                production_order=order_data.production_order,
-                sale_order=order_data.sale_order,
-                wbs_element=order_data.wbs_element,
-                part_number=order_data.part_number,
-                part_description=order_data.part_description,
-                total_operations=order_data.total_operations,
-                required_quantity=order_data.required_quantity,
-                launched_quantity=order_data.launched_quantity,
-                plant_id=str(order_data.plant_id),  # Convert to string as required by model
-                project=project,
-                raw_material=raw_material  # Link the raw material to the order
-            )
-
-            # Create initial 'inactive' status for scheduling
-            # FIX: Updated to use both part_number and production_order
-            part_status = PartScheduleStatus.get(
-                part_number=order_data.part_number,
-                production_order=order_data.production_order
-            )
-            if not part_status:
-                PartScheduleStatus(
-                    part_number=order_data.part_number,
-                    production_order=order_data.production_order,
-                    status='inactive'  # Default to inactive when order is created
-                )
-
-            # Check if there are existing operations for this part number that we should duplicate
-            # First, find other orders with the same part number
-            similar_orders = select(o for o in Order if o.part_number == order_data.part_number and o.id != order.id)[:]
-
-            # If there are similar orders, duplicate their operations
-            if similar_orders:
-                # Get the first similar order
-                source_order = similar_orders[0]
-
-                # Get all operations from the source order
-                source_operations = select(op for op in Operation if op.order == source_order)[:]
-
-                # Duplicate each operation for the new order
-                for source_op in source_operations:
-                    Operation(
-                        order=order,
-                        operation_number=source_op.operation_number,
-                        operation_description=source_op.operation_description,
-                        setup_time=source_op.setup_time,
-                        ideal_cycle_time=source_op.ideal_cycle_time,
-                        work_center=source_op.work_center,
-                        machine=source_op.machine
-                    )
-
-                # Update total operations count
-                order.total_operations = len(source_operations)
-
-            commit()
-            return {
-                "id": order.id,
-                "production_order": order.production_order,
-                "sale_order": order.sale_order,
-                "wbs_element": order.wbs_element,
-                "part_number": order.part_number,
-                "part_description": order.part_description,
-                "total_operations": order.total_operations,
-                "required_quantity": order.required_quantity,
-                "launched_quantity": order.launched_quantity,
-                "plant_id": order.plant_id,
-                "project": {
-                    "id": order.project.id,
-                    "name": order.project.name,
-                    "priority": order.project.priority,
-                    "start_date": order.project.start_date,
-                    "end_date": order.project.end_date,
-                    "delivery_date": order.project.delivery_date
-                },
-                "raw_material": {
-                    "id": order.raw_material.id,
-                    "child_part_number": order.raw_material.child_part_number,
-                    "description": order.raw_material.description,
-                    "quantity": order.raw_material.quantity,
-                    "available_from": order.raw_material.available_from,
-                    "unit": {
-                        "id": order.raw_material.unit.id,
-                        "name": order.raw_material.unit.name
-                    },
-                    "status": {
-                        "id": order.raw_material.status.id,
-                        "name": order.raw_material.status.name
-                    }
-                }
-            }
-
-    except HTTPException as he:
-        raise he
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error creating order: {str(e)}"
-        )
-
-
-# @router.post("/create_order1")
-# async def create_order(order_data: CreateOrderRequest_new):
-#     """Create a new order"""
-#     try:
-#         with db_session:
-#             # Check if order already exists
-#             existing_order = Order.get(production_order=order_data.production_order)
-#             if existing_order:
-#                 raise HTTPException(
-#                     status_code=400,
-#                     detail="Production order already exists"
-#                 )
-#
-#             # Current date for project dates
-#             current_date = datetime.now()
-#
-#             # Get or create project
-#             project = Project.get(name=order_data.project_name)
-#             if not project:
-#                 max_priority = select(max(p.priority) for p in Project).first() or 0
-#                 project = Project(
-#                     name=order_data.project_name,
-#                     priority=max_priority + 1,  # Auto-increment
-#                     start_date=current_date,
-#                     end_date=current_date,
-#                     delivery_date=current_date
-#                 )
-#
-#             # Get or create inventory status based on user input
-#             # raw_material_status = InventoryStatus.get(name=order_data.raw_material_status_name)
-#             # if not raw_material_status:
-#             #     raw_material_status = InventoryStatus(
-#             #         name=order_data.raw_material_status_name,
-#             #         description=f"Status: {order_data.raw_material_status_name}"
-#             #     )
-#
-#             # Get or create unit based on user input
-#             raw_material_unit = Unit.get(name=order_data.raw_material_unit_name)
-#             if not raw_material_unit:
-#                 raw_material_unit = Unit(name=order_data.raw_material_unit_name)
-#
-#             # Check if raw material already exists with the same part number
-#             raw_material = RawMaterial.get(child_part_number=order_data.raw_material_part_number)
-#
-#             if raw_material:
-#                 raise HTTPException(
-#                     status_code=400,
-#                     detail=f"Raw material with part number '{order_data.raw_material_part_number}' already exists"
-#                 )
-#
-#             # Get or create default inventory status
-#             default_status = InventoryStatus.get(name="Available")
-#             if not default_status:
-#                 default_status = InventoryStatus(
-#                     name="Available",
-#                     description="Material is available for use"
-#                 )
-#
-#             # Create new raw material with user-provided data
-#             raw_material = RawMaterial(
-#                 child_part_number=order_data.raw_material_part_number,
-#                 description=order_data.raw_material_description,
-#                 quantity=order_data.raw_material_quantity,
-#                 unit=raw_material_unit,
-#                 status=default_status,
-#                 available_from=datetime(2024, 1, 2, 9, 0)  # Hardcoded available_from date
-#             )
-#
-#             # Create new order
-#             order = Order(
-#                 production_order=order_data.production_order,
-#                 sale_order=order_data.sale_order,
-#                 wbs_element=order_data.wbs_element,
-#                 part_number=order_data.part_number,
-#                 part_description=order_data.part_description,
-#                 total_operations=order_data.total_operations,
-#                 required_quantity=order_data.required_quantity,
-#                 launched_quantity=order_data.launched_quantity,
-#                 plant_id=str(order_data.plant_id),  # Convert to string as required by model
-#                 project=project,
-#                 raw_material=raw_material  # Link the raw material to the order
-#             )
-#
-#             # Create initial 'inactive' status for scheduling
-#             part_status = PartScheduleStatus.get(
-#                 part_number=order_data.part_number,
-#                 production_order=order_data.production_order
-#             )
-#             if not part_status:
-#                 PartScheduleStatus(
-#                     part_number=order_data.part_number,
-#                     production_order=order_data.production_order,
-#                     status='inactive'  # Default to inactive when order is created
-#                 )
-#
-#             # Check if there are existing operations for this part number that we should duplicate
-#             # First, find other orders with the same part number
-#             similar_orders = select(o for o in Order if o.part_number == order_data.part_number and o.id != order.id)[:]
-#
-#             # If there are similar orders, duplicate their operations
-#             if similar_orders:
-#                 # Get the first similar order
-#                 source_order = similar_orders[0]
-#
-#                 # Get all operations from the source order
-#                 source_operations = select(op for op in Operation if op.order == source_order)[:]
-#
-#                 # Duplicate each operation for the new order
-#                 for source_op in source_operations:
-#                     Operation(
-#                         order=order,
-#                         operation_number=source_op.operation_number,
-#                         operation_description=source_op.operation_description,
-#                         setup_time=source_op.setup_time,
-#                         ideal_cycle_time=source_op.ideal_cycle_time,
-#                         work_center=source_op.work_center,
-#                         machine=source_op.machine
-#                     )
-#
-#                 # Update total operations count
-#                 order.total_operations = len(source_operations)
-#
-#             commit()
-#             return {
-#                 "id": order.id,
-#                 "production_order": order.production_order,
-#                 "sale_order": order.sale_order,
-#                 "wbs_element": order.wbs_element,
-#                 "part_number": order.part_number,
-#                 "part_description": order.part_description,
-#                 "total_operations": order.total_operations,
-#                 "required_quantity": order.required_quantity,
-#                 "launched_quantity": order.launched_quantity,
-#                 "plant_id": order.plant_id,
-#                 "project": {
-#                     "id": order.project.id,
-#                     "name": order.project.name,
-#                     "priority": order.project.priority,
-#                     "start_date": order.project.start_date,
-#                     "end_date": order.project.end_date,
-#                     "delivery_date": order.project.delivery_date
-#                 },
-#                 "raw_material": {
-#                     "id": order.raw_material.id,
-#                     "child_part_number": order.raw_material.child_part_number,
-#                     "description": order.raw_material.description,
-#                     "quantity": order.raw_material.quantity,
-#                     "available_from": order.raw_material.available_from,
-#                     "unit": {
-#                         "id": order.raw_material.unit.id,
-#                         "name": order.raw_material.unit.name
-#                     },
-#                     "status": {
-#                         "id": order.raw_material.status.id,
-#                         "name": order.raw_material.status.name
-#                     }
-#                 }
-#             }
-#
-#     except HTTPException as he:
-#         raise he
-#     except Exception as e:
-#         raise HTTPException(
-#             status_code=500,
-#             detail=f"Error creating order: {str(e)}"
-#         )
-
 
 @router.post("/create_order1")
 async def create_order(order_data: CreateOrderRequest_new):
@@ -1149,6 +852,155 @@ async def create_order(order_data: CreateOrderRequest_new):
             status_code=500,
             detail=f"Error creating order: {str(e)}"
         )
+
+
+@router.post("/create_order")
+async def create_order(order_data: CreateOrderRequest):
+    """Create a new order"""
+    try:
+        with db_session:
+            # Check if order already exists
+            existing_order = Order.get(production_order=order_data.production_order)
+            if existing_order:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Production order already exists"
+                )
+
+            # Current date for project dates
+            current_date = datetime.now()
+
+            # Get or create project
+            project = Project.get(name=order_data.project_name)
+            if not project:
+                max_priority = select(max(p.priority) for p in Project).first() or 0
+                project = Project(
+                    name=order_data.project_name,
+                    priority=max_priority + 1,  # Auto-increment
+                    start_date=current_date,
+                    end_date=current_date,
+                    delivery_date=current_date
+                )
+
+            # Get or create default inventory status
+            default_status = InventoryStatus.get(name="Available")
+            if not default_status:
+                default_status = InventoryStatus(
+                    name="Available",
+                    description="Material is available for use"
+                )
+
+            # Create raw material with hardcoded available_from date
+            raw_material = RawMaterial(
+                child_part_number=f"RM-{order_data.part_number}",  # Generate a default part number
+                description=f"Raw Material for {order_data.part_number}",
+                quantity=float(order_data.required_quantity),  # Use required quantity as default
+                unit=Unit.get(name="KG") or Unit(name="KG"),  # Get or create PCS unit
+                status=default_status,
+                available_from=datetime(2024, 1, 2, 9, 0)  # Hardcoded available_from date
+            )
+
+            # Create new order
+            order = Order(
+                production_order=order_data.production_order,
+                sale_order=order_data.sale_order,
+                wbs_element=order_data.wbs_element,
+                part_number=order_data.part_number,
+                part_description=order_data.part_description,
+                total_operations=order_data.total_operations,
+                required_quantity=order_data.required_quantity,
+                launched_quantity=order_data.launched_quantity,
+                plant_id=str(order_data.plant_id),  # Convert to string as required by model
+                project=project,
+                raw_material=raw_material  # Link the raw material to the order
+            )
+
+            # Create initial 'inactive' status for scheduling
+            # FIX: Updated to use both part_number and production_order
+            part_status = PartScheduleStatus.get(
+                part_number=order_data.part_number,
+                production_order=order_data.production_order
+            )
+            if not part_status:
+                PartScheduleStatus(
+                    part_number=order_data.part_number,
+                    production_order=order_data.production_order,
+                    status='inactive'  # Default to inactive when order is created
+                )
+
+            # Check if there are existing operations for this part number that we should duplicate
+            # First, find other orders with the same part number
+            similar_orders = select(o for o in Order if o.part_number == order_data.part_number and o.id != order.id)[:]
+
+            # If there are similar orders, duplicate their operations
+            if similar_orders:
+                # Get the first similar order
+                source_order = similar_orders[0]
+
+                # Get all operations from the source order
+                source_operations = select(op for op in Operation if op.order == source_order)[:]
+
+                # Duplicate each operation for the new order
+                for source_op in source_operations:
+                    Operation(
+                        order=order,
+                        operation_number=source_op.operation_number,
+                        operation_description=source_op.operation_description,
+                        setup_time=source_op.setup_time,
+                        ideal_cycle_time=source_op.ideal_cycle_time,
+                        work_center=source_op.work_center,
+                        machine=source_op.machine
+                    )
+
+                # Update total operations count
+                order.total_operations = len(source_operations)
+
+            commit()
+            return {
+                "id": order.id,
+                "production_order": order.production_order,
+                "sale_order": order.sale_order,
+                "wbs_element": order.wbs_element,
+                "part_number": order.part_number,
+                "part_description": order.part_description,
+                "total_operations": order.total_operations,
+                "required_quantity": order.required_quantity,
+                "launched_quantity": order.launched_quantity,
+                "plant_id": order.plant_id,
+                "project": {
+                    "id": order.project.id,
+                    "name": order.project.name,
+                    "priority": order.project.priority,
+                    "start_date": order.project.start_date,
+                    "end_date": order.project.end_date,
+                    "delivery_date": order.project.delivery_date
+                },
+                "raw_material": {
+                    "id": order.raw_material.id,
+                    "child_part_number": order.raw_material.child_part_number,
+                    "description": order.raw_material.description,
+                    "quantity": order.raw_material.quantity,
+                    "available_from": order.raw_material.available_from,
+                    "unit": {
+                        "id": order.raw_material.unit.id,
+                        "name": order.raw_material.unit.name
+                    },
+                    "status": {
+                        "id": order.raw_material.status.id,
+                        "name": order.raw_material.status.name
+                    }
+                }
+            }
+
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error creating order: {str(e)}"
+        )
+
+
 
 @router.post("/operations")
 async def create_operation(operation_data: CreateOperationRequest):
