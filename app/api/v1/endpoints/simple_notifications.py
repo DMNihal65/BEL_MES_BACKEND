@@ -47,7 +47,7 @@ async def get_unread_notifications():
                     table_name="MachineStatusLog",
                     record_data=log.to_dict(),
                     created_at=log.updated_at.isoformat(),
-                    read=log.read
+                    read=bool(log.read)
                 ))
 
             # Get unread raw material status logs
@@ -58,7 +58,7 @@ async def get_unread_notifications():
                     table_name="RawMaterialStatusLog",
                     record_data=log.to_dict(),
                     created_at=log.updated_at.isoformat(),
-                    read=log.read
+                    read=bool(log.read)
                 ))
 
             # Get unread machine calibration logs
@@ -69,7 +69,7 @@ async def get_unread_notifications():
                     table_name="MachineCalibrationLog",
                     record_data=log.to_dict(),
                     created_at=log.timestamp.isoformat(),
-                    read=log.read
+                    read=bool(log.read)
                 ))
 
             # Get unread instrument calibration logs
@@ -80,7 +80,7 @@ async def get_unread_notifications():
                     table_name="InstrumentCalibrationLog",
                     record_data=log.to_dict(),
                     created_at=log.timestamp.isoformat(),
-                    read=log.read
+                    read=bool(log.read)
                 ))
 
             # Get unread pokayoke completed logs
@@ -91,7 +91,7 @@ async def get_unread_notifications():
                     table_name="PokaYokeCompletedLog",
                     record_data=log.to_dict(),
                     created_at=log.completed_at.isoformat(),
-                    read=log.read
+                    read=bool(log.read)
                 ))
 
         # Sort by created_at descending (newest first)
@@ -229,7 +229,7 @@ async def get_unread_notifications_by_table(table_name: str):
                         "table_name": "MachineStatusLog",
                         "record_data": log.to_dict(),
                         "created_at": log.updated_at.isoformat(),
-                        "read": log.read
+                        "read": bool(log.read)
                     })
             elif table_name == "RawMaterialStatusLog":
                 logs = list(select(n for n in RawMaterialStatusLog if not n.read))
@@ -239,7 +239,7 @@ async def get_unread_notifications_by_table(table_name: str):
                         "table_name": "RawMaterialStatusLog",
                         "record_data": log.to_dict(),
                         "created_at": log.updated_at.isoformat(),
-                        "read": log.read
+                        "read": bool(log.read)
                     })
             elif table_name == "MachineCalibrationLog":
                 logs = list(select(n for n in MachineCalibrationLog if not n.read))
@@ -249,7 +249,7 @@ async def get_unread_notifications_by_table(table_name: str):
                         "table_name": "MachineCalibrationLog",
                         "record_data": log.to_dict(),
                         "created_at": log.timestamp.isoformat(),
-                        "read": log.read
+                        "read": bool(log.read)
                     })
             elif table_name == "InstrumentCalibrationLog":
                 logs = list(select(n for n in InstrumentCalibrationLog if not n.read))
@@ -259,7 +259,7 @@ async def get_unread_notifications_by_table(table_name: str):
                         "table_name": "InstrumentCalibrationLog",
                         "record_data": log.to_dict(),
                         "created_at": log.timestamp.isoformat(),
-                        "read": log.read
+                        "read": bool(log.read)
                     })
             elif table_name == "PokaYokeCompletedLog":
                 logs = list(select(n for n in PokaYokeCompletedLog if not n.read))
@@ -269,7 +269,7 @@ async def get_unread_notifications_by_table(table_name: str):
                         "table_name": "PokaYokeCompletedLog",
                         "record_data": log.to_dict(),
                         "created_at": log.completed_at.isoformat(),
-                        "read": log.read
+                        "read": bool(log.read)
                     })
             else:
                 raise HTTPException(status_code=400, detail=f"Invalid table name: {table_name}")

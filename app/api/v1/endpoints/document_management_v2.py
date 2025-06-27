@@ -787,11 +787,16 @@ async def download_document(
             # Get file from MinIO
             file_data = minio.download_file(version.minio_path)
 
+            # Get file extension from minio path
+            file_extension = version.minio_path.split('.')[
+                -1] if '.' in version.minio_path else ''
+            filename = f"{document.name}.{file_extension}" if file_extension else document.name
+
             return StreamingResponse(
                 file_data,
                 media_type="application/octet-stream",
                 headers={
-                    "Content-Disposition": f'attachment; filename="{document.name}"'
+                    "Content-Disposition": f'attachment; filename="{filename}"'
                 }
             )
     except Exception as e:
