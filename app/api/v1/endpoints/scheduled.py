@@ -1403,6 +1403,10 @@ async def get_part_production_timeline():
                 # Use status from the last operation
                 status = operations[-1]['status']
 
+                # print('^^^'*50)
+                # print(operations)
+                # print('^^^'*50)
+
                 results.append(PartProductionTimeline(
                     part_number=part_number,
                     production_order=production_order,

@@ -2059,12 +2059,12 @@ async def get_all_machines_status_timeline(
             if not end_date:
                 end_date = datetime.utcnow()
 
-            print(f"\n=== Debug: Fetching status timeline for all machines ===")
-            print(f"Time range: {start_date} to {end_date}")
+            # print(f"\n=== Debug: Fetching status timeline for all machines ===")
+            # print(f"Time range: {start_date} to {end_date}")
 
             # Get all machines and sort by ID for consistent ordering
             machines = select(m for m in Machine).order_by(Machine.id)[:]
-            print(f"Found {len(machines)} total machines")
+            # print(f"Found {len(machines)} total machines")
 
             # Initialize response structure
             response = {
@@ -2086,7 +2086,7 @@ async def get_all_machines_status_timeline(
                                      and r.timestamp <= end_date
                                      ).order_by(MachineRaw.timestamp)[:]
 
-                    print(f"Found {len(records)} records for machine {machine.id}")
+                    # print(f"Found {len(records)} records for machine {machine.id}")
 
                     if not records:
                         # Add a default "UNKNOWN" status for machines with no data
@@ -2180,7 +2180,7 @@ async def get_overall_oee_analytics(
             if not end_date:
                 end_date = datetime.utcnow()
 
-            print(f"\n=== Debug: Calculating overall OEE for period {start_date} to {end_date} ===")
+            # print(f"\n=== Debug: Calculating overall OEE for period {start_date} to {end_date} ===")
 
             # Build query for shift summaries
             query = select(s for s in ShiftSummary
@@ -2215,7 +2215,7 @@ async def get_overall_oee_analytics(
                     machine_count=0
                 )
 
-            print(f"Found {len(summaries)} shift summary records")
+            # print(f"Found {len(summaries)} shift summary records")
 
             # Calculate overall metrics
             total_oee = sum(float(s.oee or 0) for s in summaries)

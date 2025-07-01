@@ -29,6 +29,59 @@ class ProjectPriorityUpdateRequest(BaseModel):
     priority: int
 
 
+# ADD THESE NEW HELPER FUNCTIONS HERE
+@db_session
+def renumber_all_priorities():
+    """
+    Renumber all projects to have sequential priorities starting from 1
+    This should be called periodically or after deletions to maintain clean sequencing
+    """
+    try:
+        projects = select(p for p in Project).order_by(Project.priority)[:]
+        for index, project in enumerate(projects, start=1):
+            project.priority = index
+        commit()
+        return True
+    except Exception as e:
+        print(f"Error renumbering priorities: {str(e)}")
+        return False
+
+
+@db_session
+def ensure_sequential_priorities():
+    """
+    Ensure all priorities are sequential starting from 1
+    Call this after any priority operations to maintain consistency
+    """
+    try:
+        projects = select(p for p in Project).order_by(Project.priority)[:]
+        needs_update = False
+
+        for index, project in enumerate(projects, start=1):
+            if project.priority != index:
+                project.priority = index
+                needs_update = True
+
+        if needs_update:
+            commit()
+        return True
+    except Exception as e:
+        print(f"Error ensuring sequential priorities: {str(e)}")
+        return False
+
+
+@db_session
+def get_next_priority():
+    """
+    Get the next available priority number (max + 1)
+    """
+    try:
+        max_priority = select(max(p.priority) for p in Project).first()
+        return (max_priority or 0) + 1
+    except Exception:
+        return 1
+
+
 @db_session
 def determine_scheduling_status(order, current_time):
     """
@@ -130,6 +183,24 @@ def determine_scheduling_status(order, current_time):
     except Exception as e:
         # If any error occurs, return default values with error information
         return None, None, "Error", True, f"Error determining status: {str(e)}"
+
+
+# ADD NEW ENDPOINT FOR PRIORITY MAINTENANCE
+@router.post("/renumber")
+@db_session
+def renumber_priorities():
+    """
+    Administrative endpoint to renumber all priorities to be sequential starting from 1
+    Use this to clean up priority gaps after deletions or data issues
+    """
+    try:
+        success = renumber_all_priorities()
+        if success:
+            return {"message": "Successfully renumbered all priorities to be sequential starting from 1"}
+        else:
+            raise HTTPException(status_code=500, detail="Failed to renumber priorities")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error renumbering priorities: {str(e)}")
 
 
 @router.get("/details", response_model=List[PriorityDetails])
@@ -295,6 +366,7 @@ def update_part_priority(update_request: PriorityUpdateRequest):
                     reason="Priority unchanged (same as current)"
                 )
 
+            # UPDATED: Use simplified priority update logic
             # Get all projects ordered by priority for reordering
             all_projects = select(p for p in Project).order_by(Project.priority)[:]
 
@@ -315,7 +387,10 @@ def update_part_priority(update_request: PriorityUpdateRequest):
             # Set the new priority for the current project
             order.project.priority = new_priority
         else:
-            # Create a new project if none exists
+            # Create a new project if none exists - use next available priority if not specified
+            if new_priority <= 0:
+                new_priority = get_next_priority()
+
             order.project = Project(
                 name=f"Project {order.part_number}",
                 priority=new_priority,
@@ -325,6 +400,9 @@ def update_part_priority(update_request: PriorityUpdateRequest):
             )
 
         commit()
+
+        # ADDED: Ensure sequential priorities after update
+        ensure_sequential_priorities()
 
         # Get the actual new priority (in case it was adjusted)
         current_priority = order.project.priority if order.project else new_priority
@@ -398,7 +476,10 @@ def update_order_priority(order_id: int, priority_data: ProjectPriorityUpdateReq
 
         # Check if order has an associated project
         if not order.project:
-            # Create a new project if none exists
+            # Create a new project if none exists - use next available priority if not specified
+            if new_priority <= 0:
+                new_priority = get_next_priority()
+
             project = Project(
                 name=f"Project for {order.part_number}",
                 priority=new_priority,
@@ -446,6 +527,9 @@ def update_order_priority(order_id: int, priority_data: ProjectPriorityUpdateReq
 
         # Commit changes
         commit()
+
+        # ADDED: Ensure sequential priorities after update
+        ensure_sequential_priorities()
 
         # Get the actual new priority (in case it was adjusted during reordering)
         current_priority = order.project.priority if order.project else new_priority

@@ -62,10 +62,10 @@ class MachineRawLive(db.Entity):
             # First approach: Use actual_job if available
             if self.actual_job:
                 try:
-                    print(f"\n=== Debug: Using actual_job with ID {self.actual_job.id} ===")
+                    # print(f"\n=== Debug: Using actual_job with ID {self.actual_job.id} ===")
                     operation = self.actual_job
                     if operation:
-                        print(f"Found operation: ID={operation.id}, Number={operation.operation_number}")
+                        # print(f"Found operation: ID={operation.id}, Number={operation.operation_number}")
 
                         # Get order from operation
                         order = operation.order
@@ -81,7 +81,7 @@ class MachineRawLive(db.Entity):
                                 'operation_description': operation.operation_description
                             }
                         else:
-                            print(f"No order found for actual_job operation {operation.id}")
+                             print(f"No order found for actual_job operation {operation.id}")
                     else:
                         print(f"Actual job reference exists but operation is None")
                 except Exception as actual_job_error:
@@ -92,15 +92,15 @@ class MachineRawLive(db.Entity):
             # Second approach: Use scheduled_job if available
             if self.scheduled_job:
                 try:
-                    print(f"\n=== Debug: Using scheduled_job with ID {self.scheduled_job.id} ===")
+                    # print(f"\n=== Debug: Using scheduled_job with ID {self.scheduled_job.id} ===")
                     operation = self.scheduled_job
                     if operation:
-                        print(f"Found operation: ID={operation.id}, Number={operation.operation_number}")
+                        # print(f"Found operation: ID={operation.id}, Number={operation.operation_number}")
 
                         # Get order from operation
                         order = operation.order
                         if order:
-                            print(f"Found order: PO={order.production_order}, Part={order.part_number}")
+                            # print(f"Found order: PO={order.production_order}, Part={order.part_number}")
                             return {
                                 'production_order': order.production_order,
                                 'part_number': order.part_number,
@@ -122,7 +122,7 @@ class MachineRawLive(db.Entity):
             # Third approach: Use job_in_progress to find scheduled item
             if self.job_in_progress:
                 try:
-                    print(f"\n=== Debug: Using job_in_progress ID {self.job_in_progress} ===")
+                    # print(f"\n=== Debug: Using job_in_progress ID {self.job_in_progress} ===")
                     # Get the schedule item directly by ID
                     schedule_item = PlannedScheduleItem.get(id=self.job_in_progress)
                     if schedule_item:
@@ -156,7 +156,7 @@ class MachineRawLive(db.Entity):
                     print(traceback.format_exc())
 
             # No match found, return None
-            print("No operation or order information found through any available method")
+            # print("No operation or order information found through any available method")
             return None
 
         except Exception as e:

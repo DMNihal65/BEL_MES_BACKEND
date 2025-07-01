@@ -645,27 +645,41 @@ async def create_order(order_data: CreateOrderRequest_new):
             print(f"DEBUG: Looking for project with name: {order_data.project_name}")
 
             # Use select to get all projects with this name
-            existing_projects = list(Project.select(lambda p: p.name == order_data.project_name))
-            print(f"DEBUG: Found {len(existing_projects)} existing projects with name '{order_data.project_name}'")
+            # existing_projects = list(Project.select(lambda p: p.name == order_data.project_name))
+            # print(f"DEBUG: Found {len(existing_projects)} existing projects with name '{order_data.project_name}'")
+            #
+            # if existing_projects:
+            #     # Use the first existing project
+            #     project = existing_projects[0]
+            #     print(f"DEBUG: Using existing project with ID: {project.id}")
+            # else:
+            #     # Create new project
+            #     print("DEBUG: Creating new project")
+            #     max_priority = select(max(p.priority) for p in Project).first() or 0
+            #     print(f"DEBUG: Max priority found: {max_priority}")
+            #
+            #     project = Project(
+            #         name=order_data.project_name,
+            #         priority=max_priority + 1,  # Auto-increment
+            #         start_date=current_date,
+            #         end_date=current_date,
+            #         delivery_date=current_date
+            #     )
+            #     print(f"DEBUG: Created new project with priority: {project.priority}")
 
-            if existing_projects:
-                # Use the first existing project
-                project = existing_projects[0]
-                print(f"DEBUG: Using existing project with ID: {project.id}")
-            else:
-                # Create new project
-                print("DEBUG: Creating new project")
-                max_priority = select(max(p.priority) for p in Project).first() or 0
-                print(f"DEBUG: Max priority found: {max_priority}")
+            print("DEBUG: Creating new project")
+            max_priority = select(max(p.priority) for p in Project).first() or 0
+            print(f"DEBUG: Max priority found: {max_priority}")
 
-                project = Project(
-                    name=order_data.project_name,
-                    priority=max_priority + 1,  # Auto-increment
-                    start_date=current_date,
-                    end_date=current_date,
-                    delivery_date=current_date
-                )
-                print(f"DEBUG: Created new project with priority: {project.priority}")
+            project = Project(
+                name=order_data.project_name,
+                priority=max_priority + 1,  # Auto-increment
+                start_date=current_date,
+                end_date=current_date,
+                delivery_date=current_date
+            )
+
+            print(f"DEBUG: Created new project with priority: {project.priority}")
 
             # Get or create unit based on user input
             print(f"DEBUG: Looking for unit with name: {order_data.raw_material_unit_name}")

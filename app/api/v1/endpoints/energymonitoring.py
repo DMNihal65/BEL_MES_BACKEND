@@ -5,11 +5,14 @@ from fastapi.responses import StreamingResponse, JSONResponse
 import asyncio
 import json
 from pony.orm import db_session, select, desc
+
+from app.database.connection import db
 from app.models.energymonitoring import MachineEMSLive, MachineEMSHistory, ShiftwiseEnergyLive, ShiftwiseEnergyHistory
 from app.models import Machine
 from collections import defaultdict
 from pydantic import BaseModel
 from enum import Enum
+import math
 
 router = APIRouter(prefix="/api/v1/energy-monitoring", tags=["energy-monitoring"])
 
@@ -1082,114 +1085,92 @@ async def stream_shiftwise_energy(request: Request):
     )
 
 
-@router.get("/combined-history/{timestamp}")
-async def get_combined_history(
-        timestamp: int = Path(..., description="Timestamp in epoch seconds (without GMT)")
+@router.get("/combined-history/")
+async def get_combined_history_range(
+    from_timestamp: int = Query(..., description="Start timestamp in epoch seconds"),
+    to_timestamp: int = Query(..., description="End timestamp in epoch seconds")
 ):
     """
-    Get combined data from ShiftwiseEnergyHistory for a specific timestamp.
-    Returns data for all machines including shift-wise energy data.
-
-    Args:
-        timestamp: Timestamp in epoch seconds (without GMT)
+    Get combined shiftwise energy data between two timestamps.
+    Aggregates data for all machines and returns cumulative totals.
     """
     try:
         # Convert epoch to datetime
-        target_datetime = datetime.fromtimestamp(timestamp)
+        from_dt = datetime.fromtimestamp(from_timestamp)
+        to_dt = datetime.fromtimestamp(to_timestamp)
+
+        if from_dt > to_dt:
+            raise HTTPException(status_code=400, detail="from_timestamp must be earlier than to_timestamp")
 
         with db_session:
-            # Get all machines from ShiftwiseEnergyHistory
-            shiftwise_machines = select(h.machine_id for h in ShiftwiseEnergyHistory
-                                        if h.timestamp == target_datetime)[:]
-            all_machine_ids = list(set(shiftwise_machines))
+            # Get all machines with data in the time range
+            local_context = locals()
+            local_context["ShiftwiseEnergyHistory"] = ShiftwiseEnergyHistory
 
-            # Get machine names from Machine table
+            shiftwise_data = select(
+                "h for h in ShiftwiseEnergyHistory if from_dt <= h.timestamp <= to_dt",
+                local_context
+            )[:]
+
+
+            # Group by machine_id
+            machine_aggregates = {}
+            grand_totals = {"first_shift": 0, "second_shift": 0, "third_shift": 0, "total_energy": 0}
+
+            # Get machine names
             machines = {m.id: m.make for m in select(m for m in Machine)[:]}
 
-            # Get total energy data directly from the database
-            total_query = select((
-                                     sum(h.first_shift),
-                                     sum(h.second_shift),
-                                     sum(h.third_shift),
-                                     sum(h.total_energy)
-                                 ) for h in ShiftwiseEnergyHistory if h.timestamp == target_datetime).first()
-
-            # Handle case when no data is found
-            if not total_query:
-                total_first, total_second, total_third, grand_total = 0, 0, 0, 0
-            else:
-                total_first, total_second, total_third, grand_total = total_query
-
-            # Initialize response data with totals
-            response_data = {
-                "timestamp": target_datetime.isoformat(),
-                "epoch": timestamp,
-                "grand_totals": {
-                    "total_first_shift": round(total_first or 0, 2),
-                    "total_second_shift": round(total_second or 0, 2),
-                    "total_third_shift": round(total_third or 0, 2),
-                    "grand_total_energy": round(grand_total or 0, 2)
-                },
-                "machines": [],
-                "machine_totals": {
-                    "first_shift": 0,
-                    "second_shift": 0,
-                    "third_shift": 0,
-                    "total_energy": 0
-                }
-            }
-
-            if not all_machine_ids:
-                return JSONResponse(content=response_data)
-
-            # Collect data for each machine
-            for machine_id in all_machine_ids:
-                machine_data = {
-                    "machine_id": machine_id,
-                    "machine_name": machines.get(machine_id, f"Unknown Machine {machine_id}")
-                }
-
-                # Get shiftwise energy data
-                shiftwise = ShiftwiseEnergyHistory.get(
-                    machine_id=machine_id,
-                    timestamp=target_datetime
-                )
-                if shiftwise:
-                    machine_data.update({
-                        "first_shift": shiftwise.first_shift,
-                        "second_shift": shiftwise.second_shift,
-                        "third_shift": shiftwise.third_shift,
-                        "total_energy": shiftwise.total_energy
-                    })
-                    # Update machine totals
-                    response_data["machine_totals"]["first_shift"] += shiftwise.first_shift
-                    response_data["machine_totals"]["second_shift"] += shiftwise.second_shift
-                    response_data["machine_totals"]["third_shift"] += shiftwise.third_shift
-                    response_data["machine_totals"]["total_energy"] += shiftwise.total_energy
-                else:
-                    machine_data.update({
+            for h in shiftwise_data:
+                m_id = h.machine_id
+                if m_id not in machine_aggregates:
+                    machine_aggregates[m_id] = {
+                        "machine_id": m_id,
+                        "machine_name": machines.get(m_id, f"Unknown Machine {m_id}"),
                         "first_shift": 0,
                         "second_shift": 0,
                         "third_shift": 0,
                         "total_energy": 0
-                    })
+                    }
 
-                response_data["machines"].append(machine_data)
+                machine_aggregates[m_id]["first_shift"] += h.first_shift or 0
+                machine_aggregates[m_id]["second_shift"] += h.second_shift or 0
+                machine_aggregates[m_id]["third_shift"] += h.third_shift or 0
+                machine_aggregates[m_id]["total_energy"] += h.total_energy or 0
 
-            # Round machine totals to 2 decimal places
-            for key in response_data["machine_totals"]:
-                response_data["machine_totals"][key] = round(response_data["machine_totals"][key], 2)
+                # Add to grand totals
+                grand_totals["first_shift"] += h.first_shift or 0
+                grand_totals["second_shift"] += h.second_shift or 0
+                grand_totals["third_shift"] += h.third_shift or 0
+                grand_totals["total_energy"] += h.total_energy or 0
+
+            # Round totals
+            for m in machine_aggregates.values():
+                for key in ["first_shift", "second_shift", "third_shift", "total_energy"]:
+                    m[key] = round(m[key], 2)
+
+            for key in grand_totals:
+                grand_totals[key] = round(grand_totals[key], 2)
+
+            response_data = {
+                "from_timestamp": from_dt.isoformat(),
+                "to_timestamp": to_dt.isoformat(),
+                "epoch_range": {
+                    "from": from_timestamp,
+                    "to": to_timestamp
+                },
+                "grand_totals": {
+                    "total_first_shift": grand_totals["first_shift"],
+                    "total_second_shift": grand_totals["second_shift"],
+                    "total_third_shift": grand_totals["third_shift"],
+                    "grand_total_energy": grand_totals["total_energy"]
+                },
+                "machines": list(machine_aggregates.values()),
+                "machine_totals": grand_totals
+            }
 
             return JSONResponse(content=response_data)
 
     except ValueError as e:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid timestamp format: {str(e)}"
-        )
+        raise HTTPException(status_code=400, detail=f"Invalid timestamp format: {str(e)}")
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Internal server error: {str(e)}"
-        )
-
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
