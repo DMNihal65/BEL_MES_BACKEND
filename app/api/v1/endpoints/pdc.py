@@ -42,22 +42,22 @@ def set_cache(key: str, value, ttl: int = CACHE_TTL):
 
 
 async def get_combined_schedule_cached():
-    """Get combined schedule with caching"""
-    cache_key = "combined_schedule"
-    cached_data = get_from_cache(cache_key)
-
-    if cached_data is not None:
-        return cached_data
+    # """Get combined schedule with caching"""
+    # cache_key = "combined_schedule"
+    # cached_data = get_from_cache(cache_key)
+    #
+    # if cached_data is not None:
+    #     return cached_data
 
     # If not in cache, fetch from source
     try:
         combined_data = await get_combined_schedule()
-        set_cache(cache_key, combined_data)
+        # set_cache(cache_key, combined_data)
         return combined_data
     except Exception as e:
         # If main call fails, try to return stale cache data if available
-        if cache_key in _cache:
-            return _cache[cache_key]
+        # if cache_key in _cache:
+        #     return _cache[cache_key]
         raise e
 
 
@@ -344,151 +344,239 @@ from datetime import datetime
 import time
 import traceback
 
-@router.get("/part-production-pdc12", response_model=List[Dict[str, Any]])
-async def get_part_production_pdc(part_number: str, production_order: str):
+# @router.get("/part-production-pdc12", response_model=List[Dict[str, Any]])
+# async def get_part_production_pdc(part_number: str, production_order: str):
+#     """
+#     Get the Probable Date of Completion (PDC) for a specific part number and production order.
+#     """
+#     start_time = time.time()
+#     print(f"Received request with part_number={part_number}, production_order={production_order}")
+#
+#     try:
+#         # Step 1: Get combined data (with caching)
+#         combined_data = await get_combined_schedule_cached()
+#
+#         # DEBUG: log type and attributes of the response
+#         print(f"Combined data type: {type(combined_data)}")
+#
+#         if hasattr(combined_data, '__dict__'):
+#             print("Combined data fields:")
+#             for key, value in combined_data.__dict__.items():
+#                 if isinstance(value, list):
+#                     print(f"  - {key}: list of {len(value)} items")
+#                 else:
+#                     print(f"  - {key}: {type(value).__name__}")
+#         else:
+#             print(f"Combined data raw: {combined_data}")
+#
+#         # Optional: check if a known attribute exists and print length
+#         if hasattr(combined_data, 'schedules'):
+#             print(f"Schedules count: {len(combined_data.schedules)}")
+#         elif hasattr(combined_data, 'items'):
+#             print(f"Items count: {len(combined_data.items)}")
+#
+#         # Step 2: Process all data in parallel
+#         active_parts, completed_parts, part_production_end_times, data_sources = await process_all_data(combined_data)
+#         print(f"Processed data - active_parts: {len(active_parts)}, completed_parts: {len(completed_parts)}, "
+#               f"part_production_end_times: {len(part_production_end_times)}")
+#
+#         # Step 3: Filter for the specific part and production order
+#         result = []
+#         target_key = (part_number, production_order)
+#         print(f"Looking up target_key: {target_key}")
+#
+#         if target_key in part_production_end_times:
+#             pdc = part_production_end_times[target_key]
+#             print(f"Found PDC for {target_key}: {pdc}")
+#             result.append({
+#                 "part_number": part_number,
+#                 "production_order": production_order,
+#                 "pdc": pdc.isoformat() if isinstance(pdc, datetime) else str(pdc),
+#                 "status": "completed" if target_key in completed_parts else "in_progress",
+#                 "data_source": data_sources.get(target_key, "unknown")
+#             })
+#         elif target_key in active_parts:
+#             print(f"{target_key} is active but no PDC data available.")
+#             result.append({
+#                 "part_number": part_number,
+#                 "production_order": production_order,
+#                 "pdc": None,
+#                 "status": "pending",
+#                 "data_source": "none"
+#             })
+#         else:
+#             print(f"DEBUG: {target_key} not found in either part_production_end_times or active_parts — returning empty list")
+#
+#         end_time = time.time()
+#         print(f"PDC endpoint completed in {end_time - start_time:.2f} seconds. Result count: {len(result)}")
+#
+#         return result
+#
+#     except Exception as e:
+#         print(f"Error retrieving PDC data: {str(e)}")
+#         traceback.print_exc()
+#         raise HTTPException(
+#             status_code=500,
+#             detail=f"Error calculating PDC: {str(e)}"
+#         )
+
+"""CURRENT PDC """
+@router.get("/part-production-pdc11", response_model=List[Dict[str, Any]])
+async def get_filtered_part_production(part_number: str, production_order: str):
     """
-    Get the Probable Date of Completion (PDC) for a specific part number and production order.
+    Get filtered production data for a specific part number and production order.
+    Returns all matching records from the combined schedule data.
     """
     start_time = time.time()
-    print(f"Received request with part_number={part_number}, production_order={production_order}")
+    print(f"Received filtered request with part_number={part_number}, production_order={production_order}")
 
     try:
         # Step 1: Get combined data (with caching)
         combined_data = await get_combined_schedule_cached()
 
-        # DEBUG: log type and attributes of the response
         print(f"Combined data type: {type(combined_data)}")
-
-        if hasattr(combined_data, '__dict__'):
-            print("Combined data fields:")
-            for key, value in combined_data.__dict__.items():
-                if isinstance(value, list):
-                    print(f"  - {key}: list of {len(value)} items")
-                else:
-                    print(f"  - {key}: {type(value).__name__}")
-        else:
-            print(f"Combined data raw: {combined_data}")
-
-        # Optional: check if a known attribute exists and print length
-        if hasattr(combined_data, 'schedules'):
-            print(f"Schedules count: {len(combined_data.schedules)}")
-        elif hasattr(combined_data, 'items'):
-            print(f"Items count: {len(combined_data.items)}")
 
         # Step 2: Process all data in parallel
         active_parts, completed_parts, part_production_end_times, data_sources = await process_all_data(combined_data)
         print(f"Processed data - active_parts: {len(active_parts)}, completed_parts: {len(completed_parts)}, "
               f"part_production_end_times: {len(part_production_end_times)}")
 
-        # Step 3: Filter for the specific part and production order
+        # Step 3: Filter all data for the specific part and production order
         result = []
-        target_key = (part_number, production_order)
-        print(f"Looking up target_key: {target_key}")
 
-        if target_key in part_production_end_times:
-            pdc = part_production_end_times[target_key]
-            print(f"Found PDC for {target_key}: {pdc}")
+        # Filter active parts
+        matching_active = [
+            key for key in active_parts
+            if key[0] == part_number and key[1] == production_order
+        ]
+
+        # Filter completed parts
+        matching_completed = [
+            key for key in completed_parts
+            if key[0] == part_number and key[1] == production_order
+        ]
+
+        # Filter part production end times
+        matching_end_times = {
+            key: value for key, value in part_production_end_times.items()
+            if key[0] == part_number and key[1] == production_order
+        }
+
+        print(f"Found {len(matching_active)} active, {len(matching_completed)} completed, "
+              f"{len(matching_end_times)} with end times")
+
+        # Step 4: Build result from all matching data
+        all_matching_keys = set(matching_active + matching_completed + list(matching_end_times.keys()))
+
+        for key in all_matching_keys:
+            part_num, prod_order = key
+
+            # Determine status
+            if key in completed_parts:
+                status = "completed"
+            elif key in active_parts:
+                status = "in_progress"
+            else:
+                status = "pending"
+
+            # Get PDC if available
+            pdc = matching_end_times.get(key)
+            pdc_value = pdc.isoformat() if isinstance(pdc, datetime) else str(pdc) if pdc else None
+
             result.append({
-                "part_number": part_number,
-                "production_order": production_order,
-                "pdc": pdc.isoformat() if isinstance(pdc, datetime) else str(pdc),
-                "status": "completed" if target_key in completed_parts else "in_progress",
-                "data_source": data_sources.get(target_key, "unknown")
+                "part_number": part_num,
+                "production_order": prod_order,
+                "pdc": pdc_value,
+                "status": status,
+                "data_source": data_sources.get(key, "unknown")
             })
-        elif target_key in active_parts:
-            print(f"{target_key} is active but no PDC data available.")
-            result.append({
-                "part_number": part_number,
-                "production_order": production_order,
-                "pdc": None,
-                "status": "pending",
-                "data_source": "none"
-            })
-        else:
-            print(f"DEBUG: {target_key} not found in either part_production_end_times or active_parts — returning empty list")
+
+        # Step 5: If no matches found, return empty result with info
+        if not result:
+            print(f"No matching records found for part_number={part_number}, production_order={production_order}")
 
         end_time = time.time()
-        print(f"PDC endpoint completed in {end_time - start_time:.2f} seconds. Result count: {len(result)}")
+        print(f"Filtered PDC endpoint completed in {end_time - start_time:.2f} seconds. Result count: {len(result)}")
 
         return result
 
     except Exception as e:
-        print(f"Error retrieving PDC data: {str(e)}")
+        print(f"Error retrieving filtered production data: {str(e)}")
         traceback.print_exc()
         raise HTTPException(
             status_code=500,
-            detail=f"Error calculating PDC: {str(e)}"
+            detail=f"Error filtering production data: {str(e)}"
         )
 
 """NEW PDC CODE"""
-@router.get("/part-production-pdc11", response_model=List[Dict[str, Any]])
-async def get_part_production_pdc2(part_number: str, production_order: str):
-    """
-    Get the Probable Date of Completion (PDC) for each part number and production order.
-
-    Optimized for performance with caching, parallel processing, and proper async handling.
-    """
-    start_time = time.time()
-
-    try:
-        # Step 1: Get combined data (with caching)
-        combined_data = await get_combined_schedule_cached()
-
-        if not combined_data:
-            return []
-
-        # Step 2: Process all data in parallel
-        active_parts, completed_parts, part_production_end_times, data_sources = await process_all_data(combined_data)
-
-        # Step 3: Build result efficiently
-        result = []
-        processed_parts = set()
-
-        # Add parts with PDC data
-        for (part_number, production_order), pdc in part_production_end_times.items():
-            result.append({
-                "part_number": part_number,
-                "production_order": production_order,
-                "pdc": pdc.isoformat() if isinstance(pdc, datetime) else str(pdc),
-                "status": "completed" if (part_number, production_order) in completed_parts else "in_progress",
-                "data_source": data_sources.get((part_number, production_order), "unknown")
-            })
-            processed_parts.add((part_number, production_order))
-
-        # Add active parts without PDC data
-        missing_active_parts = active_parts - processed_parts
-        for part_number, production_order in missing_active_parts:
-            result.append({
-                "part_number": part_number,
-                "production_order": production_order,
-                "pdc": None,
-                "status": "pending",
-                "data_source": "none"
-            })
-
-        # Sort result
-        result.sort(key=lambda x: (x["part_number"], x["production_order"]))
-
-        result1 = []
-
-        for i in result:
-            if i["part_number"] == part_number and i["production_order"] == production_order:
-                result1.append(i)
-
-
-        end_time = time.time()
-        print(f"PDC endpoint completed in {end_time - start_time:.2f} seconds")
-
-        return result1
-
-    except Exception as e:
-        print(f"Error retrieving PDC data: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error calculating PDC: {str(e)}"
-        )
+# @router.get("/part-production-pdc13", response_model=List[Dict[str, Any]])
+# async def get_part_production_pdc2(part_number: str, production_order: str):
+#     """
+#     Get the Probable Date of Completion (PDC) for each part number and production order.
+#
+#     Optimized for performance with caching, parallel processing, and proper async handling.
+#     """
+#     start_time = time.time()
+#
+#     try:
+#         # Step 1: Get combined data (with caching)
+#         combined_data = await get_combined_schedule_cached()
+#
+#         if not combined_data:
+#             return []
+#
+#         # Step 2: Process all data in parallel
+#         active_parts, completed_parts, part_production_end_times, data_sources = await process_all_data(combined_data)
+#
+#         # Step 3: Build result efficiently
+#         result = []
+#         processed_parts = set()
+#
+#         # Add parts with PDC data
+#         for (part_number, production_order), pdc in part_production_end_times.items():
+#             result.append({
+#                 "part_number": part_number,
+#                 "production_order": production_order,
+#                 "pdc": pdc.isoformat() if isinstance(pdc, datetime) else str(pdc),
+#                 "status": "completed" if (part_number, production_order) in completed_parts else "in_progress",
+#                 "data_source": data_sources.get((part_number, production_order), "unknown")
+#             })
+#             processed_parts.add((part_number, production_order))
+#
+#         # Add active parts without PDC data
+#         missing_active_parts = active_parts - processed_parts
+#         for part_number, production_order in missing_active_parts:
+#             result.append({
+#                 "part_number": part_number,
+#                 "production_order": production_order,
+#                 "pdc": None,
+#                 "status": "pending",
+#                 "data_source": "none"
+#             })
+#
+#         # Sort result
+#         result.sort(key=lambda x: (x["part_number"], x["production_order"]))
+#
+#         result1 = []
+#
+#         for i in result:
+#             if i["part_number"] == part_number and i["production_order"] == production_order:
+#                 result1.append(i)
+#
+#
+#         end_time = time.time()
+#         print(f"PDC endpoint completed in {end_time - start_time:.2f} seconds")
+#
+#         return result1
+#
+#     except Exception as e:
+#         print(f"Error retrieving PDC data: {str(e)}")
+#         import traceback
+#         traceback.print_exc()
+#         raise HTTPException(
+#             status_code=500,
+#             detail=f"Error calculating PDC: {str(e)}"
+#         )
 
 
 # Optional: Add endpoint to clear cache

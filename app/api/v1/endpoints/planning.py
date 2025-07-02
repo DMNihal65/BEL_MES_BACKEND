@@ -199,7 +199,7 @@ def save_to_database(data):
         # Check if order exists
         existing_order = Order.get(production_order=data["Prod Order No"])
         if existing_order:
-            return existing_order
+            raise HTTPException(status_code=400, detail=f"Production order '{data['Prod Order No']}' already exists.")
 
         # Always create a new project instead of reusing existing ones
         # Get current max priority
@@ -1411,7 +1411,6 @@ def delete_order(order_id: int):
     project_ref = order.project
 
     # Find and delete associated PartScheduleStatus if it exists
-    # Assuming Order has a production_order attribute or we can get it somehow
     production_order = order.production_order if hasattr(order, 'production_order') else str(order_id)
     part_schedule_status = PartScheduleStatus.get(production_order=production_order)
     if part_schedule_status:
@@ -1420,8 +1419,6 @@ def delete_order(order_id: int):
     # Delete all related child entities
     for op in order.operations:
         op.delete()
-    # for doc in order.documents:
-    #     doc.delete()
     for tool in order.tools:
         tool.delete()
     for jig in order.jigs_fixtures:
@@ -1432,40 +1429,40 @@ def delete_order(order_id: int):
         psi.delete()
     for req in order.inventory_requests:
         req.delete()
-    # for docv2 in order.documents_v2:
-    #     docv2.delete()
     for ot in order.order_tools:
         ot.delete()
-    # for boc in order.master_bocs:
-    #     boc.delete()
     for req in order.inventory_requests:
         req.delete()
 
     # Handle DocumentV2 entities - preserve IPID documents
     for docv2 in order.documents_v2:
-        # Skip IPID documents
         if docv2.doc_type.name == "IPID":
-            # Just remove the order reference but keep the document
             docv2.production_order = None
         elif docv2.doc_type.name == "REPORT":
-            # Just remove the order reference but keep the document
             docv2.production_order = None
         else:
-            # Delete non-IPID documents
             docv2.delete()
 
     # Delete the order itself
     order.delete()
 
     # Clean up orphaned references if they're not used by other orders
+    # --- PRIORITY REARRANGEMENT LOGIC STARTS HERE ---
+    if project_ref:
+        # Check if project has no more orders after deletion
+        if not project_ref.orders:
+            deleted_priority = project_ref.priority
+            project_ref.delete()
+            # Rearrange priorities for remaining projects
+            for proj in Project.select(lambda p: p.priority > deleted_priority):
+                proj.priority -= 1
+    # --- PRIORITY REARRANGEMENT LOGIC ENDS HERE ---
+
     if raw_material_ref and not raw_material_ref.orders:
         raw_material_ref.delete()
-    if project_ref and not project_ref.orders:
-        project_ref.delete()
 
     commit()
     return {"message": "Order and related entities deleted successfully."}
-
 
 
 @router.put("/orders/{order_id}", response_model=OrderUpdate_Response)
