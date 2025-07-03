@@ -203,6 +203,7 @@ def create_item(item: InventoryItemCreate):
         }
 
         commit()
+        print("Returning response data:", response_data)
         return response_data
 
     except HTTPException as he:
@@ -440,28 +441,30 @@ def create_inventory_request(
         )
 
         flush()
+        commit()
 
         response_data = {
             "id": new_request.id,
             "inventory_item_id": item.id,
+            "inventory_item_code": new_request.inventory_item.item_code,
             "requested_by": current_user.id,
             "requested_by_username": current_user.username,
             "order_id": order.id,
             "operation_id": operation.id if operation else None,
             "quantity": new_request.quantity,
             "purpose": new_request.purpose,
-            "status": new_request.status,
+            "status": new_request.status if isinstance(new_request.status, str) else new_request.status.value,
             "expected_return_date": new_request.expected_return_date,
             "actual_return_date": None,
             "remarks": new_request.remarks,
-            "inventory_item_code": new_request.inventory_item.item_code,
+            "approved_by_username": None,
             "created_at": new_request.created_at,
             "updated_at": new_request.updated_at,
             "approved_by": None,
             "approved_at": None
         }
 
-        commit()
+        print("Returning response data:", response_data)
         return response_data
 
     except HTTPException as he:

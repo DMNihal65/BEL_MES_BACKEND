@@ -593,12 +593,12 @@ def get_production_order_operations_status(production_order: str):
             "validation_reason": validation_reason,
             "completed_quantity": total_completed,
             "rejected_quantity": total_rejected,
-            "required_quantity": order.required_quantity,
-            "remaining_quantity": max(0, order.required_quantity - total_completed),
-            "is_complete": total_completed >= order.required_quantity,
+            "required_quantity": order.launched_quantity,
+            "remaining_quantity": max(0, order.launched_quantity - total_completed),
+            "is_complete": total_completed >= order.launched_quantity,
             "setup_time": float(op.setup_time),  # Convert Decimal to float
             "ideal_cycle_time": float(op.ideal_cycle_time),  # Convert Decimal to float
-            "operation_time": float(op.ideal_cycle_time) * order.required_quantity  # Calculate total operation time
+            "operation_time": float(op.ideal_cycle_time) * order.launched_quantity  # Calculate total operation time
         })
 
 
@@ -607,7 +607,7 @@ def get_production_order_operations_status(production_order: str):
         "part_number": order.part_number,
         "priority": order.project.priority,
         "project": order.project.name,
-        "required_quantity": order.required_quantity,
+        "required_quantity": order.launched_quantity,
         "sale_order": order.sale_order,
         "operations": operation_statuses
     }

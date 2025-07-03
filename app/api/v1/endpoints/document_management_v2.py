@@ -62,6 +62,69 @@ async def get_document_stats(
         )
 
 
+@router.get("/documents/analytics")
+async def get_document_analytics(current_user=Depends(get_current_user)):
+    """Get comprehensive analytics for document management"""
+    try:
+        with db_session:
+            # Total documents
+            total_documents = select(d for d in DocumentV2 if d.is_active).count()
+            # Total versions
+            total_versions = select(v for v in DocumentVersionV2 if v.is_active).count()
+            # Total downloads
+            total_downloads = select(l for l in DocumentAccessLogV2 if l.action_type == "DOWNLOAD").count()
+            # Total storage (sum of all active version file sizes)
+            total_storage = select(sum(v.file_size) for v in DocumentVersionV2 if v.is_active).first() or 0
+
+            # Document counts by type
+            docs_by_type = select((d.doc_type.name, count(d)) for d in DocumentV2 if d.is_active).fetch()
+            # Download counts by type
+            downloads_by_type = {}
+            for dt in DocumentTypeV2.select(lambda t: t.is_active):
+                downloads_by_type[dt.name] = select(l for l in DocumentAccessLogV2 if l.action_type == "DOWNLOAD" and l.document.doc_type == dt).count()
+            # Storage by type
+            storage_by_type = {}
+            for dt in DocumentTypeV2.select(lambda t: t.is_active):
+                storage_by_type[dt.name] = select(sum(v.file_size) for v in DocumentVersionV2 if v.is_active and v.document.doc_type == dt).first() or 0
+            # Versions by type
+            versions_by_type = {}
+            for dt in DocumentTypeV2.select(lambda t: t.is_active):
+                versions_by_type[dt.name] = select(v for v in DocumentVersionV2 if v.is_active and v.document.doc_type == dt).count()
+
+            # List all document types with their metadata
+            doc_types = [
+                {
+                    "id": dt.id,
+                    "name": dt.name,
+                    "description": dt.description,
+                    "allowed_extensions": dt.allowed_extensions,
+                    "is_active": dt.is_active,
+                    "document_count": docs_by_type.get(dt.name, 0) if isinstance(docs_by_type, dict) else dict(docs_by_type).get(dt.name, 0),
+                    "download_count": downloads_by_type.get(dt.name, 0),
+                    "storage": storage_by_type.get(dt.name, 0),
+                    "version_count": versions_by_type.get(dt.name, 0)
+                }
+                for dt in DocumentTypeV2.select(lambda t: t.is_active)
+            ]
+
+            return {
+                "total_documents": total_documents,
+                "total_versions": total_versions,
+                "total_downloads": total_downloads,
+                "total_storage": total_storage,
+                "documents_by_type": dict(docs_by_type),
+                "downloads_by_type": downloads_by_type,
+                "storage_by_type": storage_by_type,
+                "versions_by_type": versions_by_type,
+                "document_types": doc_types
+            }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An error occurred: {str(e)}"
+        )
+
+
 @router.get("/documents/by-multiple-part-numbers", response_model=List[DocumentResponse])
 async def get_documents_by_part_numbers(
         part_numbers: List[str] = Query(..., description="List of part numbers"),
@@ -445,11 +508,9 @@ async def list_documents(
         folder_id: int | None = None,
         part_number: str | None = None,
         production_order_id: int | None = None,
-        page: int = Query(1, ge=1),
-        page_size: int = Query(10, ge=1, le=100),
         current_user=Depends(get_current_user)
 ):
-    """List documents with optional filters and pagination"""
+    """List documents with optional filters (no pagination)"""
     try:
         with db_session:
             # Start with base query
@@ -464,13 +525,9 @@ async def list_documents(
                 base_query = base_query.filter(
                     lambda d: d.production_order and d.production_order.id == production_order_id)
 
-            # Get total count
-            total = base_query.count()
-
-            # Apply pagination and ordering
-            documents = list(base_query
-                             .order_by(lambda d: desc(d.created_at))
-                             .limit(page_size, offset=(page - 1) * page_size))
+            # Get all documents (no pagination)
+            documents = list(base_query.order_by(lambda d: desc(d.created_at)))
+            total = len(documents)
 
             # Format response
             return {
