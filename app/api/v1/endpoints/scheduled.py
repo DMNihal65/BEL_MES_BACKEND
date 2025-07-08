@@ -5,8 +5,10 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional
 
 import pandas as pd
+from dateutil import parser
 from fastapi import APIRouter, HTTPException, Query
 from pony.orm import db_session, select, ObjectNotFound
+from pydantic import BaseModel
 
 from app.models import Order, Operation, Machine, PartScheduleStatus, PlannedScheduleItem, ScheduleVersion, \
     ProductionLog, WorkCenter
@@ -907,6 +909,10 @@ async def schedule():
         print(f"Error in schedule endpoint: {str(e)}")
         traceback.print_exc()  # Add this for full error details
         raise HTTPException(status_code=500, detail=str(e))
+
+
+
+
 
 @router.get("/actual-production/", response_model=ProductionLogsResponse)
 async def get_production_logs():

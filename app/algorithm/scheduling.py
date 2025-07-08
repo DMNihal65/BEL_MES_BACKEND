@@ -263,10 +263,10 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
         at = ms['available_to']  # End of status period (may be None)
 
         # Debug logging for machine status check
-        print(f"Checking machine {machine_id} status at {time}:")
-        print(f"  Status: {status}")
-        print(f"  Available From: {af}")
-        print(f"  Available To: {at}")
+        # print(f"Checking machine {machine_id} status at {time}:")
+        # print(f"  Status: {status}")
+        # print(f"  Available From: {af}")
+        # print(f"  Available To: {at}")
 
         if status == 'OFF':
             # OFF window: unavailable between af and at
