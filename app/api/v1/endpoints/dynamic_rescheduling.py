@@ -17,18 +17,18 @@ router = APIRouter(prefix="/api/v1/rescheduling", tags=["rescheduling"])
 
 
 def adjust_to_shift_hours(time: datetime) -> datetime:
-    """Adjust time to fit within shift hours (9 AM to 5 PM)"""
-    if time.hour < 9:
-        return time.replace(hour=9, minute=0, second=0, microsecond=0)
-    elif time.hour >= 17:
-        return (time + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
+    """Adjust time to fit within shift hours (6 AM to 5 PM)"""
+    if time.hour < 6:
+        return time.replace(hour=6, minute=0, second=0, microsecond=0)
+    elif time.hour >= 22:
+        return (time + timedelta(days=1)).replace(hour=6, minute=0, second=0, microsecond=0)
     return time
 
 
 def calculate_shift_aware_duration(start_time: datetime, operation: Operation, quantity: int) -> Tuple[
     datetime, timedelta]:
     """
-    Calculate the end time and duration for an operation, respecting shift hours (9 AM to 5 PM)
+    Calculate the end time and duration for an operation, respecting shift hours (6 AM to 5 PM)
     """
     setup_time = float(operation.setup_time) * 60  # Convert to minutes
     cycle_time = float(operation.ideal_cycle_time) * 60  # Convert to minutes
@@ -36,8 +36,8 @@ def calculate_shift_aware_duration(start_time: datetime, operation: Operation, q
 
     current_time = adjust_to_shift_hours(start_time)
     remaining_minutes = total_minutes
-    shift_start_hour = 9
-    shift_end_hour = 17
+    shift_start_hour = 6
+    shift_end_hour = 22
     shift_minutes_per_day = (shift_end_hour - shift_start_hour) * 60  # 480 minutes
 
     while remaining_minutes > 0:
@@ -46,7 +46,7 @@ def calculate_shift_aware_duration(start_time: datetime, operation: Operation, q
         minutes_until_shift_end = ((shift_end_hour - current_hour) * 60) - current_minute
 
         if minutes_until_shift_end <= 0:
-            current_time = (current_time + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
+            current_time = (current_time + timedelta(days=1)).replace(hour=6, minute=0, second=0, microsecond=0)
             continue
 
         minutes_to_allocate = min(remaining_minutes, minutes_until_shift_end)
@@ -54,7 +54,7 @@ def calculate_shift_aware_duration(start_time: datetime, operation: Operation, q
         current_time += timedelta(minutes=minutes_to_allocate)
 
         if remaining_minutes > 0:
-            current_time = (current_time + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
+            current_time = (current_time + timedelta(days=1)).replace(hour=6, minute=0, second=0, microsecond=0)
 
     end_time = current_time
     total_duration = timedelta(minutes=total_minutes)

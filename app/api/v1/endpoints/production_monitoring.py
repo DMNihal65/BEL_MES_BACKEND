@@ -1545,6 +1545,20 @@ async def get_machine_oee_analysis(
                 start_date = datetime.utcnow() - timedelta(days=30)  # Default to last 30 days
             if not end_date:
                 end_date = datetime.utcnow()
+            # --- IST (UTC+5:30) end_date logic ---
+            ist_offset = timedelta(hours=5, minutes=30)
+            now_ist = datetime.utcnow() + ist_offset
+            if isinstance(end_date, datetime):
+                end_date_ist = end_date + ist_offset
+                if end_date_ist.date() == now_ist.date():
+                    # If end_date is today in IST, set to current IST time
+                    end_date_ist = now_ist
+                elif end_date_ist.time() == datetime.min.time():
+                    # If end_date is not today and time is 00:00:00, set to end of day in IST
+                    end_date_ist = end_date_ist.replace(hour=23, minute=59, second=59, microsecond=999999)
+                # Convert back to UTC for DB queries
+                end_date = end_date_ist - ist_offset
+            # --- End IST logic ---
 
             # Get machine details
             machine = Machine.get(id=machine_id)
@@ -2058,9 +2072,20 @@ async def get_all_machines_status_timeline(
                 start_date = datetime.utcnow() - timedelta(days=30)
             if not end_date:
                 end_date = datetime.utcnow()
-
-            # print(f"\n=== Debug: Fetching status timeline for all machines ===")
-            # print(f"Time range: {start_date} to {end_date}")
+            # --- Enhanced patch for end_date logic with IST (UTC+5:30) ---
+            ist_offset = timedelta(hours=5, minutes=30)
+            now_ist = datetime.utcnow() + ist_offset
+            if isinstance(end_date, datetime):
+                end_date_ist = end_date + ist_offset
+                if end_date_ist.date() == now_ist.date():
+                    # If end_date is today in IST, set to current IST time
+                    end_date_ist = now_ist
+                elif end_date_ist.time() == datetime.min.time():
+                    # If end_date is not today and time is 00:00:00, set to end of day in IST
+                    end_date_ist = end_date_ist.replace(hour=23, minute=59, second=59, microsecond=999999)
+                # Convert back to UTC for DB queries
+                end_date = end_date_ist - ist_offset
+            # --- End patch ---
 
             # Get all machines and sort by ID for consistent ordering
             machines = select(m for m in Machine).order_by(Machine.id)[:]
@@ -2179,6 +2204,20 @@ async def get_overall_oee_analytics(
                 start_date = (datetime.utcnow() - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
             if not end_date:
                 end_date = datetime.utcnow()
+            # --- IST (UTC+5:30) end_date logic ---
+            ist_offset = timedelta(hours=5, minutes=30)
+            now_ist = datetime.utcnow() + ist_offset
+            if isinstance(end_date, datetime):
+                end_date_ist = end_date + ist_offset
+                if end_date_ist.date() == now_ist.date():
+                    # If end_date is today in IST, set to current IST time
+                    end_date_ist = now_ist
+                elif end_date_ist.time() == datetime.min.time():
+                    # If end_date is not today and time is 00:00:00, set to end of day in IST
+                    end_date_ist = end_date_ist.replace(hour=23, minute=59, second=59, microsecond=999999)
+                # Convert back to UTC for DB queries
+                end_date = end_date_ist - ist_offset
+            # --- End IST logic ---
 
             # print(f"\n=== Debug: Calculating overall OEE for period {start_date} to {end_date} ===")
 

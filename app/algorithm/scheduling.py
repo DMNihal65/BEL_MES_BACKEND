@@ -9,14 +9,14 @@ from app.models import Operation, Order, Machine, Status, RawMaterial, Project, 
 
 def adjust_to_shift_hours(time: datetime) -> datetime:
     """
-    Adjust time to fit within shift hours (9 AM to 5 PM) in IST
+    Adjust time to fit within shift hours (6 AM to 5 PM) in IST
     Ensures the time is treated as IST
     """
     # First, ensure the time is treated as IST (it should already be in IST)
-    if time.hour < 9:
-        return time.replace(hour=9, minute=0, second=0, microsecond=0)
-    elif time.hour >= 17:
-        return (time + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
+    if time.hour < 6:
+        return time.replace(hour=6, minute=0, second=0, microsecond=0)
+    elif time.hour >= 22:
+        return (time + timedelta(days=1)).replace(hour=6, minute=0, second=0, microsecond=0)
     return time
 
 
@@ -273,23 +273,23 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
             if af and at:
                 if af <= time < at:
                     # Time falls within OFF window
-                    print(f"  Machine is OFF until {at}")
+                    # print(f"  Machine is OFF until {at}")
                     return False, at  # Not available now, will be at 'at'
                 else:
                     # Time is outside OFF window, machine is available
-                    print(f"  Machine is available (outside OFF window)")
+                    # print(f"  Machine is available (outside OFF window)")
                     return True, time
             elif af and not at:
                 # Machine is OFF starting from 'af' indefinitely
                 if time >= af:
-                    print(f"  Machine is permanently OFF from {af}")
+                    # print(f"  Machine is permanently OFF from {af}")
                     return False, None  # Not available and won't be
                 else:
-                    print(f"  Machine is available until {af}")
+                    # print(f"  Machine is available until {af}")
                     return True, time  # Available now until 'af'
             else:
                 # Malformed status record
-                print("  WARNING: Malformed machine status record, assuming available")
+                # print("  WARNING: Malformed machine status record, assuming available")
                 return True, time
 
         # Status is ON or any other status
@@ -297,19 +297,19 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
             if af:
                 if time < af:
                     # Machine will be ON from 'af'
-                    print(f"  Machine will be ON from {af}")
+                    # print(f"  Machine will be ON from {af}")
                     return False, af
                 else:
                     # Machine is ON now
-                    print(f"  Machine is ON")
+                    # print(f"  Machine is ON")
                     return True, time
             else:
                 # Machine is ON with no start time specified
-                print(f"  Machine is ON (no start time specified)")
+                # print(f"  Machine is ON (no start time specified)")
                 return True, time
 
         # Any other status - default to available
-        print(f"  Machine has status {status}, defaulting to available")
+        # print(f"  Machine has status {status}, defaulting to available")
         return True, time
 
     def find_last_available_operation(operations: List[dict], current_time: datetime) -> int:
@@ -468,7 +468,7 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
             # Handle setup time
             if not operation_setup_done[operation_key]:
                 setup_end = operation_start + timedelta(minutes=setup_minutes)
-                shift_end = operation_start.replace(hour=17, minute=0, second=0, microsecond=0)
+                shift_end = operation_start.replace(hour=22, minute=0, second=0, microsecond=0)
 
                 # Check if setup crosses the shift end
                 if setup_end > shift_end:
@@ -482,7 +482,7 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
 
                     # Calculate remaining setup for next day(s)
                     next_day = shift_end + timedelta(days=1)
-                    next_start = next_day.replace(hour=9, minute=0, second=0, microsecond=0)
+                    next_start = next_day.replace(hour=6, minute=0, second=0, microsecond=0)
                     remaining_setup = setup_minutes - (shift_end - operation_start).total_seconds() / 60
 
                     # Before continuing with setup next day, check if machine will be available
@@ -499,7 +499,7 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
                                 next_start = adjust_to_shift_hours(next_available_time)
                                 print(f"Next setup will start at {next_start} when machine becomes available")
 
-                        current_shift_end = next_start.replace(hour=17, minute=0, second=0, microsecond=0)
+                        current_shift_end = next_start.replace(hour=22, minute=0, second=0, microsecond=0)
                         setup_possible = min(remaining_setup, (current_shift_end - next_start).total_seconds() / 60)
                         current_end = next_start + timedelta(minutes=setup_possible)
 
@@ -512,7 +512,7 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
 
                         remaining_setup -= setup_possible
                         if remaining_setup > 0:
-                            next_start = (current_shift_end + timedelta(days=1)).replace(hour=9, minute=0, second=0,
+                            next_start = (current_shift_end + timedelta(days=1)).replace(hour=6, minute=0, second=0,
                                                                                          microsecond=0)
 
                         current_time = current_end
@@ -533,7 +533,7 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
             # Process production
             total_processing_time = cycle_minutes * quantity
             processing_end = operation_start + timedelta(minutes=total_processing_time)
-            shift_end = operation_start.replace(hour=17, minute=0, second=0, microsecond=0)
+            shift_end = operation_start.replace(hour=22, minute=0, second=0, microsecond=0)
 
             # Function to check for machine unavailability windows within a time period
             def find_machine_off_periods(machine_id, start_time, end_time):
@@ -629,7 +629,7 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
                 remaining_pieces = quantity - cumulative_pieces[operation_key]
 
                 next_day = shift_end + timedelta(days=1)
-                next_start = next_day.replace(hour=9, minute=0, second=0, microsecond=0)
+                next_start = next_day.replace(hour=6, minute=0, second=0, microsecond=0)
 
                 # Process remaining pieces across future shifts
                 while remaining_time > 0 and remaining_pieces > 0:
@@ -645,7 +645,7 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
                             next_start = adjust_to_shift_hours(next_available_time)
                             print(f"Next processing will start at {next_start} when machine becomes available")
 
-                    current_shift_end = next_start.replace(hour=17, minute=0, second=0, microsecond=0)
+                    current_shift_end = next_start.replace(hour=22, minute=0, second=0, microsecond=0)
                     work_possible = min(remaining_time, (current_shift_end - next_start).total_seconds() / 60)
                     current_end = next_start + timedelta(minutes=work_possible)
 
@@ -720,7 +720,7 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
                         remaining_time -= work_possible
 
                     if remaining_time > 0 and remaining_pieces > 0:
-                        next_start = (current_shift_end + timedelta(days=1)).replace(hour=9, minute=0, second=0,
+                        next_start = (current_shift_end + timedelta(days=1)).replace(hour=6, minute=0, second=0,
                                                                                      microsecond=0)
 
                     current_time = current_end

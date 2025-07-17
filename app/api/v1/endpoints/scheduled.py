@@ -218,8 +218,17 @@ def store_schedule(schedule_df, component_status):
                 continue
 
             total_qty, current_qty, _ = extract_quantity(row['quantity'])
+
+            print('&'*50)
+            print(type(row['start_time']))
+            print('&'*50)
+
             start_time = row['start_time'].to_pydatetime()
             end_time = row['end_time'].to_pydatetime()
+
+
+            # start_time = row['start_time']
+            # end_time = row['end_time']
 
             # Check if this exact schedule already exists
             existing_schedule = PlannedScheduleItem.select(
@@ -1609,7 +1618,7 @@ def get_machine_utilization_by_range(
     # Calculate available hours
     # Formula: working hours (8) * working days in range * 0.85 (efficiency)
     efficiency_factor = 0.85
-    daily_working_hours = 8
+    daily_working_hours = 15
 
     # Available hours for the date range based on working days only
     available_hours = working_days * daily_working_hours * efficiency_factor

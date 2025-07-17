@@ -319,6 +319,69 @@ def create_bulk_items(bulk_items: BulkInventoryItemCreate):
         )
 
 
+# # Calibration Schedule Endpoints
+# @router.post("/calibrations/", response_model=CalibrationScheduleResponse)
+# @db_session
+# def create_calibration_schedule(calibration: CalibrationScheduleCreate):
+#     """
+#     Create a new calibration schedule.
+#
+#     Sample request:
+#     ```json
+#     {
+#         "calibration_type": "Dimensional",
+#         "frequency_days": 90,
+#         "last_calibration": "2024-01-01T00:00:00Z",
+#         "next_calibration": "2024-04-01T00:00:00Z",
+#         "remarks": "Regular calibration schedule",
+#         "inventory_item_id": 1,
+#         "created_by": 1
+#     }
+#     ```
+#     """
+#     item = InventoryItem.get(id=calibration.inventory_item_id)
+#     if not item:
+#         raise HTTPException(status_code=404, detail="Inventory item not found")
+#
+#     user = User.get(id=calibration.created_by)
+#     if not user:
+#         raise HTTPException(status_code=404, detail="User not found")
+#
+#     # Validate that next_calibration is after last_calibration
+#     if calibration.last_calibration and calibration.next_calibration <= calibration.last_calibration:
+#         raise HTTPException(
+#             status_code=400,
+#             detail="Next calibration date must be after last calibration date"
+#         )
+#
+#     new_calibration = CalibrationSchedule(
+#         inventory_item=item,
+#         calibration_type=calibration.calibration_type,
+#         frequency_days=calibration.frequency_days,
+#         last_calibration=calibration.last_calibration,
+#         next_calibration=calibration.next_calibration,
+#         remarks=calibration.remarks,
+#         created_by=user,
+#         created_at=datetime.utcnow(),
+#         updated_at=datetime.utcnow()
+#     )
+#     commit()
+#
+#     response_data = {
+#         "id": new_calibration.id,
+#         "calibration_type": new_calibration.calibration_type,
+#         "frequency_days": new_calibration.frequency_days,
+#         "last_calibration": new_calibration.last_calibration,
+#         "next_calibration": new_calibration.next_calibration,
+#         "remarks": new_calibration.remarks,
+#         "inventory_item_id": item.id,
+#         "created_at": new_calibration.created_at,
+#         "updated_at": new_calibration.updated_at,
+#         "created_by": user.id
+#     }
+#     return response_data
+
+
 # Calibration Schedule Endpoints
 @router.post("/calibrations/", response_model=CalibrationScheduleResponse)
 @db_session
@@ -339,48 +402,95 @@ def create_calibration_schedule(calibration: CalibrationScheduleCreate):
     }
     ```
     """
-    item = InventoryItem.get(id=calibration.inventory_item_id)
-    if not item:
-        raise HTTPException(status_code=404, detail="Inventory item not found")
+    try:
+        # Validate inventory item exists
+        item = InventoryItem.get(id=calibration.inventory_item_id)
+        if not item:
+            raise HTTPException(status_code=404, detail="Inventory item not found")
 
-    user = User.get(id=calibration.created_by)
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+        # Validate user exists
+        user = User.get(id=calibration.created_by)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
 
-    # Validate that next_calibration is after last_calibration
-    if calibration.last_calibration and calibration.next_calibration <= calibration.last_calibration:
-        raise HTTPException(
-            status_code=400,
-            detail="Next calibration date must be after last calibration date"
+        # Check for duplicate calibration schedule
+        existing_calibration = CalibrationSchedule.get(
+            inventory_item=item,
+            calibration_type=calibration.calibration_type
+        )
+        if existing_calibration:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Calibration schedule for {calibration.calibration_type} already exists for this item. Please update the calibration date in the calibration page."
+            )
+
+        # Validate that next_calibration is after last_calibration
+        if calibration.last_calibration and calibration.next_calibration <= calibration.last_calibration:
+            raise HTTPException(
+                status_code=400,
+                detail="Next calibration date must be after last calibration date"
+            )
+
+        # Validate frequency_days is positive
+        if calibration.frequency_days <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Frequency days must be a positive number"
+            )
+
+        # Validate calibration_type is not empty
+        if not calibration.calibration_type or calibration.calibration_type.strip() == "":
+            raise HTTPException(
+                status_code=400,
+                detail="Calibration type cannot be empty"
+            )
+
+        # Validate dates are not in the past (optional - uncomment if needed)
+        # current_date = datetime.utcnow().date()
+        # if calibration.next_calibration.date() < current_date:
+        #     raise HTTPException(
+        #         status_code=400,
+        #         detail="Next calibration date cannot be in the past"
+        #     )
+
+        # Create new calibration schedule
+        new_calibration = CalibrationSchedule(
+            inventory_item=item,
+            calibration_type=calibration.calibration_type.strip(),
+            frequency_days=calibration.frequency_days,
+            last_calibration=calibration.last_calibration,
+            next_calibration=calibration.next_calibration,
+            remarks=calibration.remarks.strip() if calibration.remarks else None,
+            created_by=user,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow()
         )
 
-    new_calibration = CalibrationSchedule(
-        inventory_item=item,
-        calibration_type=calibration.calibration_type,
-        frequency_days=calibration.frequency_days,
-        last_calibration=calibration.last_calibration,
-        next_calibration=calibration.next_calibration,
-        remarks=calibration.remarks,
-        created_by=user,
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow()
-    )
-    commit()
+        commit()
 
-    response_data = {
-        "id": new_calibration.id,
-        "calibration_type": new_calibration.calibration_type,
-        "frequency_days": new_calibration.frequency_days,
-        "last_calibration": new_calibration.last_calibration,
-        "next_calibration": new_calibration.next_calibration,
-        "remarks": new_calibration.remarks,
-        "inventory_item_id": item.id,
-        "created_at": new_calibration.created_at,
-        "updated_at": new_calibration.updated_at,
-        "created_by": user.id
-    }
-    return response_data
+        response_data = {
+            "id": new_calibration.id,
+            "calibration_type": new_calibration.calibration_type,
+            "frequency_days": new_calibration.frequency_days,
+            "last_calibration": new_calibration.last_calibration,
+            "next_calibration": new_calibration.next_calibration,
+            "remarks": new_calibration.remarks,
+            "inventory_item_id": item.id,
+            "created_at": new_calibration.created_at,
+            "updated_at": new_calibration.updated_at,
+            "created_by": user.id
+        }
+        return response_data
 
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
+    except Exception as e:
+        # Handle any unexpected errors
+        raise HTTPException(
+            status_code=500,
+            detail=f"An error occurred while creating the calibration schedule: {str(e)}"
+        )
 
 # Inventory Request Endpoints
 @router.post("/requests/", response_model=InventoryRequestResponse)
