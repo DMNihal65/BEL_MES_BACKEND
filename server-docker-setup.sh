@@ -14,12 +14,12 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Configuration (can be overridden with environment variables)
-IMAGE_NAME=${IMAGE_NAME:-"bel-fastapi-app-v2.0.7-20250602-112319"}
-CONTAINER_NAME=${CONTAINER_NAME:-"bel-fastapi-v2.0.7-20250602-112319"}
-PORT=${PORT:-"8002"}
+IMAGE_NAME=${IMAGE_NAME:-"bel-fastapi-app-v2.1.0-20250721-120222"}
+CONTAINER_NAME=${CONTAINER_NAME:-"bel-fastapi-v2.1.0-20250721-120222"}
+PORT=${PORT:-"8008"}
 BACKUP_DIR=${BACKUP_DIR:-"/home/smc/bel/backups"}
 CURRENT_DIR=${CURRENT_DIR:-"/home/smc/bel/current"}
-IMAGE_TAR=${IMAGE_TAR:-"bel-fastapi-app-v2.0.7-20250602-112319.tar"}
+IMAGE_TAR=${IMAGE_TAR:-"bel-fastapi-app-v2.1.0-20250721-120222.tar"}
 
 # Print banner
 echo -e "${BLUE}============================================${NC}"

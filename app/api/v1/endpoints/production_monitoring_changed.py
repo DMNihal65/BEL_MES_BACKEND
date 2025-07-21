@@ -17,7 +17,7 @@ from app.algorithm.scheduling import schedule_operations
 import re
 from app.models import ProductionLog
 from datetime import datetime, timedelta, date
-from typing import List, Optional, Dict, Set
+from typing import List, Optional, Dict, Set,Any
 from app.utils.production_calculations import (
     calculate_machine_uptime, calculate_machine_efficiency,
     calculate_overall_machine_utilization, calculate_cycle_time_variance,
@@ -40,6 +40,9 @@ import pandas as pd
 from fastapi.websockets import WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 import json
+import logging
+import traceback
+from websockets.exceptions import ConnectionClosed
 
 router = APIRouter(prefix="/production_monitoring", tags=["production_monitoring"])
 
@@ -800,103 +803,446 @@ async def get_live_machine_status(status=None):
 
 
 # WebSocket endpoint for live machine status
+# @router.websocket("/ws/live-status/")
+# async def websocket_live_status(websocket: WebSocket):
+#     """
+#     WebSocket endpoint for real-time machine status updates
+#     """
+#     try:
+#         await manager.connect(websocket)
+#         print(f"Client connected to WebSocket. Total connections: {len(manager.active_connections)}")
+
+#         while websocket in manager.active_connections:
+#             try:
+#                 with db_session:
+#                     # Get all machine statuses from MachineRawLive
+#                     machine_statuses = list(MachineRawLive.select().order_by(MachineRawLive.machine_id)[:])
+#                     # print(f"Found {len(machine_statuses)} machine statuses")
+
+#                     # Get machine details for the machines that have status
+#                     machine_ids = [status.machine_id for status in machine_statuses]
+#                     machines = select(m for m in Machine if m.id in machine_ids)[:]
+#                     machine_dict = {m.id: m for m in machines}
+
+#                     response_data = []
+
+#                     # Process each status
+#                     for status in machine_statuses:
+#                         try:
+#                             # Get the machine from our pre-fetched dictionary
+#                             machine = machine_dict.get(status.machine_id)
+
+#                             # Base machine data
+#                             machine_data = {
+#                                 "machine_id": status.machine_id,
+#                                 "machine_name": f"{machine.work_center.code}-{machine.make}" if machine and hasattr(
+#                                     machine, 'work_center') else f"Unknown-{status.machine_id}",
+#                                 "status": status.status.status_name,
+#                                 "program_number": status.selected_program or "",
+#                                 "active_program": status.active_program or "",
+#                                 "selected_program": status.selected_program or "",
+#                                 "part_count": status.part_count or 0,
+#                                 "job_status": status.job_status,
+#                                 "last_updated": status.timestamp.isoformat() if status.timestamp else None,
+#                                 "job_in_progress": status.job_in_progress,
+#                                 # Initialize order details with default values
+#                                 "production_order": None,
+#                                 "part_number": None,
+#                                 "part_description": None,
+#                                 "required_quantity": None,
+#                                 "launched_quantity": None,
+#                                 "operation_number": None,
+#                                 "operation_description": None
+#                             }
+
+#                             # Get order details if any of the job references are available
+#                             if status.actual_job or status.scheduled_job or status.job_in_progress:
+#                                 try:
+#                                     # Use the updated method in MachineRawLive that now prioritizes actual_job and scheduled_job
+#                                     order_details = status.get_order_details()
+#                                     if order_details:
+#                                         # print(f"Successfully found order details for machine {status.machine_id}")
+#                                         machine_data.update(order_details)
+#                                     else:
+#                                         print(f"No order details found for machine {status.machine_id}")
+#                                 except Exception as detail_error:
+#                                     # print(f"Error getting order details: {str(detail_error)}")
+#                                     import traceback
+#                                     print(traceback.format_exc())
+
+#                             response_data.append(machine_data)
+
+#                         except Exception as machine_error:
+#                             print(f"Error processing machine status: {str(machine_error)}")
+#                             continue
+
+#                     # Sort response data by machine_id to ensure consistent ordering
+#                     response_data.sort(key=lambda x: x["machine_id"])
+
+#                     if websocket in manager.active_connections and response_data:
+#                         try:
+#                             # print(f"Sending {len(response_data)} machine statuses")
+#                             await websocket.send_json(response_data)
+#                         except RuntimeError as send_error:
+#                             print(f"Error sending data: {str(send_error)}")
+#                             break
+#                         except Exception as send_error:
+#                             print(f"Unexpected error sending data: {str(send_error)}")
+#                             break
+
+#             except Exception as loop_error:
+#                 print(f"Error in WebSocket loop: {str(loop_error)}")
+#                 if "close message" in str(loop_error).lower():
+#                     break
+#                 continue
+
+#             await asyncio.sleep(5)  # Update interval is 5 seconds
+
+#     except WebSocketDisconnect:
+#         print("Client disconnected from WebSocket")
+#     except Exception as e:
+#         print(f"WebSocket error: {str(e)}")
+#     finally:
+#         if websocket in manager.active_connections:
+#             manager.disconnect(websocket)
+#             print("Cleaned up WebSocket connection")
+
+
+
+
+# BETTER WEBSOCKET WITH ERROR HANDLING AND TIMEOUTS
+
+# Configure logging
+logger = logging.getLogger(__name__)
+
 @router.websocket("/ws/live-status/")
 async def websocket_live_status(websocket: WebSocket):
     """
     WebSocket endpoint for real-time machine status updates
+    Simplified version with robust error handling
+    """
+    client_id = id(websocket)
+    connection_start_time = datetime.utcnow()
+    consecutive_errors = 0
+    max_consecutive_errors = 3
+    update_interval = 5  # seconds
+    
+    try:
+        # Connect to WebSocket manager
+        await manager.connect(websocket)
+        logger.info(f"Client {client_id} connected. Total connections: {len(manager.active_connections)}")
+        
+        # Send initial connection acknowledgment
+        try:
+            await websocket.send_json({
+                "type": "connection_established",
+                "client_id": str(client_id),
+                "timestamp": connection_start_time.isoformat(),
+                "update_interval": update_interval
+            })
+        except Exception as ack_error:
+            logger.error(f"Failed to send connection acknowledgment to client {client_id}: {str(ack_error)}")
+            return
+        
+        # Main data streaming loop
+        while True:
+            try:
+                # Check if websocket is still in active connections
+                if websocket not in manager.active_connections:
+                    logger.info(f"Client {client_id} no longer in active connections, breaking loop")
+                    break
+                
+                # Get machine status data
+                response_data = await _get_machine_status_data_safe()
+                
+                if response_data is not None:
+                    try:
+                        # Send only the list, as requested
+                        await websocket.send_json(response_data)
+                        consecutive_errors = 0
+                        logger.debug(f"Sent {len(response_data)} machine statuses to client {client_id}")
+                    except Exception as send_error:
+                        logger.error(f"Failed to send data to client {client_id}: {str(send_error)}")
+                        break
+                        
+                        
+                        
+                else:
+                    # No data but no error - send heartbeat
+                    try:
+                        await websocket.send_json({
+                            "type": "heartbeat",
+                            "timestamp": datetime.utcnow().isoformat(),
+                            "message": "No data available"
+                        })
+                    except Exception:
+                        # If heartbeat fails, connection is broken
+                        break
+                        
+            except (WebSocketDisconnect, ConnectionError) as disconnect_error:
+                logger.info(f"Client {client_id} disconnected: {str(disconnect_error)}")
+                break
+                
+            except Exception as loop_error:
+                consecutive_errors += 1
+                error_msg = str(loop_error)
+                logger.error(f"Error in WebSocket loop for client {client_id} (attempt {consecutive_errors}): {error_msg}")
+                
+                # Check for connection-related errors
+                if any(indicator in error_msg.lower() for indicator in 
+                      ['connection closed', 'websocket closed', 'broken pipe', 'connection reset']):
+                    logger.info(f"Client {client_id} connection broken (detected from error)")
+                    break
+                
+                # Circuit breaker
+                if consecutive_errors >= max_consecutive_errors:
+                    logger.error(f"Too many consecutive errors ({consecutive_errors}) for client {client_id}")
+                    try:
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": "Service temporarily unavailable",
+                            "timestamp": datetime.utcnow().isoformat()
+                        })
+                    except Exception:
+                        pass  # Connection might be broken
+                    break
+                
+                # Wait longer after errors
+                await asyncio.sleep(update_interval * 2)
+                continue
+            
+            # Regular update interval
+            await asyncio.sleep(update_interval)
+                
+    except WebSocketDisconnect:
+        logger.info(f"WebSocket disconnect event for client {client_id}")
+    except Exception as e:
+        logger.error(f"Unexpected WebSocket error for client {client_id}: {str(e)}")
+        logger.error(traceback.format_exc())
+    finally:
+        # Cleanup
+        await _cleanup_websocket_connection(websocket, client_id, connection_start_time)
+
+
+async def _get_machine_status_data_safe() -> Optional[List[Dict[str, Any]]]:
+    """
+    Safely retrieve machine status data with comprehensive error handling
     """
     try:
-        await manager.connect(websocket)
-        print(f"Client connected to WebSocket. Total connections: {len(manager.active_connections)}")
-
-        while websocket in manager.active_connections:
-            try:
-                with db_session:
-                    # Get all machine statuses from MachineRawLive
-                    machine_statuses = list(MachineRawLive.select().order_by(MachineRawLive.machine_id)[:])
-                    # Get machine details for the machines that have status
-                    machine_ids = [status.machine_id for status in machine_statuses]
-                    machines = select(m for m in Machine if m.id in machine_ids)[:]
-                    machine_dict = {m.id: m for m in machines}
-
-                    response_data = []
-
-                    # Process each status
-                    for status in machine_statuses:
-                        try:
-                            # Get the machine from our pre-fetched dictionary
-                            machine = machine_dict.get(status.machine_id)
-
-                            # Build a plain dict (no ORM objects outside session)
-                            machine_data = {
-                                "machine_id": status.machine_id,
-                                "machine_name": f"{machine.work_center.code}-{machine.make}" if machine and hasattr(machine, 'work_center') else f"Unknown-{status.machine_id}",
-                                "status": status.status.status_name,
-                                "program_number": status.selected_program or "",
-                                "active_program": status.active_program or "",
-                                "selected_program": status.selected_program or "",
-                                "part_count": status.part_count or 0,
-                                "job_status": status.job_status,
-                                "last_updated": status.timestamp.isoformat() if status.timestamp else None,
-                                "job_in_progress": status.job_in_progress,
-                                # Initialize order details with default values
-                                "production_order": None,
-                                "part_number": None,
-                                "part_description": None,
-                                "required_quantity": None,
-                                "launched_quantity": None,
-                                "operation_number": None,
-                                "operation_description": None
-                            }
-
-                            # Get order details if any of the job references are available
-                            if status.actual_job or status.scheduled_job or status.job_in_progress:
-                                try:
-                                    order_details = status.get_order_details()
-                                    if order_details:
-                                        machine_data.update(order_details)
-                                    else:
-                                        print(f"No order details found for machine {status.machine_id}")
-                                except Exception as detail_error:
-                                    import traceback
-                                    print(traceback.format_exc())
-
-                            response_data.append(machine_data)
-
-                        except Exception as machine_error:
-                            print(f"Error processing machine status: {str(machine_error)}")
-                            continue
-
-                    # Sort response data by machine_id to ensure consistent ordering
-                    response_data.sort(key=lambda x: x["machine_id"])
-
-                # Now send response_data (no ORM objects outside session)
-                if websocket in manager.active_connections and response_data:
-                    try:
-                        await websocket.send_json(response_data)
-                    except RuntimeError as send_error:
-                        print(f"Error sending data: {str(send_error)}")
-                        break
-                    except Exception as send_error:
-                        print(f"Unexpected error sending data: {str(send_error)}")
-                        break
-
-            except Exception as loop_error:
-                print(f"Error in WebSocket loop: {str(loop_error)}")
-                if "close message" in str(loop_error).lower():
-                    break
-                continue
-
-            await asyncio.sleep(5)  # Update interval is 5 seconds
-
-    except WebSocketDisconnect:
-        print("Client disconnected from WebSocket")
+        # Use asyncio timeout to prevent hanging
+        return await asyncio.wait_for(_get_machine_status_data_sync(), timeout=10.0)
+    except asyncio.TimeoutError:
+        logger.error("Database query timed out after 10 seconds")
+        return None
     except Exception as e:
-        print(f"WebSocket error: {str(e)}")
-    finally:
+        logger.error(f"Error in _get_machine_status_data_safe: {str(e)}")
+        return None
+
+
+async def _get_machine_status_data_sync() -> Optional[List[Dict[str, Any]]]:
+    """
+    Synchronous database operations wrapped for async context
+    """
+    try:
+        # Run database operations in thread pool to avoid blocking
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, _fetch_machine_data_from_db)
+    except Exception as e:
+        logger.error(f"Error in database executor: {str(e)}")
+        return None
+
+
+def _fetch_machine_data_from_db() -> Optional[List[Dict[str, Any]]]:
+    """
+    Fetch machine data from database (runs in thread pool)
+    All ORM attribute access and data extraction must happen inside db_session.
+    """
+    try:
+        with db_session:
+            machine_statuses = list(
+                MachineRawLive.select()
+                .order_by(MachineRawLive.machine_id)
+                .limit(500)
+            )
+            if not machine_statuses:
+                logger.debug("No machine statuses found in database")
+                return []
+            machine_ids = [status.machine_id for status in machine_statuses]
+            machines = list(select(m for m in Machine if m.id in machine_ids))
+            machine_dict = {m.id: m for m in machines}
+            response_data = []
+            for status in machine_statuses:
+                try:
+                    machine_id = status.machine_id
+                    machine = machine_dict.get(machine_id)
+                    if machine and hasattr(machine, 'work_center') and machine.work_center:
+                        machine_name = f"{machine.work_center.code}-{machine.make}"
+                    else:
+                        machine_name = f"Machine-{machine_id}"
+                    machine_data = {
+                        "machine_id": machine_id,
+                        "machine_name": machine_name,
+                        "status": status.status.status_name if status.status else "Unknown",
+                        "program_number": status.selected_program or "",
+                        "active_program": status.active_program or "",
+                        "selected_program": status.selected_program or "",
+                        "part_count": status.part_count or 0,
+                        "job_status": status.job_status,
+                        "last_updated": status.timestamp.isoformat() if status.timestamp else None,
+                        "job_in_progress": status.job_in_progress,
+                        "production_order": None,
+                        "part_number": None,
+                        "part_description": None,
+                        "required_quantity": None,
+                        "launched_quantity": None,
+                        "operation_number": None,
+                        "operation_description": None
+                    }
+                    # Get order details if any of the job references are available
+                    if status.actual_job or status.scheduled_job or status.job_in_progress:
+                        try:
+                            order_details = status.get_order_details()
+                            if order_details:
+                                machine_data.update(order_details)
+                        except Exception as e:
+                            logger.debug(f"Could not get order details for machine {machine_id}: {str(e)}")
+                    response_data.append(machine_data)
+                except Exception as machine_error:
+                    logger.warning(f"Skipping machine {getattr(status, 'machine_id', 'unknown')}: {str(machine_error)}")
+                    continue
+            response_data.sort(key=lambda x: x.get("machine_id", 0))
+            logger.debug(f"Successfully processed {len(response_data)} machines")
+            return response_data
+    except Exception as db_error:
+        logger.error(f"Database error: {str(db_error)}")
+        return None
+
+
+def _process_single_machine_status(status, machine_dict: Dict) -> Optional[Dict[str, Any]]:
+    """
+    Process a single machine status record safely
+    """
+    try:
+        machine_id = getattr(status, 'machine_id', None)
+        if machine_id is None:
+            return None
+            
+        machine = machine_dict.get(machine_id)
+        
+        # Build machine name safely
+        try:
+            if machine and hasattr(machine, 'work_center') and machine.work_center:
+                machine_name = f"{machine.work_center.code}-{machine.make}"
+            else:
+                machine_name = f"Machine-{machine_id}"
+        except Exception:
+            machine_name = f"Machine-{machine_id}"
+        
+        # Build base data with safe attribute access
+        machine_data = {
+            "machine_id": machine_id,
+            "machine_name": machine_name,
+            "status": _safe_get_status_name(status),
+            "program_number": getattr(status, 'selected_program', None) or "",
+            "active_program": getattr(status, 'active_program', None) or "",
+            "selected_program": getattr(status, 'selected_program', None) or "",
+            "part_count": getattr(status, 'part_count', None) or 0,
+            "job_status": getattr(status, 'job_status', None),
+            "last_updated": _safe_get_timestamp(status),
+            "job_in_progress": getattr(status, 'job_in_progress', None),
+            # Order details - initialized as None
+            "production_order": None,
+            "part_number": None,
+            "part_description": None,
+            "required_quantity": None,
+            "launched_quantity": None,
+            "operation_number": None,
+            "operation_description": None
+        }
+        
+        # Try to get order details
+        try:
+            if (getattr(status, 'actual_job', None) or 
+                getattr(status, 'scheduled_job', None) or 
+                getattr(status, 'job_in_progress', None)):
+                
+                if hasattr(status, 'get_order_details'):
+                    order_details = status.get_order_details()
+                    if order_details and isinstance(order_details, dict):
+                        machine_data.update(order_details)
+                        
+        except Exception as order_error:
+            logger.debug(f"Could not get order details for machine {machine_id}: {str(order_error)}")
+            # Continue without order details
+        
+        return machine_data
+        
+    except Exception as e:
+        logger.error(f"Error processing machine status: {str(e)}")
+        return None
+
+
+def _safe_get_status_name(status) -> str:
+    """Safely get status name from status object"""
+    try:
+        if hasattr(status, 'status') and status.status:
+            return getattr(status.status, 'status_name', 'Unknown')
+        return 'Unknown'
+    except Exception:
+        return 'Unknown'
+
+
+def _safe_get_timestamp(status) -> Optional[str]:
+    """Safely get timestamp as ISO string"""
+    try:
+        timestamp = getattr(status, 'timestamp', None)
+        if timestamp:
+            return timestamp.isoformat()
+        return None
+    except Exception:
+        return None
+
+
+async def _cleanup_websocket_connection(websocket: WebSocket, client_id: int, connection_start_time: datetime):
+    """Clean up WebSocket connection"""
+    try:
+        connection_duration = datetime.utcnow() - connection_start_time
+        
+        # Remove from manager
         if websocket in manager.active_connections:
             manager.disconnect(websocket)
-            print("Cleaned up WebSocket connection")
+            
+        logger.info(f"Cleaned up client {client_id}. "
+                   f"Duration: {connection_duration.total_seconds():.1f}s. "
+                   f"Remaining: {len(manager.active_connections)}")
+        
+    except Exception as cleanup_error:
+        logger.error(f"Error during cleanup for client {client_id}: {str(cleanup_error)}")
+
+
+# Health check endpoint
+@router.get("/health/websocket-status")
+async def websocket_health_check():
+    """Simple health check for WebSocket service"""
+    try:
+        active_connections = len(manager.active_connections) if hasattr(manager, 'active_connections') else 0
+        
+        # Quick database test
+        with db_session:
+            machine_count = MachineRawLive.select().count()
+            
+        return {
+            "status": "healthy",
+            "active_connections": active_connections,
+            "machine_count": machine_count,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        return {
+            "status": "unhealthy", 
+            "error": str(e),
+            "timestamp": datetime.utcnow().isoformat()
+        }
 
 
 # Machine History and Analytics

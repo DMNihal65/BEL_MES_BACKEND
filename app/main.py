@@ -1,5 +1,10 @@
+import threading
+import time
+import psutil
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi import Request
+from fastapi.responses import JSONResponse
 from .database.connection import connect_to_db
 from .routes import hr_routes, finance_routes, master_order_routes, pokayoke
 from .api.v1.endpoints import document_management, inventoryv1, priority_scheduling, pdc, operator_log
@@ -67,6 +72,48 @@ app.include_router(document_management_v2.router, prefix="/api/v1/document-manag
 # app.include_router(inventoryv1.router, prefix="/api/v1")
 app.include_router(production_monitoring.router, tags=["production_monitoring"])
 app.include_router(toolsprograms.router)
+
+
+# Global metrics storage (thread-safe)
+metrics_lock = threading.Lock()
+endpoint_metrics = {}
+
+@app.middleware("http")
+async def performance_monitoring_middleware(request: Request, call_next):
+    endpoint = request.url.path
+    start_time = time.time()
+    start_cpu = psutil.Process().cpu_times().user
+    response = await call_next(request)
+    end_time = time.time()
+    end_cpu = psutil.Process().cpu_times().user
+    duration = end_time - start_time
+    cpu_time = end_cpu - start_cpu
+    with metrics_lock:
+        if endpoint not in endpoint_metrics:
+            endpoint_metrics[endpoint] = {
+                "count": 0,
+                "total_duration": 0.0,
+                "total_cpu_time": 0.0
+            }
+        endpoint_metrics[endpoint]["count"] += 1
+        endpoint_metrics[endpoint]["total_duration"] += duration
+        endpoint_metrics[endpoint]["total_cpu_time"] += cpu_time
+    return response
+
+@app.get("/performance")
+def get_performance_metrics():
+    with metrics_lock:
+        stats = {}
+        for endpoint, data in endpoint_metrics.items():
+            count = data["count"]
+            stats[endpoint] = {
+                "count": count,
+                "total_duration": data["total_duration"],
+                "avg_duration": data["total_duration"] / count if count else 0,
+                "total_cpu_time": data["total_cpu_time"],
+                "avg_cpu_time": data["total_cpu_time"] / count if count else 0
+            }
+    return JSONResponse(content=stats)
 
 
 @app.get("/")
