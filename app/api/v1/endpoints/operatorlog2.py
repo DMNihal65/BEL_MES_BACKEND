@@ -249,7 +249,7 @@ def create_production_log(log_data: ProductionLogCreate):
         id=new_log.id,
         operator_id=new_log.operator.id,
         operation_id=new_log.operation.id,
-        machine_id=new_log.machine_id,
+        machine_id=new_log.machine.id if new_log.machine else None,
         start_time=new_log.start_time,
         end_time=new_log.end_time,
         quantity_completed=new_log.quantity_completed,

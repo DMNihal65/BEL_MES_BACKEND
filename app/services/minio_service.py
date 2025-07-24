@@ -62,17 +62,7 @@ class MinioService:
                 object_name=object_name
             )
             
-            # Create a BytesIO object to store the file data
-            file_data = BytesIO()
-            
-            # Read the data in chunks and write to BytesIO
-            for d in data.stream(32*1024):
-                file_data.write(d)
-            
-            # Reset the pointer to the beginning of the file
-            file_data.seek(0)
-            
-            return file_data
+            return data.stream(32*1024)
         except S3Error as e:
             raise Exception(f"Failed to download file: {str(e)}")
 
