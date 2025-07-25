@@ -1522,37 +1522,140 @@ async def get_production_kpi_dashboard(
         )
 
 
+# @router.get("/machine-oee-analysis/{machine_id}", response_model=MachineOEEAnalysis)
+# async def get_machine_oee_analysis(
+#         machine_id: int,
+#         start_date: datetime = Query(default=None),
+#         end_date: datetime = Query(default=None),
+#         shift: Optional[int] = Query(None, description="Filter by shift number")
+# ):
+#     """Get OEE analysis for a specific machine"""
+#     try:
+#         with db_session:
+#             # Import the correct model
+#             from app.models.production import ShiftSummary
+
+#             if not start_date:
+#                 start_date = datetime.utcnow() - timedelta(days=30)  # Default to last 30 days
+#             if not end_date:
+#                 end_date = datetime.utcnow()
+#             # --- IST (UTC+5:30) end_date logic ---
+#             ist_offset = timedelta(hours=5, minutes=30)
+#             now_ist = datetime.utcnow() + ist_offset
+#             if isinstance(end_date, datetime):
+#                 end_date_ist = end_date + ist_offset
+#                 if end_date_ist.date() == now_ist.date():
+#                     # If end_date is today in IST, set to current IST time
+#                     end_date_ist = now_ist
+#                 elif end_date_ist.time() == datetime.min.time():
+#                     # If end_date is not today and time is 00:00:00, set to end of day in IST
+#                     end_date_ist = end_date_ist.replace(hour=23, minute=59, second=59, microsecond=999999)
+#                 # Convert back to UTC for DB queries
+#                 end_date = end_date_ist - ist_offset
+#             # --- End IST logic ---
+
+#             # Get machine details
+#             machine = Machine.get(id=machine_id)
+#             if not machine:
+#                 raise HTTPException(status_code=404, detail="Machine not found")
+
+#             machine_name = f"{machine.work_center.code}-{machine.make}"
+
+#             # Get shift summaries for the period
+#             query = select(s for s in ShiftSummary
+#                            if s.machine_id == machine_id
+#                            and s.timestamp >= start_date
+#                            and s.timestamp <= end_date)
+
+#             if shift is not None:
+#                 query = query.filter(lambda s: s.shift == shift)
+
+#             summaries = query[:]
+
+#             if not summaries:
+#                 # Return default values if no data
+#                 return MachineOEEAnalysis(
+#                     machine_id=machine_id,
+#                     machine_name=machine_name,
+#                     average_oee=0.0,
+#                     average_availability=0.0,
+#                     average_performance=0.0,
+#                     average_quality=0.0,
+#                     oee_trends=[],
+#                     losses=OEELosses(
+#                         availability_loss=0.0,
+#                         performance_loss=0.0,
+#                         quality_loss=0.0
+#                     )
+#                 )
+
+#             # Calculate averages
+#             count = len(summaries)
+#             total_oee = sum(float(s.oee or 0) for s in summaries)
+#             total_availability = sum(float(s.availability or 0) for s in summaries)
+#             total_performance = sum(float(s.performance or 0) for s in summaries)
+#             total_quality = sum(float(s.quality or 0) for s in summaries)
+
+#             # Calculate losses
+#             avg_availability_loss = sum(float(s.availability_loss or 0) for s in summaries) / count if count > 0 else 0
+#             avg_performance_loss = sum(float(s.performance_loss or 0) for s in summaries) / count if count > 0 else 0
+#             avg_quality_loss = sum(float(s.quality_loss or 0) for s in summaries) / count if count > 0 else 0
+
+#             # Create OEE trends
+#             oee_trends = []
+#             for summary in summaries:
+#                 oee_trends.append(OEETrend(
+#                     date=summary.timestamp.date(),
+#                     availability=float(summary.availability or 0),
+#                     performance=float(summary.performance or 0),
+#                     quality=float(summary.quality or 0),
+#                     oee=float(summary.oee or 0)
+#                 ))
+
+#             return MachineOEEAnalysis(
+#                 machine_id=machine_id,
+#                 machine_name=machine_name,
+#                 average_oee=total_oee / count if count > 0 else 0.0,
+#                 average_availability=total_availability / count if count > 0 else 0.0,
+#                 average_performance=total_performance / count if count > 0 else 0.0,
+#                 average_quality=total_quality / count if count > 0 else 0.0,
+#                 oee_trends=oee_trends,
+#                 losses=OEELosses(
+#                     availability_loss=avg_availability_loss,
+#                     performance_loss=avg_performance_loss,
+#                     quality_loss=avg_quality_loss
+#                 )
+#             )
+
+#     except Exception as e:
+#         print(f"Error in get_machine_oee_analysis: {str(e)}")
+#         import traceback
+#         print(traceback.format_exc())
+#         raise HTTPException(
+#             status_code=500,
+#             detail=f"Error getting machine OEE analysis: {str(e)}"
+#         )
+
+
+
 @router.get("/machine-oee-analysis/{machine_id}", response_model=MachineOEEAnalysis)
 async def get_machine_oee_analysis(
         machine_id: int,
-        start_date: datetime = Query(default=None),
-        end_date: datetime = Query(default=None),
-        shift: Optional[int] = Query(None, description="Filter by shift number")
+        date: datetime = Query(default=None, description="Date for analysis (YYYY-MM-DD)"),
+        shift: Optional[str] = Query("all", description="Filter by shift: '1', '2', '3', or 'all'")
 ):
-    """Get OEE analysis for a specific machine"""
+    """Get OEE analysis for a specific machine for a specific date"""
     try:
         with db_session:
-            # Import the correct model
             from app.models.production import ShiftSummary
 
-            if not start_date:
-                start_date = datetime.utcnow() - timedelta(days=30)  # Default to last 30 days
-            if not end_date:
-                end_date = datetime.utcnow()
-            # --- IST (UTC+5:30) end_date logic ---
-            ist_offset = timedelta(hours=5, minutes=30)
-            now_ist = datetime.utcnow() + ist_offset
-            if isinstance(end_date, datetime):
-                end_date_ist = end_date + ist_offset
-                if end_date_ist.date() == now_ist.date():
-                    # If end_date is today in IST, set to current IST time
-                    end_date_ist = now_ist
-                elif end_date_ist.time() == datetime.min.time():
-                    # If end_date is not today and time is 00:00:00, set to end of day in IST
-                    end_date_ist = end_date_ist.replace(hour=23, minute=59, second=59, microsecond=999999)
-                # Convert back to UTC for DB queries
-                end_date = end_date_ist - ist_offset
-            # --- End IST logic ---
+            # Set date to today if not provided
+            if not date:
+                date = datetime.utcnow()
+            
+            # Set start and end times for the entire day
+            start_date = date.replace(hour=0, minute=0, second=0, microsecond=0)
+            end_date = date.replace(hour=23, minute=59, second=59, microsecond=999999)
 
             # Get machine details
             machine = Machine.get(id=machine_id)
@@ -1561,19 +1664,23 @@ async def get_machine_oee_analysis(
 
             machine_name = f"{machine.work_center.code}-{machine.make}"
 
-            # Get shift summaries for the period
+            # Get shift summaries for the machine and date
             query = select(s for s in ShiftSummary
                            if s.machine_id == machine_id
                            and s.timestamp >= start_date
                            and s.timestamp <= end_date)
 
-            if shift is not None:
-                query = query.filter(lambda s: s.shift == shift)
+            # Add shift filter if not 'all'
+            if shift and shift.lower() != 'all':
+                try:
+                    shift_number = int(shift)
+                    query = query.filter(lambda s: s.shift == shift_number)
+                except ValueError:
+                    raise HTTPException(status_code=400, detail="Shift must be '1', '2', '3', or 'all'")
 
             summaries = query[:]
 
             if not summaries:
-                # Return default values if no data
                 return MachineOEEAnalysis(
                     machine_id=machine_id,
                     machine_name=machine_name,
@@ -1601,7 +1708,7 @@ async def get_machine_oee_analysis(
             avg_performance_loss = sum(float(s.performance_loss or 0) for s in summaries) / count if count > 0 else 0
             avg_quality_loss = sum(float(s.quality_loss or 0) for s in summaries) / count if count > 0 else 0
 
-            # Create OEE trends
+            # Create OEE trends for each shift
             oee_trends = []
             for summary in summaries:
                 oee_trends.append(OEETrend(
@@ -1637,114 +1744,201 @@ async def get_machine_oee_analysis(
         )
 
 
+# @router.get("/detailed-shift-summary/", response_model=List[DetailedShiftSummary])
+# async def get_detailed_shift_summary(
+#         start_date: datetime = Query(default=None),
+#         end_date: datetime = Query(default=None),
+#         shift: Optional[int] = Query(None, description="Filter by shift number"),
+#         machine_id: Optional[int] = Query(None, description="Filter by machine ID")
+# ):
+#     """Get detailed shift summary with OEE metrics and loss analysis for all machines"""
+#     try:
+#         with db_session:
+#             # Import the correct models
+#             from app.models.production import ShiftSummary, ShiftInfo
+
+#             # If no dates provided, use current date
+#             current_datetime = datetime.utcnow()
+#             if not start_date:
+#                 start_date = current_datetime.replace(hour=0, minute=0, second=0, microsecond=0)
+#             if not end_date:
+#                 end_date = current_datetime
+
+#             # Get current shift if not specified
+#             if not shift:
+#                 # Get all shift timings
+#                 shifts = select(s for s in ShiftInfo).order_by(ShiftInfo.start_time)[:]
+#                 current_time = current_datetime.time()
+
+#                 # Find current shift
+#                 current_shift = None
+#                 for i, shift_info in enumerate(shifts, 1):
+#                     shift_start = shift_info.start_time
+#                     shift_end = shift_info.end_time
+
+#                     # Handle shifts that cross midnight
+#                     if shift_end < shift_start:
+#                         # If current time is after start or before end, it's this shift
+#                         if current_time >= shift_start or current_time < shift_end:
+#                             current_shift = i
+#                             break
+#                     else:
+#                         # Normal shift within same day
+#                         if shift_start <= current_time < shift_end:
+#                             current_shift = i
+#                             break
+
+#                 shift = current_shift if current_shift else 1
+
+#             # Get all machines if no specific machine_id provided
+#             machines = select(m for m in Machine)[:] if machine_id is None else [Machine.get(id=machine_id)]
+            
+#             # Initialize summaries list
+#             summaries = []
+            
+#             # Process each machine
+#             for machine in machines:
+#                 # Get data for all shifts in the date range
+#                 query = select(s for s in ShiftSummary
+#                                if s.timestamp >= start_date
+#                                and s.timestamp <= end_date
+#                                and s.machine_id == machine.id)
+
+#                 machine_summaries = list(query)  # Get all matching records instead of just the first one
+
+#                 # If no summaries exist, create default value for the start date
+#                 if not machine_summaries:
+#                     summaries.append(DetailedShiftSummary(
+#                         date=start_date.date(),
+#                         shift=shift,
+#                         machine_id=machine.id,
+#                         machine_name=f"{machine.work_center.code}-{machine.make}",
+#                         production_time="00:00:00",
+#                         idle_time="00:00:00",
+#                         off_time="00:00:00",
+#                         total_parts=0,
+#                         good_parts=0,
+#                         bad_parts=0,
+#                         oee_metrics=OEEMetrics(
+#                             availability=0.0,
+#                             performance=0.0,
+#                             quality=0.0,
+#                             oee=0.0
+#                         ),
+#                         loss_analysis=LossAnalysis(
+#                             availability_loss=0.0,
+#                             performance_loss=0.0,
+#                             quality_loss=0.0
+#                         )
+#                     ))
+#                 else:
+#                     # Process all machine summaries for the date range
+#                     for machine_summary in machine_summaries:
+#                         summaries.append(DetailedShiftSummary(
+#                             date=machine_summary.timestamp.date(),
+#                             shift=machine_summary.shift,
+#                             machine_id=machine_summary.machine_id,
+#                             machine_name=f"{machine.work_center.code}-{machine.make}",
+#                             production_time=str(
+#                                 machine_summary.production_time) if machine_summary.production_time else "00:00:00",
+#                             idle_time=str(machine_summary.idle_time) if machine_summary.idle_time else "00:00:00",
+#                             off_time=str(machine_summary.off_time) if machine_summary.off_time else "00:00:00",
+#                             total_parts=machine_summary.total_parts or 0,
+#                             good_parts=machine_summary.good_parts or 0,
+#                             bad_parts=machine_summary.bad_parts or 0,
+#                             oee_metrics=OEEMetrics(
+#                                 availability=float(machine_summary.availability or 0),
+#                                 performance=float(machine_summary.performance or 0),
+#                                 quality=float(machine_summary.quality or 0),
+#                                 oee=float(machine_summary.oee or 0)
+#                             ),
+#                             loss_analysis=LossAnalysis(
+#                                 availability_loss=float(machine_summary.availability_loss or 0),
+#                                 performance_loss=float(machine_summary.performance_loss or 0),
+#                                 quality_loss=float(machine_summary.quality_loss or 0)
+#                             )
+#                         ))
+
+#             return summaries
+
+#     except Exception as e:
+#         print(f"Error in get_detailed_shift_summary: {str(e)}")
+#         import traceback
+#         print(traceback.format_exc())
+#         raise HTTPException(
+#             status_code=500,
+#             detail=f"Error getting shift summary: {str(e)}"
+#         )
+
+
+
 @router.get("/detailed-shift-summary/", response_model=List[DetailedShiftSummary])
 async def get_detailed_shift_summary(
-        start_date: datetime = Query(default=None),
-        end_date: datetime = Query(default=None),
-        shift: Optional[int] = Query(None, description="Filter by shift number"),
+        date: datetime = Query(default=None, description="Date for analysis (YYYY-MM-DD)"),
+        shift: Optional[str] = Query("all", description="Filter by shift: '1', '2', '3', or 'all'"),
         machine_id: Optional[int] = Query(None, description="Filter by machine ID")
 ):
-    """Get detailed shift summary with OEE metrics and loss analysis for all machines"""
+    """Get detailed shift summary with OEE metrics and loss analysis for machines that have data in shift summary"""
     try:
         with db_session:
-            # Import the correct models
-            from app.models.production import ShiftSummary, ShiftInfo
+            from app.models.production import ShiftSummary
 
-            # If no dates provided, use current date
-            current_datetime = datetime.utcnow()
-            if not start_date:
-                start_date = current_datetime.replace(hour=0, minute=0, second=0, microsecond=0)
-            if not end_date:
-                end_date = current_datetime
+            # Set date to today if not provided
+            if not date:
+                date = datetime.utcnow()
+            
+            # Set start and end times for the entire day
+            start_date = date.replace(hour=0, minute=0, second=0, microsecond=0)
+            end_date = date.replace(hour=23, minute=59, second=59, microsecond=999999)
 
-            # Get current shift if not specified
-            if not shift:
-                # Get all shift timings
-                shifts = select(s for s in ShiftInfo).order_by(ShiftInfo.start_time)[:]
-                current_time = current_datetime.time()
+            # Build base query
+            query = select(s for s in ShiftSummary
+                           if s.timestamp >= start_date
+                           and s.timestamp <= end_date)
 
-                # Find current shift
-                current_shift = None
-                for i, shift_info in enumerate(shifts, 1):
-                    shift_start = shift_info.start_time
-                    shift_end = shift_info.end_time
+            # Add machine filter if provided
+            if machine_id:
+                query = query.filter(lambda s: s.machine_id == machine_id)
 
-                    # Handle shifts that cross midnight
-                    if shift_end < shift_start:
-                        # If current time is after start or before end, it's this shift
-                        if current_time >= shift_start or current_time < shift_end:
-                            current_shift = i
-                            break
-                    else:
-                        # Normal shift within same day
-                        if shift_start <= current_time < shift_end:
-                            current_shift = i
-                            break
+            # Add shift filter if not 'all'
+            if shift and shift.lower() != 'all':
+                try:
+                    shift_number = int(shift)
+                    query = query.filter(lambda s: s.shift == shift_number)
+                except ValueError:
+                    raise HTTPException(status_code=400, detail="Shift must be '1', '2', '3', or 'all'")
 
-                shift = current_shift if current_shift else 1
+            summaries_data = query[:]
 
-            # Get all machines if no specific machine_id provided
-            machines = select(m for m in Machine)[:] if machine_id is None else [Machine.get(id=machine_id)]
+            if not summaries_data:
+                return []
 
+            # Process summaries and get machine details
             summaries = []
-            for machine in machines:
-                # Get shift summary for this machine
-                query = select(s for s in ShiftSummary
-                               if s.timestamp >= start_date
-                               and s.timestamp <= end_date
-                               and s.machine_id == machine.id
-                               and s.shift == shift)
-
-                machine_summary = query.first()
-
-                # If no summary exists, create default values
-                if not machine_summary:
+            for summary in summaries_data:
+                machine = Machine.get(id=summary.machine_id)
+                if machine:  # Only include if machine exists
                     summaries.append(DetailedShiftSummary(
-                        date=start_date.date(),
-                        shift=shift,
-                        machine_id=machine.id,
+                        date=summary.timestamp.date(),
+                        shift=summary.shift,
+                        machine_id=summary.machine_id,
                         machine_name=f"{machine.work_center.code}-{machine.make}",
-                        production_time="00:00:00",
-                        idle_time="00:00:00",
-                        off_time="00:00:00",
-                        total_parts=0,
-                        good_parts=0,
-                        bad_parts=0,
+                        production_time=str(summary.production_time) if summary.production_time else "00:00:00",
+                        idle_time=str(summary.idle_time) if summary.idle_time else "00:00:00",
+                        off_time=str(summary.off_time) if summary.off_time else "00:00:00",
+                        total_parts=summary.total_parts or 0,
+                        good_parts=summary.good_parts or 0,
+                        bad_parts=summary.bad_parts or 0,
                         oee_metrics=OEEMetrics(
-                            availability=0.0,
-                            performance=0.0,
-                            quality=0.0,
-                            oee=0.0
+                            availability=float(summary.availability or 0),
+                            performance=float(summary.performance or 0),
+                            quality=float(summary.quality or 0),
+                            oee=float(summary.oee or 0)
                         ),
                         loss_analysis=LossAnalysis(
-                            availability_loss=0.0,
-                            performance_loss=0.0,
-                            quality_loss=0.0
-                        )
-                    ))
-                else:
-                    summaries.append(DetailedShiftSummary(
-                        date=machine_summary.timestamp.date(),
-                        shift=machine_summary.shift,
-                        machine_id=machine_summary.machine_id,
-                        machine_name=f"{machine.work_center.code}-{machine.make}",
-                        production_time=str(
-                            machine_summary.production_time) if machine_summary.production_time else "00:00:00",
-                        idle_time=str(machine_summary.idle_time) if machine_summary.idle_time else "00:00:00",
-                        off_time=str(machine_summary.off_time) if machine_summary.off_time else "00:00:00",
-                        total_parts=machine_summary.total_parts or 0,
-                        good_parts=machine_summary.good_parts or 0,
-                        bad_parts=machine_summary.bad_parts or 0,
-                        oee_metrics=OEEMetrics(
-                            availability=float(machine_summary.availability or 0),
-                            performance=float(machine_summary.performance or 0),
-                            quality=float(machine_summary.quality or 0),
-                            oee=float(machine_summary.oee or 0)
-                        ),
-                        loss_analysis=LossAnalysis(
-                            availability_loss=float(machine_summary.availability_loss or 0),
-                            performance_loss=float(machine_summary.performance_loss or 0),
-                            quality_loss=float(machine_summary.quality_loss or 0)
+                            availability_loss=float(summary.availability_loss or 0),
+                            performance_loss=float(summary.performance_loss or 0),
+                            quality_loss=float(summary.quality_loss or 0)
                         )
                     ))
 
@@ -1758,7 +1952,6 @@ async def get_detailed_shift_summary(
             status_code=500,
             detail=f"Error getting shift summary: {str(e)}"
         )
-
 
 @router.get("/machine-status-timeline/{machine_id}")
 async def get_machine_status_timeline(
@@ -2171,63 +2364,273 @@ async def get_all_machines_status_timeline(
         )
 
 
+# @router.get("/overall-oee-analytics/", response_model=OverallOEEAnalysis)
+# async def get_overall_oee_analytics(
+#         start_date: datetime = Query(default=None),
+#         end_date: datetime = Query(default=None),
+#         shift: Optional[int] = Query(None, description="Filter by shift number")
+# ):
+#     """
+#     Get overall OEE analytics for the entire factory across all machines.
+#     If no dates are provided, shows the last day's data.
+#     If no shift is provided, calculates for all shifts.
+
+#     Returns:
+#     - Overall OEE, availability, performance, and quality metrics
+#     - Daily trends
+#     - Loss analysis
+#     - Production totals
+#     """
+#     try:
+#         with db_session:
+#             # Import the correct models
+#             from app.models.production import ShiftSummary
+
+#             # Default to previous day to current day if no dates provided
+#             if not start_date:
+#                 start_date = (datetime.utcnow() - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+#             if not end_date:
+#                 end_date = datetime.utcnow()
+#             # --- IST (UTC+5:30) end_date logic ---
+#             ist_offset = timedelta(hours=5, minutes=30)
+#             now_ist = datetime.utcnow() + ist_offset
+#             if isinstance(end_date, datetime):
+#                 end_date_ist = end_date + ist_offset
+#                 if end_date_ist.date() == now_ist.date():
+#                     # If end_date is today in IST, set to current IST time
+#                     end_date_ist = now_ist
+#                 elif end_date_ist.time() == datetime.min.time():
+#                     # If end_date is not today and time is 00:00:00, set to end of day in IST
+#                     end_date_ist = end_date_ist.replace(hour=23, minute=59, second=59, microsecond=999999)
+#                 # Convert back to UTC for DB queries
+#                 end_date = end_date_ist - ist_offset
+#             # --- End IST logic ---
+
+#             # print(f"\n=== Debug: Calculating overall OEE for period {start_date} to {end_date} ===")
+
+#             # Build query for shift summaries
+#             query = select(s for s in ShiftSummary
+#                            if s.timestamp >= start_date
+#                            and s.timestamp <= end_date)
+
+#             if shift is not None:
+#                 query = query.filter(lambda s: s.shift == shift)
+#                 print(f"Filtering for shift {shift}")
+
+#             summaries = query[:]
+
+#             if not summaries:
+#                 # Return default values if no data
+#                 return OverallOEEAnalysis(
+#                     period_start=start_date,
+#                     period_end=end_date,
+#                     overall_oee=0.0,
+#                     overall_availability=0.0,
+#                     overall_performance=0.0,
+#                     overall_quality=0.0,
+#                     shift_breakdown=[],
+#                     daily_trends=[],
+#                     losses=OEELosses(
+#                         availability_loss=0.0,
+#                         performance_loss=0.0,
+#                         quality_loss=0.0
+#                     ),
+#                     total_production=0,
+#                     total_good_parts=0,
+#                     total_bad_parts=0,
+#                     machine_count=0
+#                 )
+
+#             # print(f"Found {len(summaries)} shift summary records")
+
+#             # Calculate overall metrics
+#             total_oee = sum(float(s.oee or 0) for s in summaries)
+#             total_availability = sum(float(s.availability or 0) for s in summaries)
+#             total_performance = sum(float(s.performance or 0) for s in summaries)
+#             total_quality = sum(float(s.quality or 0) for s in summaries)
+
+#             total_availability_loss = sum(float(s.availability_loss or 0) for s in summaries)
+#             total_performance_loss = sum(float(s.performance_loss or 0) for s in summaries)
+#             total_quality_loss = sum(float(s.quality_loss or 0) for s in summaries)
+
+#             total_parts = sum(s.total_parts or 0 for s in summaries)
+#             total_good_parts = sum(s.good_parts or 0 for s in summaries)
+#             total_bad_parts = sum(s.bad_parts or 0 for s in summaries)
+
+#             # Count unique machines
+#             unique_machines = set(s.machine_id for s in summaries)
+#             machine_count = len(unique_machines)
+
+#             # Calculate averages
+#             record_count = len(summaries)
+#             avg_oee = total_oee / record_count if record_count > 0 else 0
+#             avg_availability = total_availability / record_count if record_count > 0 else 0
+#             avg_performance = total_performance / record_count if record_count > 0 else 0
+#             avg_quality = total_quality / record_count if record_count > 0 else 0
+
+#             avg_availability_loss = total_availability_loss / record_count if record_count > 0 else 0
+#             avg_performance_loss = total_performance_loss / record_count if record_count > 0 else 0
+#             avg_quality_loss = total_quality_loss / record_count if record_count > 0 else 0
+
+#             # Create shift breakdown if no specific shift was requested
+#             shift_breakdown = []
+#             if shift is None:
+#                 # Group by shift
+#                 shift_data = {}
+#                 for s in summaries:
+#                     if s.shift not in shift_data:
+#                         shift_data[s.shift] = {
+#                             "shift": s.shift,
+#                             "total_oee": 0,
+#                             "total_availability": 0,
+#                             "total_performance": 0,
+#                             "total_quality": 0,
+#                             "count": 0,
+#                             "total_parts": 0,
+#                             "good_parts": 0,
+#                             "bad_parts": 0
+#                         }
+
+#                     shift_data[s.shift]["total_oee"] += float(s.oee or 0)
+#                     shift_data[s.shift]["total_availability"] += float(s.availability or 0)
+#                     shift_data[s.shift]["total_performance"] += float(s.performance or 0)
+#                     shift_data[s.shift]["total_quality"] += float(s.quality or 0)
+#                     shift_data[s.shift]["count"] += 1
+#                     shift_data[s.shift]["total_parts"] += s.total_parts or 0
+#                     shift_data[s.shift]["good_parts"] += s.good_parts or 0
+#                     shift_data[s.shift]["bad_parts"] += s.bad_parts or 0
+
+#                 # Calculate averages for each shift
+#                 for shift_id, data in shift_data.items():
+#                     count = data["count"]
+#                     if count > 0:
+#                         shift_breakdown.append({
+#                             "shift": shift_id,
+#                             "oee": data["total_oee"] / count,
+#                             "availability": data["total_availability"] / count,
+#                             "performance": data["total_performance"] / count,
+#                             "quality": data["total_quality"] / count,
+#                             "total_parts": data["total_parts"],
+#                             "good_parts": data["good_parts"],
+#                             "bad_parts": data["bad_parts"]
+#                         })
+
+#             # Create daily trends
+#             daily_trends = []
+#             date_data = {}
+
+#             for s in summaries:
+#                 day = s.timestamp.date()
+#                 if day not in date_data:
+#                     date_data[day] = {
+#                         "total_oee": 0,
+#                         "total_availability": 0,
+#                         "total_performance": 0,
+#                         "total_quality": 0,
+#                         "count": 0
+#                     }
+
+#                 date_data[day]["total_oee"] += float(s.oee or 0)
+#                 date_data[day]["total_availability"] += float(s.availability or 0)
+#                 date_data[day]["total_performance"] += float(s.performance or 0)
+#                 date_data[day]["total_quality"] += float(s.quality or 0)
+#                 date_data[day]["count"] += 1
+
+#             # Calculate daily averages
+#             for day, data in date_data.items():
+#                 count = data["count"]
+#                 if count > 0:
+#                     daily_trends.append(OEETrend(
+#                         date=day,
+#                         oee=data["total_oee"] / count,
+#                         availability=data["total_availability"] / count,
+#                         performance=data["total_performance"] / count,
+#                         quality=data["total_quality"] / count
+#                     ))
+
+#             # Sort daily trends by date
+#             daily_trends.sort(key=lambda x: x.date)
+
+#             return OverallOEEAnalysis(
+#                 period_start=start_date,
+#                 period_end=end_date,
+#                 overall_oee=avg_oee,
+#                 overall_availability=avg_availability,
+#                 overall_performance=avg_performance,
+#                 overall_quality=avg_quality,
+#                 shift_breakdown=shift_breakdown,
+#                 daily_trends=daily_trends,
+#                 losses=OEELosses(
+#                     availability_loss=avg_availability_loss,
+#                     performance_loss=avg_performance_loss,
+#                     quality_loss=avg_quality_loss
+#                 ),
+#                 total_production=total_parts,
+#                 total_good_parts=total_good_parts,
+#                 total_bad_parts=total_bad_parts,
+#                 machine_count=machine_count
+#             )
+
+#     except Exception as e:
+#         print(f"Error in get_overall_oee_analytics: {str(e)}")
+#         import traceback
+#         print(traceback.format_exc())
+#         raise HTTPException(
+#             status_code=500,
+#             detail=f"Error calculating overall OEE: {str(e)}"
+#         )
+
+
+
+
+
 @router.get("/overall-oee-analytics/", response_model=OverallOEEAnalysis)
 async def get_overall_oee_analytics(
-        start_date: datetime = Query(default=None),
-        end_date: datetime = Query(default=None),
-        shift: Optional[int] = Query(None, description="Filter by shift number")
+        date: datetime = Query(default=None, description="Date for analysis (YYYY-MM-DD)"),
+        shift: Optional[str] = Query("all", description="Filter by shift: '1', '2', '3', or 'all'")
 ):
     """
-    Get overall OEE analytics for the entire factory across all machines.
-    If no dates are provided, shows the last day's data.
-    If no shift is provided, calculates for all shifts.
+    Get overall OEE analytics for the entire factory across all machines for a specific date.
+    If no date is provided, shows today's data.
+    Shift can be '1', '2', '3', or 'all' for all shifts.
 
     Returns:
     - Overall OEE, availability, performance, and quality metrics
-    - Daily trends
+    - Shift breakdown (if shift='all')
     - Loss analysis
     - Production totals
     """
     try:
         with db_session:
-            # Import the correct models
             from app.models.production import ShiftSummary
 
-            # Default to previous day to current day if no dates provided
-            if not start_date:
-                start_date = (datetime.utcnow() - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-            if not end_date:
-                end_date = datetime.utcnow()
-            # --- IST (UTC+5:30) end_date logic ---
-            ist_offset = timedelta(hours=5, minutes=30)
-            now_ist = datetime.utcnow() + ist_offset
-            if isinstance(end_date, datetime):
-                end_date_ist = end_date + ist_offset
-                if end_date_ist.date() == now_ist.date():
-                    # If end_date is today in IST, set to current IST time
-                    end_date_ist = now_ist
-                elif end_date_ist.time() == datetime.min.time():
-                    # If end_date is not today and time is 00:00:00, set to end of day in IST
-                    end_date_ist = end_date_ist.replace(hour=23, minute=59, second=59, microsecond=999999)
-                # Convert back to UTC for DB queries
-                end_date = end_date_ist - ist_offset
-            # --- End IST logic ---
+            # Set date to today if not provided
+            if not date:
+                date = datetime.utcnow()
+            
+            # Set start and end times for the entire day
+            start_date = date.replace(hour=0, minute=0, second=0, microsecond=0)
+            end_date = date.replace(hour=23, minute=59, second=59, microsecond=999999)
 
-            # print(f"\n=== Debug: Calculating overall OEE for period {start_date} to {end_date} ===")
+            print(f"Analyzing OEE for date: {date.date()}, from {start_date} to {end_date}")
 
-            # Build query for shift summaries
+            # Build base query for shift summaries
             query = select(s for s in ShiftSummary
                            if s.timestamp >= start_date
                            and s.timestamp <= end_date)
 
-            if shift is not None:
-                query = query.filter(lambda s: s.shift == shift)
-                print(f"Filtering for shift {shift}")
+            # Add shift filter if not 'all'
+            if shift and shift.lower() != 'all':
+                try:
+                    shift_number = int(shift)
+                    query = query.filter(lambda s: s.shift == shift_number)
+                    print(f"Filtering for shift {shift_number}")
+                except ValueError:
+                    raise HTTPException(status_code=400, detail="Shift must be '1', '2', '3', or 'all'")
 
             summaries = query[:]
 
             if not summaries:
-                # Return default values if no data
                 return OverallOEEAnalysis(
                     period_start=start_date,
                     period_end=end_date,
@@ -2248,9 +2651,10 @@ async def get_overall_oee_analytics(
                     machine_count=0
                 )
 
-            # print(f"Found {len(summaries)} shift summary records")
+            print(f"Found {len(summaries)} shift summary records")
 
             # Calculate overall metrics
+            record_count = len(summaries)
             total_oee = sum(float(s.oee or 0) for s in summaries)
             total_availability = sum(float(s.availability or 0) for s in summaries)
             total_performance = sum(float(s.performance or 0) for s in summaries)
@@ -2264,12 +2668,11 @@ async def get_overall_oee_analytics(
             total_good_parts = sum(s.good_parts or 0 for s in summaries)
             total_bad_parts = sum(s.bad_parts or 0 for s in summaries)
 
-            # Count unique machines
+            # Count unique machines from shift summaries only
             unique_machines = set(s.machine_id for s in summaries)
             machine_count = len(unique_machines)
 
             # Calculate averages
-            record_count = len(summaries)
             avg_oee = total_oee / record_count if record_count > 0 else 0
             avg_availability = total_availability / record_count if record_count > 0 else 0
             avg_performance = total_performance / record_count if record_count > 0 else 0
@@ -2279,10 +2682,9 @@ async def get_overall_oee_analytics(
             avg_performance_loss = total_performance_loss / record_count if record_count > 0 else 0
             avg_quality_loss = total_quality_loss / record_count if record_count > 0 else 0
 
-            # Create shift breakdown if no specific shift was requested
+            # Create shift breakdown only if shift='all'
             shift_breakdown = []
-            if shift is None:
-                # Group by shift
+            if shift and shift.lower() == 'all':
                 shift_data = {}
                 for s in summaries:
                     if s.shift not in shift_data:
@@ -2322,41 +2724,14 @@ async def get_overall_oee_analytics(
                             "bad_parts": data["bad_parts"]
                         })
 
-            # Create daily trends
-            daily_trends = []
-            date_data = {}
-
-            for s in summaries:
-                day = s.timestamp.date()
-                if day not in date_data:
-                    date_data[day] = {
-                        "total_oee": 0,
-                        "total_availability": 0,
-                        "total_performance": 0,
-                        "total_quality": 0,
-                        "count": 0
-                    }
-
-                date_data[day]["total_oee"] += float(s.oee or 0)
-                date_data[day]["total_availability"] += float(s.availability or 0)
-                date_data[day]["total_performance"] += float(s.performance or 0)
-                date_data[day]["total_quality"] += float(s.quality or 0)
-                date_data[day]["count"] += 1
-
-            # Calculate daily averages
-            for day, data in date_data.items():
-                count = data["count"]
-                if count > 0:
-                    daily_trends.append(OEETrend(
-                        date=day,
-                        oee=data["total_oee"] / count,
-                        availability=data["total_availability"] / count,
-                        performance=data["total_performance"] / count,
-                        quality=data["total_quality"] / count
-                    ))
-
-            # Sort daily trends by date
-            daily_trends.sort(key=lambda x: x.date)
+            # Create daily trends (single day in this case)
+            daily_trends = [OEETrend(
+                date=date.date(),
+                oee=avg_oee,
+                availability=avg_availability,
+                performance=avg_performance,
+                quality=avg_quality
+            )]
 
             return OverallOEEAnalysis(
                 period_start=start_date,
@@ -2386,8 +2761,3 @@ async def get_overall_oee_analytics(
             status_code=500,
             detail=f"Error calculating overall OEE: {str(e)}"
         )
-
-
-
-
-
