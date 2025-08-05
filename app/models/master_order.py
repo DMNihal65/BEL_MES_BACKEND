@@ -113,6 +113,7 @@ class Order(db.Entity):
     documents_v2 = Set('DocumentV2', reverse='production_order')
     order_tools = Set("OrderTool", reverse="order")  # Updated relationship name
     master_bocs = Set('MasterBoc', reverse='order')  # Add this line for MasterBoc relationship
+    order_completed = Set('OrderCompleted', reverse='order_id')  # Add this line for OrderCompleted relationship
 
 
 
@@ -228,4 +229,11 @@ class MPP(db.Entity):
     datum_y = Optional(str)
     datum_z = Optional(str)
     work_instructions = Required(Json, default={"sections": []})
+
+class OrderCompleted(db.Entity):
+    _table_ = ("master_order", "order_completed")
+    id = PrimaryKey(int, auto=True)
+    order_id = Required(Order, reverse='order_completed')
+    is_completed = Required(bool, default=False)
+    triggered_at = Required(datetime, default=datetime.utcnow)
 

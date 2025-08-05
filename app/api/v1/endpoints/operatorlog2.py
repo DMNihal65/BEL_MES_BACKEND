@@ -151,7 +151,7 @@ def get_operation_sequence_info(operation_id: int) -> Dict:
         return {"error": f"Error getting sequence info: {e}"}
 
 
-@router.post("/operator-log", response_model=ProductionLogResponse)
+@router.post("/operator-log")
 @db_session
 def create_production_log(log_data: ProductionLogCreate):
     # Validate operator
@@ -245,17 +245,8 @@ def create_production_log(log_data: ProductionLogCreate):
     # Commit to ensure the ID is generated
     commit()
 
-    return ProductionLogResponse(
-        id=new_log.id,
-        operator_id=new_log.operator.id,
-        operation_id=new_log.operation.id,
-        machine_id=new_log.machine.id if new_log.machine else None,
-        start_time=new_log.start_time,
-        end_time=new_log.end_time,
-        quantity_completed=new_log.quantity_completed,
-        quantity_rejected=new_log.quantity_rejected,
-        notes=new_log.notes
-    )
+    return "Updated the data"
+    
 
 
 @router.get("/operation-sequence-status/{operation_id}")
@@ -673,10 +664,10 @@ def get_production_order_operations_status(work_center_id: int, production_order
             "work_center_code": op.work_center.code,
             "work_center_name": op.work_center.work_center_name or op.work_center.code,
             "work_center_schedulable": op.work_center.is_schedulable,
-            # "machine_id": op.machine.id,
-            # "machine_type": op.machine.type,
-            # "machine_make": op.machine.make,
-            # "machine_model": op.machine.model,
+            "machine_id": op.machine.id,
+            "machine_type": op.machine.type,
+            "machine_make": op.machine.make,
+            "machine_model": op.machine.model,
             "can_log": can_log,
             "validation_reason": validation_reason,
             "completed_quantity": total_completed,

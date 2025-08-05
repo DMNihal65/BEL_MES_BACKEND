@@ -12,7 +12,7 @@ COPY . .
 # Create .env file with the provided settings
 RUN echo "DB_HOST=172.18.7.91" > .env && \
     echo "DB_PORT=5432" >> .env && \
-    echo "DB_NAME=BEL_MES12" >> .env && \
+    echo "DB_NAME=BEL_MES13" >> .env && \
     echo "DB_USER=postgres" >> .env && \
     echo "DB_PASSWORD=postgres" >> .env && \
     echo "SECRET_KEY=BEL_MES_25" >> .env && \

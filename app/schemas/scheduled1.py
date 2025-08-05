@@ -129,4 +129,39 @@ class MachineUtilization(BaseModel):
     remaining_hours: float
     utilization_percentage: float
 
+class OrderCompletionRequest(BaseModel):
+    is_completed: bool
+
+
+class OrderCompletionResponse(BaseModel):
+    message: str
+    triggered_at: str
+    order_id: int
+
+
+class OrderCompletionStatus(BaseModel):
+    order_id: int
+    production_order: str
+    part_number: str
+    project_name: str
+    status: str
+    progress: float
+    completion_date: Optional[str] = None
+    message: str
+
+
+class OrderCompletionRecord(BaseModel):
+    order_id: int
+    production_order: str
+    part_number: str
+    project_name: str
+    status: str
+    progress: float
+    completion_date: Optional[str] = None
+    message: str
+
+
+class AllCompletionStatusResponse(BaseModel):
+    completion_records: List[OrderCompletionRecord]
+
 

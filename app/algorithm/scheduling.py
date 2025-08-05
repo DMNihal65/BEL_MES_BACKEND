@@ -27,29 +27,29 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
     """Main scheduling function that creates a production schedule based on operations data"""
 
     # COMPREHENSIVE DIAGNOSTIC LOGGING
-    print("\n==== SCHEDULING FUNCTION: COMPREHENSIVE DIAGNOSTIC ====")
-    print(f"Total Parts Requested: {len(component_quantities)}")
-    print(f"Component Quantities: {component_quantities}")
-    print(f"Input DataFrame Shape: {df.shape}")
-    print(f"Unique Parts in DataFrame: {df['partno'].unique()}")
+    # print("\n==== SCHEDULING FUNCTION: COMPREHENSIVE DIAGNOSTIC ====")
+    # print(f"Total Parts Requested: {len(component_quantities)}")
+    # print(f"Component Quantities: {component_quantities}")
+    # print(f"Input DataFrame Shape: {df.shape}")
+    # print(f"Unique Parts in DataFrame: {df['partno'].unique()}")
 
     # Enhanced Debug Logging
     for (partno, production_order) in component_quantities.keys():
         part_df = df[(df['partno'] == partno) & (df['production_order'] == production_order)]
-        print(f"\nPart {partno} Debug:")
-        print(f"Operations Count: {len(part_df)}")
+        # print(f"\nPart {partno} Debug:")
+        # print(f"Operations Count: {len(part_df)}")
         if not part_df.empty:
             print(part_df[['operation', 'machine_id', 'sequence', 'time']].to_string())
 
     if df.empty:
-        print("ERROR: Input DataFrame is empty!")
+        # print("ERROR: Input DataFrame is empty!")
         return pd.DataFrame(), datetime.now(), 0.0, {}, {}, ["Empty input DataFrame"]
 
         # Filter operations based on WorkCenter's is_schedulable flag
         schedulable_work_centers = [wc.id for wc in WorkCenter.select() if wc.is_schedulable]
 
-        print(f"\n==== SCHEDULABLE WORK CENTERS ====")
-        print(f"Schedulable Work Center IDs: {schedulable_work_centers}")
+        # print(f"\n==== SCHEDULABLE WORK CENTERS ====")
+        # print(f"Schedulable Work Center IDs: {schedulable_work_centers}")
 
         # Create a lookup of machine_ids to their work_center_ids
         machine_to_work_center = {}
@@ -60,11 +60,11 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
         filtered_df = df[
             df['machine_id'].apply(lambda m_id: machine_to_work_center.get(m_id) in schedulable_work_centers)]
 
-        print(f"Original DataFrame Shape: {df.shape}, Filtered DataFrame Shape: {filtered_df.shape}")
+        # print(f"Original DataFrame Shape: {df.shape}, Filtered DataFrame Shape: {filtered_df.shape}")
 
         # If filtering removed all operations, return empty
         if filtered_df.empty:
-            print("WARNING: No operations remain after filtering for schedulable work centers!")
+            # print("WARNING: No operations remain after filtering for schedulable work centers!")
             return pd.DataFrame(), datetime.now(), 0.0, {}, {}, ["No operations in schedulable work centers"]
 
         # Replace original df with filtered version
@@ -90,17 +90,17 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
         if part_status_map.get((partno, po), 'inactive') == 'active'
     }
 
-    print("\n==== ACTIVE PARTS DIAGNOSTIC ====")
+    # print("\n==== ACTIVE PARTS DIAGNOSTIC ====")
     for (partno, production_order), qty in active_parts.items():
         activation_time = part_activation_times.get((partno, production_order))
         activation_time_str = activation_time.strftime("%Y-%m-%d %H:%M:%S") if activation_time else "None"
 
         # Additional Part Validation
         part_df = df[df['partno'] == partno]
-        print(f"Part: {partno}")
-        print(f"  Quantity: {qty}")
-        print(f"  Activation Time (IST): {activation_time_str}")
-        print(f"  Operations Count: {len(part_df)}")
+        # print(f"Part: {partno}")
+        # print(f"  Quantity: {qty}")
+        # print(f"  Activation Time (IST): {activation_time_str}")
+        # print(f"  Operations Count: {len(part_df)}")
 
         if part_df.empty:
             print(f"  WARNING: No operations found for part {partno}")
@@ -112,12 +112,12 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
         if part_status_map.get((partno, production_order), 'inactive') != 'active'
     ]
 
-    print("\n==== SKIPPED PARTS ====")
+    # print("\n==== SKIPPED PARTS ====")
     for skipped in skipped_parts:
         print(skipped)
 
     if not active_parts:
-        print("CRITICAL: No parts are marked as active for scheduling")
+        # print("CRITICAL: No parts are marked as active for scheduling")
         return pd.DataFrame(), datetime.now(), 0.0, {}, {}, ["No parts are marked as active for scheduling"]
 
     # Create a more detailed tracking map that includes production orders
@@ -235,7 +235,7 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
         earliest_activation_time) if earliest_activation_time else default_start_date
 
     # Log the global start date used for scheduling
-    print(f"Global start date (IST): {global_start_date.strftime('%Y-%m-%d %H:%M:%S')}")
+    # print(f"Global start date (IST): {global_start_date.strftime('%Y-%m-%d %H:%M:%S')}")
 
     # Initialize machine end times with the earliest start date
     machine_end_times = {machine: global_start_date for machine in df_sorted["machine_id"].unique()}
@@ -374,22 +374,22 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
         effective_start_time = start_time
 
         # Enhanced raw material availability check
-        print(f"\nRaw Material Availability Check for {partno} (Production Order: {production_order}):")
-        print(f"Status: {raw_material_status.name}")
-        print(f"Available From: {raw_material.available_from}")
-        print(f"Initial Operation Start Time: {effective_start_time}")
+        # print(f"\nRaw Material Availability Check for {partno} (Production Order: {production_order}):")
+        # print(f"Status: {raw_material_status.name}")
+        # print(f"Available From: {raw_material.available_from}")
+        # print(f"Initial Operation Start Time: {effective_start_time}")
 
         # Comprehensive availability check
         if raw_material_status.name != 'Available':
-            print(f"Raw material for {partno} (Production Order: {production_order}) is not in 'Available' status")
+            # print(f"Raw material for {partno} (Production Order: {production_order}) is not in 'Available' status")
             return [], 0, {}
 
         # If raw material is available from a future time
         if raw_material.available_from:
             # Compare times, ensuring we respect the raw material's availability
             if effective_start_time < raw_material.available_from:
-                print(
-                    f"Adjusting operation time from {effective_start_time} to raw material available time {raw_material.available_from}")
+                # print(
+                #     f"Adjusting operation time from {effective_start_time} to raw material available time {raw_material.available_from}")
 
                 # Set effective start time to the raw material's available_from time
                 effective_start_time = raw_material.available_from
@@ -397,7 +397,7 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
                 # Adjust to the next available shift start if needed
                 effective_start_time = adjust_to_shift_hours(effective_start_time)
 
-                print(f"Adjusted operation time after shift hour consideration: {effective_start_time}")
+                # print(f"Adjusted operation time after shift hour consideration: {effective_start_time}")
 
         # Prepare for scheduling
         batch_schedule = []
@@ -407,12 +407,12 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
         operation_setup_done = {}
 
         # Debug print to verify effective start time
-        print(f"Final Effective Start Time for {partno} (Production Order: {production_order}): {effective_start_time}")
+        # print(f"Final Effective Start Time for {partno} (Production Order: {production_order}): {effective_start_time}")
 
         # Rest of the scheduling logic remains the same
         last_available_idx = find_last_available_operation(operations, operation_time)
         if last_available_idx < 0:
-            print(f"No available operations found for {partno} (Production Order: {production_order})")
+            # print(f"No available operations found for {partno} (Production Order: {production_order})")
             return [], 0, {}
 
         available_operations = operations[:last_available_idx + 1]
@@ -476,7 +476,7 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
                     batch_schedule.append([
                         partno, op['operation'], machine_id,
                         operation_start, shift_end,
-                        f"Setup({int((shift_end - operation_start).total_seconds() / 60)}/{setup_minutes}min)",
+                        # f"Setup({int((shift_end - operation_start).total_seconds() / 60)}/{setup_minutes}min)",
                         production_order
                     ])
 
@@ -492,12 +492,12 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
 
                         if not machine_available:
                             if next_available_time is None:
-                                print(f"Machine {machine_id} is permanently unavailable for remaining setup")
+                                # print(f"Machine {machine_id} is permanently unavailable for remaining setup")
                                 break  # Can't complete setup
                             else:
                                 # Adjust next start time to when machine becomes available
                                 next_start = adjust_to_shift_hours(next_available_time)
-                                print(f"Next setup will start at {next_start} when machine becomes available")
+                                # print(f"Next setup will start at {next_start} when machine becomes available")
 
                         current_shift_end = next_start.replace(hour=22, minute=0, second=0, microsecond=0)
                         setup_possible = min(remaining_setup, (current_shift_end - next_start).total_seconds() / 60)
@@ -638,12 +638,12 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
 
                     if not machine_available:
                         if next_available_time is None:
-                            print(f"Machine {machine_id} is permanently unavailable for remaining pieces")
+                            # print(f"Machine {machine_id} is permanently unavailable for remaining pieces")
                             break  # Can't complete production
                         else:
                             # Adjust next start time to when machine becomes available
                             next_start = adjust_to_shift_hours(next_available_time)
-                            print(f"Next processing will start at {next_start} when machine becomes available")
+                            # print(f"Next processing will start at {next_start} when machine becomes available")
 
                     current_shift_end = next_start.replace(hour=22, minute=0, second=0, microsecond=0)
                     work_possible = min(remaining_time, (current_shift_end - next_start).total_seconds() / 60)
@@ -840,8 +840,8 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
             part_start_time = part_activation_times.get(part_key, global_start_date)
             part_start_time = adjust_to_shift_hours(part_start_time)
 
-            print(
-                f"Scheduling {partno} - Production Order: {production_order} with activation time (IST): {part_start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+            # print(
+            #     f"Scheduling {partno} - Production Order: {production_order} with activation time (IST): {part_start_time.strftime('%Y-%m-%d %H:%M:%S')}")
 
             # Pass order-specific information to schedule_batch_operations
             batch_schedule, completed_ops, unit_completion_times = schedule_batch_operations(
@@ -900,7 +900,7 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
             part_start_time = part_activation_times.get(part_key, global_start_date)
             part_start_time = adjust_to_shift_hours(part_start_time)
 
-            print(f"Scheduling {partno} with activation time (IST): {part_start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+            # print(f"Scheduling {partno} with activation time (IST): {part_start_time.strftime('%Y-%m-%d %H:%M:%S')}")
 
             batch_schedule, completed_ops, unit_completion_times = schedule_batch_operations(
                 partno, operations, quantity, part_start_time, production_order=production_order

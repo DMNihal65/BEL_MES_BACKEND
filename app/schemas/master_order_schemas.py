@@ -66,3 +66,4 @@ class MachineResponse(MachineBase):
 
 class UpdateSchedulable(BaseModel):
     is_schedulable: bool
+

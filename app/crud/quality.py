@@ -212,7 +212,14 @@ class StageInspectionCRUD:
                     raise ValueError(
                         f"Cannot add quantity {data.quantity_no} because FTP approval for quantity 1 is still pending for order {data.order_id}, operation {data.op_no}")
 
-            # Create new instance
+            # Check if a stage inspection with the same key data exists
+            existing_inspection = select(si for si in StageInspection
+                                        if si.order_id == data.order_id
+                                        and si.op_no == data.op_no
+                                        and si.quantity_no == data.quantity_no
+                                        and si.zone == data.zone
+                                        and si.dimension_type == data.dimension_type).first()
+
             stage_inspection_data = {
                 'op_id': data.op_id,
                 'nominal_value': data.nominal_value,
@@ -223,7 +230,7 @@ class StageInspectionCRUD:
                 'measured_1': data.measured_1,
                 'measured_2': data.measured_2,
                 'measured_3': data.measured_3,
-                'measured_mean': data.measured_mean,
+                'measured_mean': data.measured_mean,  # Use mean directly from request data
                 'measured_instrument': data.measured_instrument,
                 'used_inst': data.used_inst,
                 'op_no': data.op_no,
@@ -234,10 +241,18 @@ class StageInspectionCRUD:
             if data.quantity_no is not None:
                 stage_inspection_data['quantity_no'] = data.quantity_no
 
-            stage_inspection = StageInspection(**stage_inspection_data)
+            if existing_inspection:
+                # Update existing inspection
+                for key, value in stage_inspection_data.items():
+                    setattr(existing_inspection, key, value)
+                stage_inspection = existing_inspection
+            else:
+                # Create new instance
+                stage_inspection = StageInspection(**stage_inspection_data)
+
             commit()
 
-            # After creating stage inspection, update FTP status if this is quantity 1
+            # After creating/updating stage inspection, update FTP status if this is quantity 1
             if data.quantity_no == 1:
                 # Find all master_bocs for this order and operation
                 master_bocs = select(m for m in MasterBoc

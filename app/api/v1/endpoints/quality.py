@@ -2,15 +2,14 @@ from fastapi import APIRouter, HTTPException, Depends, Path, Query
 from typing import Any, List
 import os
 import subprocess
-from pony.orm import db_session, commit, flush, select, desc
+from pony.orm import db_session, commit, flush, select
 
 from app.core.security import get_current_user
 from app.models import Operation, Order, User
 from app.schemas.quality import MasterBocCreate, MasterBocResponse, StageInspectionResponse, \
     StageInspectionCreate, QualityInspectionResponse, DetailedQualityInspectionResponse, \
     OrderIPIDResponse, MasterBocIPIDInfo, MeasurementInstrumentsResponse, \
-    ConnectivityCreate, ConnectivityResponse, StageInspectionDetail, FTPResponse, \
-    StageInspectionWithUserResponse, OperatorInfo
+    ConnectivityCreate, ConnectivityResponse, StageInspectionDetail, FTPResponse, StageInspectionWithUserResponse
 from app.crud.quality import MasterBocCRUD, StageInspectionCRUD, QualityInspectionCRUD, FTPCRUD
 from app.models.quality import Connectivity, StageInspection
 from app.models.inventoryv1 import InventoryItem
@@ -226,7 +225,7 @@ async def get_detailed_quality_inspection(
     summary="Get stage inspection data grouped by operation number"
 )
 @db_session
-def get_stage_inspection_grouped(
+async def get_stage_inspection_grouped(
         order_id: int = Path(..., gt=0),
         current_user=Depends(get_current_user)
 ) -> Any:
@@ -426,7 +425,7 @@ def create_connectivity(
 @router.get(
     "/connectivity/instrument/{instrument_name}",
     response_model=ConnectivityResponse,
-    summary="Get most recent connectivity information by instrument name"
+    summary="Get connectivity information by instrument name"
 )
 @db_session
 def get_connectivity_by_instrument(
@@ -456,8 +455,7 @@ def get_connectivity_by_instrument(
     """
     try:
         # Query the most recent connectivity record by instrument name
-        connectivity = select(c for c in Connectivity if c.instrument == instrument_name).order_by(
-            lambda c: desc(c.created_at)).first()
+        connectivity = select(c for c in Connectivity if c.instrument == instrument_name).order_by(lambda c: desc(c.created_at)).first()
 
         if not connectivity:
             raise HTTPException(
