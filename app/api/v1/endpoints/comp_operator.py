@@ -19,6 +19,8 @@ from app.models.logs import MachineStatusLog, RawMaterialStatusLog
 from app.schemas.scheduled1 import ScheduledOperation
 from .notification_service import send_notification
 from .scheduled import schedule
+from app.models.user import User
+
 
 # Modified storage to include read status tracking
 pending_changes: Dict[int, Dict] = {}
@@ -1216,5 +1218,28 @@ def create_issue(issue: IssueIn):
             "message": "Issue created successfully",
             "timestamp": new_issue.timestamp.isoformat()
         }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/issues/")
+@db_session
+def get_issues():
+    try:
+        # Query all issues and join with machine and user information
+        issues = select((i, m, u) for i in OEEIssue for m in Machine for u in User 
+                       if i.machine == m.id and i.reported_by == u.id)[:]        
+        
+        # Format the response
+        issues_list = [{
+            "id": issue.id,
+            "category": issue.category,
+            "description": issue.description,
+            "machine_id": issue.machine,
+            "machine_name": f"{machine.work_center.code}-{machine.make}" if machine.work_center else machine.make,
+            "timestamp": issue.timestamp.isoformat(),
+            "reported_by": user.username
+        } for issue, machine, user in issues]
+        
+        return {"issues": issues_list}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

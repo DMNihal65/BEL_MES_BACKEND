@@ -5125,7 +5125,7 @@ async def get_ipid_folder_structure(
 
             # Find the root IPID folder
             root_folder = FolderV2.get(lambda f: f.name == "IPID"
-                                                 and f.parent_folder.name == "Document Types"
+                                                 and f.path == "Document Types/IPID"
                                                  and f.is_active == True)
             if not root_folder:
                 raise HTTPException(status_code=404, detail="IPID root folder not found")
