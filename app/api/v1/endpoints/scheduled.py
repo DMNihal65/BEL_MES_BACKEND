@@ -1481,7 +1481,7 @@ def get_machine_utilization_by_range(
     # Calculate working days in the range (excluding weekends) - optimized
     working_days = 0
     current_date = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
-    end_day = end_date.replace(hour=24, minute=0, second=0, microsecond=0)
+    end_day = end_date.replace(hour=23, minute=59, second=0, microsecond=0)
 
     # Optimize: Calculate working days more efficiently
     days_diff = (end_day - current_date).days + 1
