@@ -2460,7 +2460,6 @@ class DocumentsByTypeResponse(BaseModel):
 
 
 
-
 @router.post("/ballooned-drawing/upload/", response_model=DocumentResponse)
 async def upload_ballooned_drawing(
         file: UploadFile = File(...),
@@ -2647,56 +2646,52 @@ async def upload_ballooned_drawing(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-
-
-@router.get("/ballooned-drawing/download/{production_order}/{operation_number}")
-def download_ballooned_drawing_by_po_and_op(
-        production_order: str,
+@router.get("/ballooned-drawing/download/{part_number}/{operation_number}")
+def download_ballooned_drawing_by_part_and_op(
+        part_number: str,
         operation_number: str,
         current_user: User = Depends(get_current_user)
 ):
-    """Download the latest ballooned drawing for a production order and operation"""
+    """Download the latest ballooned drawing for a part number and operation"""
     try:
         with db_session:
             # Re-fetch user within session
             user = User[current_user.id]
-
-            # Get the order
-            order = Order.get(production_order=production_order)
-            if not order:
-                raise HTTPException(status_code=404, detail="Production order not found")
 
             # Get document type for ballooned drawings
             doc_type = DocumentTypeV2.get(name="BALLOONED_DRAWING")
             if not doc_type:
                 raise HTTPException(status_code=404, detail="Ballooned drawing document type not defined")
 
-            # Find the operation folder
-            balloon_folder = FolderV2.get(name="Balloon", parent_folder=None)
+            # Find the operation folder using path-based approach
+            root_path = "Balloon"
+            balloon_folder = FolderV2.get(lambda f: f.path == root_path)
             if not balloon_folder:
                 raise HTTPException(status_code=404, detail="Balloon folder not found")
 
-            po_folder = FolderV2.get(lambda f: f.name == production_order and f.parent_folder == balloon_folder)
-            if not po_folder:
-                raise HTTPException(status_code=404, detail=f"Folder for production order {production_order} not found")
+            part_path = f"{root_path}/{part_number}"
+            part_folder = FolderV2.get(lambda f: f.path == part_path)
+            if not part_folder:
+                raise HTTPException(status_code=404, detail=f"Folder for part number {part_number} not found")
 
             op_folder_name = f"OP{operation_number}"
-            op_folder = FolderV2.get(lambda f: f.name == op_folder_name and f.parent_folder == po_folder)
+            op_path = f"{part_path}/{op_folder_name}"
+            op_folder = FolderV2.get(lambda f: f.path == op_path)
             if not op_folder:
                 raise HTTPException(status_code=404, detail=f"Folder for operation {operation_number} not found")
 
-            # Find the most recent ballooned drawing for this production order and operation
+            # Find the most recent ballooned drawing for this part number and operation
             documents = select(d for d in DocumentV2
                                if d.is_active and
                                d.doc_type == doc_type and
-                               d.production_order == order and
+                               d.part_number == part_number and
                                d.folder == op_folder and
                                d.latest_version).order_by(lambda d: desc(d.created_at))[:]
 
             if not documents:
                 raise HTTPException(
                     status_code=404,
-                    detail=f"No ballooned drawings found for production order {production_order} operation {operation_number}"
+                    detail=f"No ballooned drawings found for part number {part_number} operation {operation_number}"
                 )
 
             # Get the most recent document
@@ -2728,7 +2723,7 @@ def download_ballooned_drawing_by_po_and_op(
                 content_type = file_stream.headers.get("content-type", "application/octet-stream")
 
                 # Generate filename
-                download_filename = f"{production_order}_OP{operation_number}_Ballooned_Drawing.{file_extension}"
+                download_filename = f"{part_number}_OP{operation_number}_Ballooned_Drawing.{file_extension}"
 
                 commit()
 
@@ -3371,31 +3366,39 @@ async def upload_report_document(
                 commit()
 
             # Get or create root folder for document types
-            root_folder = FolderV2.get(name="Document Types", parent_folder=None)
+            root_path = "Document Types"
+            root_folder = FolderV2.get(lambda f: f.path == root_path)
             if not root_folder:
                 root_folder = FolderV2(
                     name="Document Types",
-                    path="Document Types",
+                    path=root_path,
                     created_by=user
                 )
                 commit()
+            elif not root_folder.is_active:
+                root_folder.is_active = True
+                commit()
 
             # Get or create Report folder
-            report_folder = FolderV2.get(lambda f: f.name == REPORT_DOC_TYPE and f.parent_folder == root_folder)
+            report_path = f"{root_path}/{REPORT_DOC_TYPE}"
+            report_folder = FolderV2.get(lambda f: f.path == report_path)
             if not report_folder:
                 report_folder = FolderV2(
                     name=REPORT_DOC_TYPE,
-                    path=f"Document Types/{REPORT_DOC_TYPE}",
+                    path=report_path,
                     parent_folder=root_folder,
                     created_by=user
                 )
+                commit()
+            elif not report_folder.is_active:
+                report_folder.is_active = True
                 commit()
 
             # Process the custom folder path to get to the target folder
             if folder_path:
                 folder_parts = folder_path.strip("/").split("/")
                 current_folder = report_folder
-                current_path = f"Document Types/{REPORT_DOC_TYPE}"
+                current_path = report_path
 
                 # Create each folder in the path if it doesn't exist
                 for folder_name in folder_parts:
@@ -3403,7 +3406,7 @@ async def upload_report_document(
                         continue
 
                     current_path += f"/{folder_name}"
-                    next_folder = FolderV2.get(lambda f: f.name == folder_name and f.parent_folder == current_folder)
+                    next_folder = FolderV2.get(lambda f: f.path == current_path)
 
                     if not next_folder:
                         next_folder = FolderV2(
@@ -3412,6 +3415,9 @@ async def upload_report_document(
                             parent_folder=current_folder,
                             created_by=user
                         )
+                        commit()
+                    elif not next_folder.is_active:
+                        next_folder.is_active = True
                         commit()
 
                     current_folder = next_folder
