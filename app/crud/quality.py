@@ -218,7 +218,8 @@ class StageInspectionCRUD:
                                         and si.op_no == data.op_no
                                         and si.quantity_no == data.quantity_no
                                         and si.zone == data.zone
-                                        and si.dimension_type == data.dimension_type).first()
+                                        and si.dimension_type == data.dimension_type
+                                        and si.nominal_value == data.nominal_value).first()
 
             stage_inspection_data = {
                 'op_id': data.op_id,

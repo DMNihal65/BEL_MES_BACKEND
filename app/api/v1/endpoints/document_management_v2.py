@@ -1668,10 +1668,13 @@ async def get_all_documents_by_part_number(
         )
 
 
+
+
 @router.post("/ipid/upload/", response_model=DocumentResponse)
 async def upload_ipid_document(
         file: UploadFile = File(...),
         production_order: str = Form(...),
+        part_number: str = Form(...),
         operation_number: int = Form(...),
         document_name: str = Form(...),
         description: Optional[str] = Form(None),
@@ -1679,7 +1682,7 @@ async def upload_ipid_document(
         metadata: Optional[str] = Form("{}"),
         current_user: User = Depends(get_current_user)
 ):
-    """Upload an in-process document for a specific production order and operation"""
+    """Upload an in-process document for a specific part number and operation"""
     try:
         with db_session:
             user = User.get(id=current_user.id)
@@ -1707,46 +1710,62 @@ async def upload_ipid_document(
                 commit()
 
             # Get or create root folder for document types
-            root_folder = FolderV2.get(name="Document Types", parent_folder=None)
+            root_path = "Document Types"
+            root_folder = FolderV2.get(lambda f: f.path == root_path)
             if not root_folder:
                 root_folder = FolderV2(
                     name="Document Types",
-                    path="Document Types",
+                    path=root_path,
                     created_by=user
                 )
                 commit()
+            elif not root_folder.is_active:
+                root_folder.is_active = True
+                commit()
 
             # Get or create IPID folder
-            ipid_folder = FolderV2.get(lambda f: f.name == DocumentTypes.IPID.value and f.parent_folder == root_folder)
+            ipid_path = f"{root_path}/{DocumentTypes.IPID.value}"
+            ipid_folder = FolderV2.get(lambda f: f.path == ipid_path)
             if not ipid_folder:
                 ipid_folder = FolderV2(
                     name=DocumentTypes.IPID.value,
-                    path=f"Document Types/{DocumentTypes.IPID.value}",
+                    path=ipid_path,
                     parent_folder=root_folder,
                     created_by=user
                 )
                 commit()
+            elif not ipid_folder.is_active:
+                ipid_folder.is_active = True
+                commit()
 
-            # Get or create production order folder
-            po_folder = FolderV2.get(lambda f: f.name == production_order and f.parent_folder == ipid_folder)
-            if not po_folder:
-                po_folder = FolderV2(
-                    name=production_order,
-                    path=f"Document Types/{DocumentTypes.IPID.value}/{production_order}",
+            # Get or create part number folder
+            part_path = f"{ipid_path}/{part_number}"
+            part_folder = FolderV2.get(lambda f: f.path == part_path)
+            if not part_folder:
+                part_folder = FolderV2(
+                    name=part_number,
+                    path=part_path,
                     parent_folder=ipid_folder,
                     created_by=user
                 )
                 commit()
+            elif not part_folder.is_active:
+                part_folder.is_active = True
+                commit()
 
             # Get or create operation folder
-            op_folder = FolderV2.get(lambda f: f.name == f"OP{operation_number}" and f.parent_folder == po_folder)
+            op_path = f"{part_path}/OP{operation_number}"
+            op_folder = FolderV2.get(lambda f: f.path == op_path)
             if not op_folder:
                 op_folder = FolderV2(
                     name=f"OP{operation_number}",
-                    path=f"Document Types/{DocumentTypes.IPID.value}/{production_order}/OP{operation_number}",
-                    parent_folder=po_folder,
+                    path=op_path,
+                    parent_folder=part_folder,
                     created_by=user
                 )
+                commit()
+            elif not op_folder.is_active:
+                op_folder.is_active = True
                 commit()
 
             # Validate file extension
@@ -1763,7 +1782,7 @@ async def upload_ipid_document(
                 folder=op_folder,
                 doc_type=doc_type_obj,
                 description=description,
-                part_number=production_order,
+                part_number=part_number,  # Use part_number instead of production_order
                 production_order=order,
                 created_by=user
             )
@@ -1846,6 +1865,7 @@ async def upload_ipid_document(
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 
 @router.get("/ipid/{part_number}", response_model=List[DocumentResponse])
@@ -2261,25 +2281,14 @@ async def download_latest_document_new_endpoint(
                         detail="Operation number is required for IPID documents"
                     )
 
-                # For IPID, part_number is actually the production order
-                production_order = part_number
-                
-                # Get the order to find the actual part number
-                order = Order.get(production_order=production_order)
-                if not order:
-                    raise HTTPException(
-                        status_code=404,
-                        detail=f"Production order {production_order} not found"
-                    )
-
-                # Get all active documents for this production order
+                # Get all active documents for this part number
                 documents = list(DocumentV2.select(
-                    lambda d: d.part_number == production_order and
+                    lambda d: d.part_number == part_number and
                               d.doc_type.id == doc_type_obj.id and
                               d.is_active
                 ))
 
-                print(f"Found {len(documents)} active documents for production order {production_order}")
+                print(f"Found {len(documents)} active documents for part number {part_number}")
 
                 # Find all matching versions across all documents
                 matching_versions = []
@@ -2320,9 +2329,9 @@ async def download_latest_document_new_endpoint(
                 if not matching_versions:
                     # Try to provide more detailed error message
                     if not documents:
-                        error_detail = f"No documents found for production order {production_order}"
+                        error_detail = f"No documents found for part number {part_number}"
                     else:
-                        error_detail = f"No IPID document found for production order {production_order} and operation {operation_number}. "
+                        error_detail = f"No IPID document found for part number {part_number} and operation {operation_number}. "
                         error_detail += f"Found {len(documents)} documents but none match the operation number."
                     
                     raise HTTPException(
@@ -2441,7 +2450,6 @@ async def download_latest_document_new_endpoint(
         )
 
 
-
 class DocumentsByTypeResponse(BaseModel):
     part_number: str
     mpp_document: DocumentResponse | None = None
@@ -2451,29 +2459,33 @@ class DocumentsByTypeResponse(BaseModel):
     all_documents: List[DocumentResponse]
 
 
+
+
 @router.post("/ballooned-drawing/upload/", response_model=DocumentResponse)
 async def upload_ballooned_drawing(
         file: UploadFile = File(...),
-        production_order: str = Form(...),
+        part_number: str = Form(...),  # Now required
         operation_number: str = Form(...),  # Required operation number
         document_name: str = Form(...),
         description: Optional[str] = Form(None),
         version_number: str = Form(...),
-        part_number: Optional[str] = Form(None),
+        production_order: Optional[str] = Form(None),  # Now optional
         metadata: Optional[str] = Form("{}"),
         current_user: User = Depends(get_current_user)
 ):
-    """Upload a ballooned drawing for a specific production order and operation"""
+    """Upload a ballooned drawing for a specific part number and operation"""
     try:
         with db_session:
             user = User.get(id=current_user.id)
             if not user:
                 raise HTTPException(status_code=404, detail="User not found")
 
-            # Get the order
-            order = Order.get(production_order=production_order)
-            if not order:
-                raise HTTPException(status_code=404, detail="Production order not found")
+            # Get the order if production order is provided
+            order = None
+            if production_order:
+                order = Order.get(production_order=production_order)
+                if not order:
+                    raise HTTPException(status_code=404, detail="Production order not found")
 
             # Get or create Ballooned Drawing document type
             doc_type_obj = DocumentTypeV2.get(name="BALLOONED_DRAWING")
@@ -2486,36 +2498,48 @@ async def upload_ballooned_drawing(
                 commit()
 
             # Get or create root folder for Balloon drawings
-            balloon_folder = FolderV2.get(name="Balloon", parent_folder=None)
+            root_path = "Balloon"
+            balloon_folder = FolderV2.get(lambda f: f.path == root_path)
             if not balloon_folder:
                 balloon_folder = FolderV2(
                     name="Balloon",
-                    path="Balloon",
+                    path=root_path,
                     created_by=user
                 )
                 commit()
+            elif not balloon_folder.is_active:
+                balloon_folder.is_active = True
+                commit()
 
-            # Get or create production order folder
-            po_folder = FolderV2.get(lambda f: f.name == production_order and f.parent_folder == balloon_folder)
-            if not po_folder:
-                po_folder = FolderV2(
-                    name=production_order,
-                    path=f"Balloon/{production_order}",
+            # Get or create part number folder
+            part_path = f"{root_path}/{part_number}"
+            part_folder = FolderV2.get(lambda f: f.path == part_path)
+            if not part_folder:
+                part_folder = FolderV2(
+                    name=part_number,
+                    path=part_path,
                     parent_folder=balloon_folder,
                     created_by=user
                 )
                 commit()
+            elif not part_folder.is_active:
+                part_folder.is_active = True
+                commit()
 
-            # Get or create operation folder under production order
+            # Get or create operation folder under part number
             op_folder_name = f"OP{operation_number}"
-            op_folder = FolderV2.get(lambda f: f.name == op_folder_name and f.parent_folder == po_folder)
+            op_path = f"{part_path}/{op_folder_name}"
+            op_folder = FolderV2.get(lambda f: f.path == op_path)
             if not op_folder:
                 op_folder = FolderV2(
                     name=op_folder_name,
-                    path=f"Balloon/{production_order}/{op_folder_name}",
-                    parent_folder=po_folder,
+                    path=op_path,
+                    parent_folder=part_folder,
                     created_by=user
                 )
+                commit()
+            elif not op_folder.is_active:
+                op_folder.is_active = True
                 commit()
 
             # Validate file extension
@@ -2532,8 +2556,8 @@ async def upload_ballooned_drawing(
                 folder=op_folder,  # Now using operation folder
                 doc_type=doc_type_obj,
                 description=description,
-                part_number=part_number,
-                production_order=order,
+                part_number=part_number,  # Using part number as primary identifier
+                production_order=order,  # Order is now optional
                 created_by=user
             )
             commit()
@@ -2542,8 +2566,8 @@ async def upload_ballooned_drawing(
             file_content = await file.read()
             checksum = hashlib.sha256(file_content).hexdigest()
 
-            # Path structure with required operation number
-            minio_path = f"documents/v2/Balloon/{production_order}/OP{operation_number}/{new_doc.id}/v{version_number}/{file.filename}"
+            # Path structure with part number and operation number
+            minio_path = f"documents/v2/Balloon/{part_number}/OP{operation_number}/{new_doc.id}/v{version_number}/{file.filename}"
 
             try:
                 file.file.seek(0)
@@ -2621,6 +2645,8 @@ async def upload_ballooned_drawing(
         error_details = traceback.format_exc()
         print(f"Error uploading ballooned drawing: {error_details}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
 
 
 @router.get("/ballooned-drawing/download/{production_order}/{operation_number}")
@@ -2726,6 +2752,7 @@ def download_ballooned_drawing_by_po_and_op(
         error_details = traceback.format_exc()
         print(f"Error downloading ballooned drawing: {error_details}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 
 # Machine document management endpoints
