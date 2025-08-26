@@ -449,13 +449,13 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
             # If machine is not available now but will be available later
             if not machine_available:
                 if next_available_time is None:
-                    print(
-                        f"Machine {machine_id} is unavailable with no estimated return time for {partno}, operation {op['operation']}")
+                    # print(
+                    #     f"Machine {machine_id} is unavailable with no estimated return time for {partno}, operation {op['operation']}")
                     continue  # Skip this operation
                 else:
                     # Update current time to when machine becomes available
-                    print(
-                        f"Machine {machine_id} is unavailable until {next_available_time} for {partno}, operation {op['operation']}")
+                    # print(
+                    #     f"Machine {machine_id} is unavailable until {next_available_time} for {partno}, operation {op['operation']}")
                     current_time = next_available_time
 
             # Adjust to shift hours

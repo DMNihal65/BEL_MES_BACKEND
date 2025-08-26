@@ -340,3 +340,43 @@ def update_machine_credential(machine_id: int, data: CredentialUpdate):
         "password": credential.password,
         "machine_name": f"{credential.machine.make}"
     }
+
+class MachineIDLogin(BaseModel):
+    """Schema for login using machine ID and password"""
+    machine_id: int
+    password: str
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "machine_id": 1,
+                "password": "machine_password"
+            }
+        }
+
+
+@router.post("/machine-id-login", response_model=CredentialOut)
+@db_session
+def machine_id_login(data: MachineIDLogin):
+    """
+    Login using machine ID and password.
+    """
+    print(f"Login attempt with machine ID: {data.machine_id}")
+
+    machine = Machine.get(id=data.machine_id)
+    if not machine:
+        raise HTTPException(status_code=404, detail="Machine not found")
+
+    credential = MachineCredential.get(machine=machine)
+    if not credential:
+        raise HTTPException(status_code=404, detail="Machine credential not found")
+
+    if credential.password != data.password:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    return {
+        "id": credential.id,
+        "machine_id": machine.id,
+        "password": credential.password,
+        "machine_name": machine.make  # Adjust if machine name is elsewhere
+    }

@@ -21,6 +21,7 @@ from datetime import datetime
 from fastapi.responses import StreamingResponse
 from enum import Enum
 from fastapi.logger import logger
+import PyPDF2
 
 router = APIRouter()
 minio = MinioService()
@@ -1666,6 +1667,7 @@ async def get_all_documents_by_part_number(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"An error occurred: {str(e)}"
         )
+
 
 
 
@@ -3334,6 +3336,8 @@ async def list_machines_with_documents(
         )
 
 
+
+
 @router.post("/report/upload/", response_model=DocumentResponse)
 async def upload_report_document(
         file: UploadFile = File(...),
@@ -3342,6 +3346,8 @@ async def upload_report_document(
         description: Optional[str] = Form(None),
         version_number: str = Form(...),
         order_number: Optional[str] = Form(None),
+        operation_number: Optional[int] = Form(None),
+        quantity: Optional[int] = Form(None),
         metadata: Optional[str] = Form("{}"),
         current_user: User = Depends(get_current_user)
 ):
@@ -3430,6 +3436,7 @@ async def upload_report_document(
 
             # Get production order if order_number is provided
             production_order = None
+            operation = None
             if order_number:
                 production_order = Order.get(production_order=order_number)
                 if not production_order:
@@ -3447,8 +3454,29 @@ async def upload_report_document(
                     )
                     commit()
 
-                # Use the order folder as the target folder for the document
-                target_folder = order_folder
+                # If operation number is provided, get the operation and create its folder
+                if operation_number is not None:
+                    operation = Operation.get(lambda op: op.order == production_order and op.operation_number == operation_number)
+                    if not operation:
+                        raise HTTPException(status_code=404, detail=f"Operation {operation_number} not found for order {order_number}")
+
+                    # Create a folder for the operation_number inside the order folder
+                    operation_folder_path = f"{order_folder_path}/OP{operation_number}"
+                    operation_folder = FolderV2.get(lambda f: f.name == f"OP{operation_number}" and f.parent_folder == order_folder)
+                    if not operation_folder:
+                        operation_folder = FolderV2(
+                            name=f"OP{operation_number}",
+                            path=operation_folder_path,
+                            parent_folder=order_folder,
+                            created_by=user
+                        )
+                        commit()
+
+                    # Use the operation folder as the target folder for the document
+                    target_folder = operation_folder
+                else:
+                    # If no operation number, use the order folder
+                    target_folder = order_folder
             else:
                 # If no order number, just use the parent folder
                 target_folder = parent_folder
@@ -3491,8 +3519,11 @@ async def upload_report_document(
             # Parse metadata
             try:
                 metadata_dict = json.loads(metadata) if metadata else {}
+                # Add quantity to metadata if provided
+                if quantity is not None:
+                    metadata_dict["quantity"] = quantity
             except json.JSONDecodeError:
-                metadata_dict = {}
+                metadata_dict = {"quantity": quantity} if quantity is not None else {}
 
             # Create version
             version = DocumentVersionV2(
@@ -3546,6 +3577,7 @@ async def upload_report_document(
         # Add more detailed error logging
         print(f"Error in upload_report_document: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 
 @router.get("/debug/folder/{folder_name}", response_model=Dict)
@@ -5259,4 +5291,290 @@ async def get_ipid_folder_structure(
         raise HTTPException(
             status_code=500,
             detail=f"Error retrieving IPID folder structure: {str(e)}"
+        )
+    
+
+    
+@router.post("/report/generate-consolidated/{order_number}", response_model=DocumentResponse)
+async def generate_consolidated_report(
+    order_number: str,
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Generate a consolidated report by merging PDFs from each operation folder for a given PO number.
+    The consolidated report will be stored in a 'Consolidated Reports' folder under the PO number.
+    """
+    try:
+        with db_session:
+            user = User.get(id=current_user.id)
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+
+            # Get the order
+            order = Order.get(production_order=order_number)
+            if not order:
+                raise HTTPException(status_code=404, detail=f"Order {order_number} not found")
+
+            # Get or create root folder structure
+            root_folder = FolderV2.get(lambda f: f.path == "Document Types")
+            if not root_folder:
+                root_folder = FolderV2(
+                    name="Document Types",
+                    path="Document Types",
+                    created_by=user
+                )
+                commit()
+            elif not root_folder.is_active:
+                root_folder.is_active = True
+                commit()
+
+            # Get or create Report folder
+            report_path = "Document Types/REPORT"
+            report_folder = FolderV2.get(lambda f: f.path == report_path)
+            if not report_folder:
+                report_folder = FolderV2(
+                    name="REPORT",
+                    path=report_path,
+                    parent_folder=root_folder,
+                    created_by=user
+                )
+                commit()
+            elif not report_folder.is_active:
+                report_folder.is_active = True
+                commit()
+
+            # Get or create PO folder
+            po_folder_path = f"{report_path}/{order_number}"
+            po_folder = FolderV2.get(lambda f: f.path == po_folder_path)
+            if not po_folder:
+                po_folder = FolderV2(
+                    name=order_number,
+                    path=po_folder_path,
+                    parent_folder=report_folder,
+                    created_by=user
+                )
+                commit()
+            elif not po_folder.is_active:
+                po_folder.is_active = True
+                commit()
+
+            # Get or create Consolidated Reports folder
+            consolidated_folder_path = f"{po_folder_path}/Consolidated Reports"
+            consolidated_folder = FolderV2.get(lambda f: f.path == consolidated_folder_path)
+            if not consolidated_folder:
+                consolidated_folder = FolderV2(
+                    name="Consolidated Reports",
+                    path=consolidated_folder_path,
+                    parent_folder=po_folder,
+                    created_by=user
+                )
+                commit()
+            elif not consolidated_folder.is_active:
+                consolidated_folder.is_active = True
+                commit()
+
+            # Get all operation folders under the PO folder
+            operation_folders = []
+            print(f"Searching for operation folders under PO folder: {po_folder.path}")
+            
+            # First, get all folders under the PO folder (including inactive ones)
+            all_folders = list(FolderV2.select(
+                lambda f: f.path.startswith(po_folder.path + "/") and 
+                         f.path != consolidated_folder_path and
+                         f.path != po_folder.path
+            ))
+            
+            print(f"Found all folders (active and inactive): {[(f.path, f.is_active) for f in all_folders]}")
+            
+            # Filter for operation folders and reactivate if needed
+            for folder in all_folders:
+                if folder.name.startswith("OP"):
+                    if not folder.is_active:
+                        print(f"Reactivating inactive operation folder: {folder.path}")
+                        folder.is_active = True
+                        commit()
+                    operation_folders.append(folder)
+                    print(f"Found operation folder: {folder.path} (active: {folder.is_active})")
+            
+            print(f"Found operation folders: {[f.path for f in operation_folders]}")
+            
+            # Also try a direct search for specific operation folders if none found
+            if not operation_folders:
+                print("No operation folders found, trying direct search...")
+                direct_search = list(FolderV2.select())
+                for f in direct_search:
+                    if f.path.startswith(po_folder.path + "/OP"):
+                        print(f"Direct search found: {f.path} (active: {f.is_active})")
+                        if not f.is_active:
+                            f.is_active = True
+                            commit()
+                        operation_folders.append(f)
+
+            if not operation_folders:
+                raise HTTPException(status_code=404, detail="No operation folders found")
+
+            # Create a temporary directory to store PDFs
+            with tempfile.TemporaryDirectory() as temp_dir:
+                merger = PyPDF2.PdfMerger()
+                found_pdfs = False
+
+                # Sort operation folders by operation number
+                operation_folders.sort(key=lambda f: int(f.name.replace("OP", "")))
+                print(f"Processing operation folders in order: {[f.name for f in operation_folders]} with paths: {[f.path for f in operation_folders]}")
+
+                # Collect PDFs from each operation folder
+                for op_folder in operation_folders:
+                    print(f"Processing operation folder: {op_folder.name} (path: {op_folder.path})")
+                    
+                    # Get all folders under this operation folder (including the operation folder itself)
+                    operation_related_folders = []
+                    operation_related_folders.append(op_folder)  # Include the operation folder itself
+                    
+                    # Get all subfolders under this operation folder
+                    subfolders = list(FolderV2.select(
+                        lambda f: f.path.startswith(op_folder.path + "/") and f.is_active
+                    ))
+                    operation_related_folders.extend(subfolders)
+                    
+                    print(f"Found {len(operation_related_folders)} folders under {op_folder.name}: {[f.path for f in operation_related_folders]}")
+                    
+                    # Collect all PDFs from all folders under this operation
+                    operation_pdfs = []
+                    for folder in operation_related_folders:
+                        # Get all PDF documents in this folder
+                        pdfs_in_folder = list(select(d for d in DocumentV2 
+                                        if d.folder == folder and 
+                                        d.is_active and 
+                                        d.latest_version and 
+                                        d.latest_version.minio_path.lower().endswith('.pdf')
+                                        ).order_by(lambda d: desc(d.created_at)))
+                        
+                        for pdf_doc in pdfs_in_folder:
+                            operation_pdfs.append((pdf_doc, folder))
+                            print(f"Found PDF in {folder.path}: {pdf_doc.name} (version: {pdf_doc.latest_version.version_number})")
+                    
+                    # Sort all PDFs by creation date (most recent first)
+                    operation_pdfs.sort(key=lambda x: x[0].created_at, reverse=True)
+                    
+                    # Add all PDFs to the merger
+                    pdf_counter = 1
+                    for pdf_doc, folder in operation_pdfs:
+                        found_pdfs = True
+                        # Create a safe filename by removing invalid characters
+                        safe_name = "".join(c for c in pdf_doc.name if c.isalnum() or c in ('-', '_'))
+                        pdf_filename = f"{op_folder.name}_doc{pdf_counter}.pdf"
+                        pdf_path = os.path.join(temp_dir, pdf_filename)
+                        
+                        try:
+                            with open(pdf_path, 'wb') as pdf_file:
+                                file_data = minio.download_file(pdf_doc.latest_version.minio_path)
+                                pdf_file.write(file_data.read())
+                            merger.append(pdf_path)
+                            print(f"Added {pdf_filename} to merger from folder: {folder.path} (original: {pdf_doc.name})")
+                        except Exception as e:
+                            print(f"Error processing PDF {pdf_doc.name}: {str(e)}")
+                            continue
+                        pdf_counter += 1
+                    
+                    if not operation_pdfs:
+                        print(f"No PDFs found in any folder under operation: {op_folder.name}")
+
+                if not found_pdfs:
+                    raise HTTPException(status_code=404, detail="No PDF reports found in operation folders")
+
+                # Create the consolidated PDF
+                consolidated_pdf_path = os.path.join(temp_dir, f"Consolidated_Report_{order_number}.pdf")
+                merger.write(consolidated_pdf_path)
+                merger.close()
+
+                # Create document in the consolidated folder
+                doc_type_obj = DocumentTypeV2.get(name="REPORT")
+                if not doc_type_obj:
+                    raise HTTPException(status_code=404, detail="REPORT document type not found")
+
+                # Create the document
+                new_doc = DocumentV2(
+                    name=f"Consolidated_Report_{order_number}",
+                    folder=consolidated_folder,
+                    doc_type=doc_type_obj,
+                    description=f"Consolidated report for PO {order_number}",
+                    part_number=order_number,
+                    production_order=order,
+                    created_by=user
+                )
+                commit()
+
+                # Upload the consolidated PDF to MinIO
+                version_number = "1.0"
+                minio_path = f"documents/v2/{consolidated_folder.path}/{new_doc.id}/v{version_number}/Consolidated_Report_{order_number}.pdf"
+                
+                with open(consolidated_pdf_path, 'rb') as pdf_file:
+                    file_content = pdf_file.read()
+                    checksum = hashlib.sha256(file_content).hexdigest()
+                    
+                    minio.upload_file(
+                        file=open(consolidated_pdf_path, 'rb'),
+                        object_name=minio_path,
+                        content_type="application/pdf"
+                    )
+
+                # Create version
+                version = DocumentVersionV2(
+                    document=new_doc,
+                    version_number=version_number,
+                    minio_path=minio_path,
+                    file_size=len(file_content),
+                    checksum=checksum,
+                    created_by=user,
+                    metadata={
+                        "consolidated_report": True,
+                        "order_number": order_number,
+                        "generation_date": datetime.utcnow().isoformat()
+                    }
+                )
+                new_doc.latest_version = version
+
+                # Create access log
+                DocumentAccessLogV2(
+                    document=new_doc,
+                    version=version,
+                    user=user,
+                    action_type="UPDATE",
+                    ip_address="0.0.0.0"
+                )
+
+                commit()
+
+                return {
+                    "id": new_doc.id,
+                    "name": new_doc.name,
+                    "folder_id": new_doc.folder.id,
+                    "doc_type_id": new_doc.doc_type.id,
+                    "description": new_doc.description,
+                    "part_number": new_doc.part_number,
+                    "production_order_id": new_doc.production_order.id if new_doc.production_order else None,
+                    "created_at": new_doc.created_at,
+                    "created_by_id": new_doc.created_by.id,
+                    "is_active": new_doc.is_active,
+                    "latest_version": {
+                        "id": version.id,
+                        "document_id": new_doc.id,
+                        "version_number": version.version_number,
+                        "minio_path": version.minio_path,
+                        "file_size": version.file_size,
+                        "checksum": version.checksum,
+                        "created_at": version.created_at,
+                        "created_by_id": version.created_by.id,
+                        "is_active": version.is_active,
+                        "metadata": version.metadata
+                    }
+                }
+
+    except Exception as e:
+        print(f"Error in generate_consolidated_report: {str(e)}")
+        import traceback
+        print(traceback.format_exc())
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An error occurred: {str(e)}"
         )

@@ -2,7 +2,8 @@ from fastapi import APIRouter, HTTPException, Depends, Path, Query
 from typing import Any, List
 import os
 import subprocess
-from pony.orm import db_session, commit, flush, select
+import json
+from pony.orm import db_session, commit, flush, select, desc
 
 from app.core.security import get_current_user
 from app.models import Operation, Order, User
@@ -31,8 +32,8 @@ async def create_master_boc(
     """
     Create a new Master BOC entry
 
-    The bbox field must contain exactly 8 values representing the coordinates:
-    [x1, y1, x2, y2, x3, y3, x4, y4]
+    The bbox field must contain exactly 9 values representing the coordinates:
+    [x1, y1, x2, y2, x3, y3, x4, y4, additional]
 
     Example request body:
     ```json
@@ -46,7 +47,7 @@ async def create_master_boc(
         "dimension_type": "diameter",
         "measured_instrument": "caliper",
         "op_no": 10,
-        "bbox": [100.0, 200.0, 300.0, 200.0, 300.0, 400.0, 100.0, 400.0],
+        "bbox": [100.0, 200.0, 300.0, 200.0, 300.0, 400.0, 100.0, 400.0, 0.0],
         "ipid": "IP123"
     }
     ```
@@ -143,6 +144,9 @@ async def create_stage_inspection(
     - For quantity 1: Creates FTP status entries for all related IPIDs (initially set to not completed)
     - For quantity > 1: Verifies that quantity 1 exists
     - For quantity > 1: Verifies that FTP approval is completed for quantity 1
+
+    The bbox field is optional and must contain exactly 9 values if provided:
+    [x1, y1, x2, y2, x3, y3, x4, y4, additional]
 
     You will receive an error if you attempt to create quantities > 1 before
     FTP approval for quantity 1 is completed.
@@ -289,6 +293,7 @@ async def get_stage_inspection_grouped(
                                 used_inst=si.used_inst,
                                 is_done=si.is_done,
                                 quantity_no=si.quantity_no,
+                                bbox=json.loads(si.bbox) if si.bbox else None,
                                 created_at=si.created_at,
                                 operator=operator_info
                             )
@@ -631,6 +636,7 @@ def get_stage_inspections_by_filter(
                 "op_no": si.op_no,
                 "order_id": si.order_id,
                 "quantity_no": si.quantity_no,
+                "bbox": json.loads(si.bbox) if si.bbox else None,
                 "created_at": si.created_at,
                 "operator": operator_info
             }

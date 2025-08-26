@@ -40,15 +40,16 @@ class StageInspection(db.Entity):
     lowertol = Required(float)
     zone = Required(str)
     dimension_type = Required(str)
-    measured_1 = Required(float)
-    measured_2 = Required(float)
-    measured_3 = Required(float)
-    measured_mean = Required(float)
+    measured_1 = Required(str)
+    measured_2 = Required(str)
+    measured_3 = Required(str)
+    measured_mean = Required(str)
     measured_instrument = Required(str)
     used_inst = Required(str)  # Added new column
     op_no = Required(int)
     order_id = Required(int)
     quantity_no = Optional(int)  # Change from Required to Optional
+    bbox = Optional(str)  # Added bbox field - storing as JSON string like MasterBoc
     is_done = Required(bool, default=False)  # Added is_done field
     created_at = Required(datetime, default=lambda: datetime.now())
 

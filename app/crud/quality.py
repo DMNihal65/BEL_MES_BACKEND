@@ -31,9 +31,9 @@ class MasterBocCRUD:
             if not document:
                 raise ValueError(f"Document with ID {data.document_id} not found")
 
-            # Validate bbox has exactly 8 values
+            # Validate bbox has exactly 9 values
             if len(data.bbox) != 8:
-                raise ValueError("bbox must contain exactly 8 values [x1, y1, x2, y2, x3, y3, x4, y4]")
+                raise ValueError("bbox must contain exactly 9 values [x1, y1, x2, y2, x3, y3, x4, y4, additional]")
 
             # Convert to database format
             db_data = data.to_db_dict()
@@ -213,34 +213,24 @@ class StageInspectionCRUD:
                         f"Cannot add quantity {data.quantity_no} because FTP approval for quantity 1 is still pending for order {data.order_id}, operation {data.op_no}")
 
             # Check if a stage inspection with the same key data exists
+            # Convert bbox to string for comparison if it exists
+            bbox_str = json.dumps(data.bbox) if data.bbox else None
+            
             existing_inspection = select(si for si in StageInspection
                                         if si.order_id == data.order_id
                                         and si.op_no == data.op_no
                                         and si.quantity_no == data.quantity_no
                                         and si.zone == data.zone
                                         and si.dimension_type == data.dimension_type
-                                        and si.nominal_value == data.nominal_value).first()
+                                        and si.nominal_value == data.nominal_value
+                                        and ((si.bbox == bbox_str) if bbox_str is not None else (si.bbox is None))).first()
 
-            stage_inspection_data = {
-                'op_id': data.op_id,
-                'nominal_value': data.nominal_value,
-                'uppertol': data.uppertol,
-                'lowertol': data.lowertol,
-                'zone': data.zone,
-                'dimension_type': data.dimension_type,
-                'measured_1': data.measured_1,
-                'measured_2': data.measured_2,
-                'measured_3': data.measured_3,
-                'measured_mean': data.measured_mean,  # Use mean directly from request data
-                'measured_instrument': data.measured_instrument,
-                'used_inst': data.used_inst,
-                'op_no': data.op_no,
-                'order_id': data.order_id,
-            }
-
-            # Only add quantity_no if it's provided
-            if data.quantity_no is not None:
-                stage_inspection_data['quantity_no'] = data.quantity_no
+            # Convert to database format
+            stage_inspection_data = data.to_db_dict()
+            
+            # Remove quantity_no from stage_inspection_data if it's None to avoid setting it
+            if stage_inspection_data.get('quantity_no') is None:
+                stage_inspection_data.pop('quantity_no', None)
 
             if existing_inspection:
                 # Update existing inspection
@@ -376,6 +366,7 @@ class QualityInspectionCRUD:
                                 measured_instrument=si.measured_instrument,
                                 used_inst=si.used_inst,
                                 quantity_no=si.quantity_no,
+                                bbox=json.loads(si.bbox) if si.bbox else None,
                                 created_at=si.created_at,
                                 operator=operator_info
                             )

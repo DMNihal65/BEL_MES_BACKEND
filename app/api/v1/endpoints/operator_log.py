@@ -503,47 +503,87 @@ class OperationQuantityResponse(BaseModel):
     total_quantity: int
 
 
+# @router.get("/quantities/{operation_id}", response_model=OperationQuantityResponse)
+# async def get_operation_quantities(operation_id: int):
+#     """
+#     Get completed, remaining, and total quantities for a specific operation
+
+#     Args:
+#         operation_id: The ID of the operation to query
+
+#     Returns:
+#         Operation quantity information including completed, remaining, and total quantities
+#     """
+#     try:
+#         # Call the existing dynamic_reschedule function to get the full data
+#         full_response = await dynamic_reschedule()
+
+#         # Find the specific operation in the reschedule data
+#         operation_data = None
+#         for item in full_response.reschedule:
+#             if item.operation_id == operation_id:
+#                 operation_data = item
+#                 break
+
+#         if not operation_data:
+#             raise HTTPException(
+#                 status_code=404,
+#                 detail=f"Operation with ID {operation_id} not found"
+#             )
+
+#         # Extract just the quantities we need
+#         completed_qty = operation_data.completed_qty
+#         remaining_qty = operation_data.remaining_qty
+#         total_qty = completed_qty + remaining_qty
+
+#         return OperationQuantityResponse(
+#             completed_quantity=completed_qty,
+#             remaining_quantity=remaining_qty,
+#             total_quantity=total_qty
+#         )
+
+#     except HTTPException as he:
+#         # Re-raise HTTP exceptions
+#         raise he
+#     except Exception as e:
+#         raise HTTPException(
+#             status_code=500,
+#             detail=f"Error retrieving operation quantities: {str(e)}"
+#         )
+
 @router.get("/quantities/{operation_id}", response_model=OperationQuantityResponse)
-async def get_operation_quantities(operation_id: int):
+@db_session
+def get_operation_quantities(operation_id: int):
     """
-    Get completed, remaining, and total quantities for a specific operation
-
-    Args:
-        operation_id: The ID of the operation to query
-
-    Returns:
-        Operation quantity information including completed, remaining, and total quantities
+    Get completed, remaining, and total quantities for a specific operation using DB data.
     """
     try:
-        # Call the existing dynamic_reschedule function to get the full data
-        full_response = await dynamic_reschedule()
+        operation = Operation.get(id=operation_id)
+        if not operation:
+            schedule_item = PlannedScheduleItem.get(id=operation_id)
+            if schedule_item and schedule_item.operation is not None:
+                operation = schedule_item.operation
+            else:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Operation with ID {operation_id} not found"
+                )
 
-        # Find the specific operation in the reschedule data
-        operation_data = None
-        for item in full_response.reschedule:
-            if item.operation_id == operation_id:
-                operation_data = item
-                break
+        logs_query = select(log for log in ProductionLog if log.operation.id == operation.id)
+        logs_list = list(logs_query)
+        total_completed = sum((log.quantity_completed or 0) for log in logs_list)
 
-        if not operation_data:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Operation with ID {operation_id} not found"
-            )
+        total_quantity = operation.order.required_quantity
+        remaining_quantity = max(0, total_quantity - total_completed)
 
-        # Extract just the quantities we need
-        completed_qty = operation_data.completed_qty
-        remaining_qty = operation_data.remaining_qty
-        total_qty = completed_qty + remaining_qty
-
-        return OperationQuantityResponse(
-            completed_quantity=completed_qty,
-            remaining_quantity=remaining_qty,
-            total_quantity=total_qty
+        response = OperationQuantityResponse(
+            completed_quantity=total_completed,
+            remaining_quantity=remaining_quantity,
+            total_quantity=total_quantity
         )
+        return response
 
     except HTTPException as he:
-        # Re-raise HTTP exceptions
         raise he
     except Exception as e:
         raise HTTPException(

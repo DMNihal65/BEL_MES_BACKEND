@@ -22,6 +22,8 @@ from app.schemas.inventoryv1 import (InventoryCategoryResponse,
                                      StatusCount, CalibrationDue, TransactionSummary,
                                      BulkInventoryItemCreate,
                                      TransactionType, InventoryRequestStatus,
+                                     InventoryReturnRequestResponse, InventoryReturnRequestCreate,
+                                     InventoryReturnRequestUpdate
                                      )
 
 from app.models.inventoryv1 import (
@@ -32,7 +34,7 @@ from app.models.inventoryv1 import (
     CalibrationHistory,
     InventoryRequest,
     InventoryTransaction,
-
+    InventoryReturnRequest
 )
 from app.models.user import User
 from app.core.security import get_current_user  # Import the auth dependency
@@ -62,14 +64,24 @@ def create_category(category: InventoryCategoryCreate):
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
+    current_time = datetime.utcnow()
     new_category = InventoryCategory(
         name=category.name,
         description=category.description,
         created_by=user,
-        created_at=datetime.utcnow()
+        created_at=current_time,
+        updated_at=current_time
     )
     commit()
-    return new_category.to_dict()
+    
+    return {
+        "id": new_category.id,
+        "name": new_category.name,
+        "description": new_category.description,
+        "created_at": new_category.created_at,
+        "updated_at": new_category.updated_at,
+        "created_by": new_category.created_by.id
+    }
 
 
 @router.get("/categories/{category_id}", response_model=InventoryCategoryResponse)
@@ -83,6 +95,7 @@ def get_category(category_id: int):
         "name": category.name,
         "description": category.description,
         "created_at": category.created_at,
+        "updated_at": getattr(category, 'updated_at', None),
         "created_by": category.created_by.id
     }
 
@@ -118,13 +131,16 @@ def create_subcategory(subcategory: InventorySubCategoryCreate):
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
+    current_time = datetime.utcnow()
+    
     new_subcategory = InventorySubCategory(
         category=category,
         name=subcategory.name,
         description=subcategory.description,
         dynamic_fields=subcategory.dynamic_fields,
         created_by=user,
-        created_at=datetime.utcnow()
+        created_at=current_time,
+        updated_at=current_time
     )
     commit()
 
@@ -136,6 +152,7 @@ def create_subcategory(subcategory: InventorySubCategoryCreate):
         "dynamic_fields": new_subcategory.dynamic_fields,
         "category_id": category.id,  # Explicitly include category_id
         "created_at": new_subcategory.created_at,
+        "updated_at": new_subcategory.updated_at,
         "created_by": new_subcategory.created_by.id
     }
     return response_data
@@ -174,6 +191,8 @@ def create_item(item: InventoryItemCreate):
                 detail="Available quantity cannot be greater than total quantity"
             )
 
+        current_time = datetime.utcnow()
+
         # Create new item
         new_item = InventoryItem(
             subcategory=subcategory,
@@ -183,8 +202,8 @@ def create_item(item: InventoryItemCreate):
             available_quantity=item.available_quantity,
             status=item.status.value,
             created_by=user,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow()
+            created_at=current_time,
+            updated_at=current_time
         )
 
         flush()  # Flush to get the ID before commit
@@ -530,13 +549,18 @@ def create_inventory_request(
             if not operation:
                 raise HTTPException(status_code=404, detail="Operation not found")
 
+        # Get the user within the current session
+        user = User.get(id=current_user.id)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
         # Ensure expected_return_date is in UTC
         expected_return_date = request.expected_return_date.replace(tzinfo=timezone.utc)
 
         # Create new request
         new_request = InventoryRequest(
             inventory_item=item,
-            requested_by=User.get(id=current_user.id),
+            requested_by=user,
             order=order,
             operation=operation,
             quantity=request.quantity,
@@ -550,17 +574,39 @@ def create_inventory_request(
             approved_at=None
         )
 
+        # Flush to get the ID
         flush()
         commit()
 
+        # Create response data using the committed object
         response_data = {
             "id": new_request.id,
             "inventory_item_id": item.id,
             "inventory_item_code": new_request.inventory_item.item_code,
-            "requested_by": current_user.id,
-            "requested_by_username": current_user.username,
+            "inventory_item_details": {
+                "id": item.id,
+                "item_code": item.item_code,
+                "dynamic_data": item.dynamic_data,
+                "quantity": item.quantity,
+                "available_quantity": item.available_quantity,
+                "status": item.status,
+                "subcategory": {
+                    "id": item.subcategory.id,
+                    "name": item.subcategory.name,
+                    "description": item.subcategory.description,
+                    "category": {
+                        "id": item.subcategory.category.id,
+                        "name": item.subcategory.category.name,
+                        "description": item.subcategory.category.description
+                    }
+                }
+            },
+            "requested_by": user.id,
+            "requested_by_username": user.username,
             "order_id": order.id,
+            "order_name": order.production_order,
             "operation_id": operation.id if operation else None,
+            "operation_name": operation.operation_description if operation else None,
             "quantity": new_request.quantity,
             "purpose": new_request.purpose,
             "status": new_request.status if isinstance(new_request.status, str) else new_request.status.value,
@@ -576,6 +622,326 @@ def create_inventory_request(
 
         print("Returning response data:", response_data)
         return response_data
+
+    except HTTPException as he:
+        rollback()
+        raise he
+    except Exception as e:
+        rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# Inventory Return Request Endpoints (NEW)
+@router.post("/return-requests/", response_model=InventoryReturnRequestResponse)
+@db_session
+def create_return_request(
+        return_request: InventoryReturnRequestCreate,
+        current_user: User = Depends(get_current_user)
+):
+    """
+    Create a new inventory return request.
+    """
+    try:
+        # Get current time in UTC
+        current_time = datetime.now(timezone.utc)
+
+        # Get the inventory item within the current session
+        item = InventoryItem.get(id=return_request.inventory_item_id)
+        if not item:
+            raise HTTPException(status_code=404, detail="Inventory item not found")
+
+        # Get the original issue request within the current session
+        original_request = InventoryRequest.get(id=return_request.original_request_id)
+        if not original_request:
+            raise HTTPException(status_code=404, detail="Original issue request not found")
+
+        # Validate that the original request is for the same item
+        if original_request.inventory_item.id != item.id:
+            raise HTTPException(
+                status_code=400,
+                detail="Original request must be for the same inventory item"
+            )
+
+        # Validate that the original request is in 'Issued' status
+        if original_request.status != "Issued":
+            raise HTTPException(
+                status_code=400,
+                detail="Can only create return requests for items that are currently issued"
+            )
+
+        # Validate return quantity
+        if return_request.quantity_to_return > original_request.quantity:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Return quantity ({return_request.quantity_to_return}) cannot exceed issued quantity ({original_request.quantity})"
+            )
+
+        # Check if there's already a pending return request for this original request
+        existing_return = select(r for r in InventoryReturnRequest 
+                                if r.original_request.id == return_request.original_request_id 
+                                and r.status == "Pending")[:]
+        if existing_return:
+            raise HTTPException(
+                status_code=400,
+                detail="A return request is already pending for this issue request"
+            )
+
+        # Get the user within the current session
+        user = User.get(id=current_user.id)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        # Create new return request with explicit timestamps
+        new_return_request = InventoryReturnRequest(
+            inventory_item=item,
+            original_request=original_request,
+            requested_by=user,
+            quantity_to_return=return_request.quantity_to_return,
+            return_reason=return_request.return_reason,
+            status="Pending",
+            remarks=return_request.remarks,
+            created_at=current_time,
+            updated_at=current_time,
+            approved_by=None,
+            approved_at=None,
+            actual_return_date=None
+        )
+
+        # Flush to get the ID
+        flush()
+        commit()
+
+        # Create response data using the committed object
+        response_data = {
+            "id": new_return_request.id,
+            "inventory_item_id": item.id,
+            "inventory_item_code": item.item_code,
+            "original_request_id": original_request.id,
+            "requested_by": user.id,
+            "requested_by_username": user.username,
+            "quantity_to_return": new_return_request.quantity_to_return,
+            "return_reason": new_return_request.return_reason,
+            "status": new_return_request.status,
+            "actual_return_date": new_return_request.actual_return_date,
+            "remarks": new_return_request.remarks,
+            "approved_by": None,
+            "approved_by_username": None,
+            "approved_at": None,
+            "created_at": new_return_request.created_at,
+            "updated_at": new_return_request.updated_at
+        }
+
+        return response_data
+
+    except HTTPException as he:
+        rollback()
+        raise he
+    except Exception as e:
+        rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/return-requests/")
+@db_session
+def get_all_return_requests():
+    """
+    Get all inventory return requests, including item details.
+    """
+    try:
+        return_requests = select(r for r in InventoryReturnRequest)[:]
+
+        response_data = []
+        for r in return_requests:
+            item = r.inventory_item
+            response_data.append({
+                "id": r.id,
+                "inventory_item_id": item.id,
+                "inventory_item_code": item.item_code,
+                "inventory_item_details": {
+                    "id": item.id,
+                    "item_code": item.item_code,
+                    "dynamic_data": item.dynamic_data,
+                    "quantity": item.quantity,
+                    "available_quantity": item.available_quantity,
+                    "status": item.status,
+                    "subcategory": {
+                        "id": item.subcategory.id,
+                        "name": item.subcategory.name,
+                        "description": item.subcategory.description,
+                        "category": {
+                            "id": item.subcategory.category.id,
+                            "name": item.subcategory.category.name,
+                            "description": item.subcategory.category.description
+                        }
+                    }
+                },
+                "original_request_id": r.original_request.id,
+                "requested_by": r.requested_by.id,
+                "requested_by_username": r.requested_by.username,
+                "quantity_to_return": r.quantity_to_return,
+                "return_reason": r.return_reason,
+                "status": r.status,
+                "actual_return_date": r.actual_return_date,
+                "remarks": r.remarks,
+                "approved_by": r.approved_by.id if r.approved_by else None,
+                "approved_by_username": r.approved_by.username if r.approved_by else None,
+                "approved_at": r.approved_at,
+                "created_at": r.created_at,
+                "updated_at": r.updated_at
+            })
+
+        return response_data
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/return-requests/{return_request_id}", response_model=InventoryReturnRequestResponse)
+@db_session
+def get_return_request(return_request_id: int):
+    """
+    Get a specific return request by ID.
+    """
+    return_request = InventoryReturnRequest.get(id=return_request_id)
+    if not return_request:
+        raise HTTPException(status_code=404, detail="Return request not found")
+    
+    return {
+        "id": return_request.id,
+        "inventory_item_id": return_request.inventory_item.id,
+        "inventory_item_code": return_request.inventory_item.item_code,
+        "original_request_id": return_request.original_request.id,
+        "requested_by": return_request.requested_by.id,
+        "requested_by_username": return_request.requested_by.username,
+        "quantity_to_return": return_request.quantity_to_return,
+        "return_reason": return_request.return_reason,
+        "status": return_request.status,
+        "actual_return_date": return_request.actual_return_date,
+        "remarks": return_request.remarks,
+        "approved_by": return_request.approved_by.id if return_request.approved_by else None,
+        "approved_by_username": return_request.approved_by.username if return_request.approved_by else None,
+        "approved_at": return_request.approved_at,
+        "created_at": return_request.created_at,
+        "updated_at": return_request.updated_at
+    }
+
+
+@router.put("/return-requests/{return_request_id}/approve", response_model=InventoryReturnRequestResponse)
+@db_session
+def approve_return_request(
+        return_request_id: int,
+        current_user: User = Depends(get_current_user)
+):
+    """
+    Approve a return request (supervisor action).
+    """
+    try:
+        # Get the return request within the current session
+        return_request = InventoryReturnRequest.get(id=return_request_id)
+        if not return_request:
+            raise HTTPException(status_code=404, detail="Return request not found")
+
+        if return_request.status != "Pending":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Return request is not in pending status. Current status: {return_request.status}"
+            )
+
+        # Get the current user within the same session
+        user = User.get(id=current_user.id)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        # Update return request status
+        return_request.status = "Approved"
+        return_request.approved_by = user
+        return_request.approved_at = datetime.now(timezone.utc)
+        return_request.updated_at = datetime.now(timezone.utc)
+
+        commit()
+
+        return {
+            "id": return_request.id,
+            "inventory_item_id": return_request.inventory_item.id,
+            "inventory_item_code": return_request.inventory_item.item_code,
+            "original_request_id": return_request.original_request.id,
+            "requested_by": return_request.requested_by.id,
+            "requested_by_username": return_request.requested_by.username,
+            "quantity_to_return": return_request.quantity_to_return,
+            "return_reason": return_request.return_reason,
+            "status": return_request.status,
+            "actual_return_date": return_request.actual_return_date,
+            "remarks": return_request.remarks,
+            "approved_by": user.id,
+            "approved_by_username": user.username,
+            "approved_at": return_request.approved_at,
+            "created_at": return_request.created_at,
+            "updated_at": return_request.updated_at
+        }
+
+    except HTTPException as he:
+        rollback()
+        raise he
+    except Exception as e:
+        rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/return-requests/{return_request_id}/reject", response_model=InventoryReturnRequestResponse)
+@db_session
+def reject_return_request(
+        return_request_id: int,
+        current_user: User = Depends(get_current_user),
+        remarks: Optional[str] = None
+):
+    """
+    Reject a return request (supervisor action).
+    """
+    try:
+        # Get the return request within the current session
+        return_request = InventoryReturnRequest.get(id=return_request_id)
+        if not return_request:
+            raise HTTPException(status_code=404, detail="Return request not found")
+
+        if return_request.status != "Pending":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Return request is not in pending status. Current status: {return_request.status}"
+            )
+
+        # Get the current user within the same session
+        user = User.get(id=current_user.id)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        # Update return request status
+        return_request.status = "Rejected"
+        return_request.approved_by = user
+        return_request.approved_at = datetime.now(timezone.utc)
+        return_request.updated_at = datetime.now(timezone.utc)
+        if remarks:
+            return_request.remarks = f"Rejected: {remarks}"
+
+        commit()
+
+        return {
+            "id": return_request.id,
+            "inventory_item_id": return_request.inventory_item.id,
+            "inventory_item_code": return_request.inventory_item.item_code,
+            "original_request_id": return_request.original_request.id,
+            "requested_by": return_request.requested_by.id,
+            "requested_by_username": return_request.requested_by.username,
+            "quantity_to_return": return_request.quantity_to_return,
+            "return_reason": return_request.return_reason,
+            "status": return_request.status,
+            "actual_return_date": return_request.actual_return_date,
+            "remarks": return_request.remarks,
+            "approved_by": user.id,
+            "approved_by_username": user.username,
+            "approved_at": return_request.approved_at,
+            "created_at": return_request.created_at,
+            "updated_at": return_request.updated_at
+        }
 
     except HTTPException as he:
         rollback()
@@ -602,6 +968,7 @@ def create_transaction(
             quantity = transaction.quantity
             remarks = transaction.remarks
             request_id = transaction.reference_request_id
+            return_request_id = transaction.reference_return_request_id
 
             # Get the inventory item
             item = InventoryItem.get(id=item_id)
@@ -615,10 +982,21 @@ def create_transaction(
 
             # Get reference request if provided
             request = None
+            return_request = None
+            
             if request_id:
                 request = InventoryRequest.get(id=request_id)
                 if not request:
                     raise HTTPException(status_code=404, detail="Reference request not found")
+            
+            if return_request_id:
+                return_request = InventoryReturnRequest.get(id=return_request_id)
+                if not return_request:
+                    raise HTTPException(status_code=404, detail="Reference return request not found")
+
+            # Store quantities before transaction for history
+            quantity_before = item.available_quantity
+            quantity_after = quantity_before
 
             # Validate transaction quantity based on type
             if transaction_type == TransactionType.ISSUE:
@@ -628,26 +1006,85 @@ def create_transaction(
                         detail=f"Issue quantity ({quantity}) exceeds available quantity ({item.available_quantity})"
                     )
                 item.available_quantity -= quantity
+                quantity_after = item.available_quantity
+                
+                # Update request status to 'Issued'
+                if request:
+                    if request.status != "Approved":
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Can only issue items from approved requests"
+                        )
+                    request.status = "Issued"
+                    request.updated_at = datetime.now(timezone.utc)
+                    
             elif transaction_type == TransactionType.RETURN:
+                # For returns, we need to validate against the return request
+                if not return_request:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Return transactions must reference a return request"
+                    )
+                
+                if return_request.status != "Approved":
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Can only process returns from approved return requests"
+                    )
+                
+                # Validate return quantity
+                if quantity > return_request.quantity_to_return:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Return quantity ({quantity}) exceeds requested return quantity ({return_request.quantity_to_return})"
+                    )
+                
+                # Check if we're not returning more than what was issued
                 max_returnable = item.quantity - item.available_quantity
                 if quantity > max_returnable:
                     raise HTTPException(
                         status_code=400,
                         detail=f"Return quantity exceeds issued quantity. Maximum returnable: {max_returnable}"
                     )
+                
                 item.available_quantity += quantity
+                quantity_after = item.available_quantity
+                
+                # Update return request status to 'Completed'
+                return_request.status = "Completed"
+                return_request.actual_return_date = datetime.now(timezone.utc)
+                return_request.updated_at = datetime.now(timezone.utc)
+                
+                # Update the original issue request status to 'Returned' if all items are returned
+                original_request = return_request.original_request
+                if original_request:
+                    # Check if this completes the return for the original request
+                    total_returned = sum(
+                        tr.quantity for tr in InventoryTransaction.select()
+                        if tr.reference_return_request and 
+                        tr.reference_return_request.original_request.id == original_request.id and
+                        tr.transaction_type == "Return"
+                    ) + quantity
+                    
+                    if total_returned >= original_request.quantity:
+                        original_request.status = "Returned"
+                        original_request.actual_return_date = datetime.now(timezone.utc)
+                        original_request.updated_at = datetime.now(timezone.utc)
 
             current_time = datetime.now(timezone.utc)
 
-            # Create transaction record
+            # Create transaction record with enhanced history
             new_transaction = InventoryTransaction(
                 inventory_item=item,
                 transaction_type=transaction_type.value,
                 quantity=quantity,
+                quantity_before=quantity_before,
+                quantity_after=quantity_after,
                 reference_request=request,
+                reference_return_request=return_request,
                 performed_by=user,
-                remarks=remarks,
-                created_at=current_time
+                remarks=remarks
+                # Remove created_at - let Pony ORM handle it automatically
             )
 
             # Update item timestamp
@@ -655,13 +1092,6 @@ def create_transaction(
 
             # Flush changes to get IDs
             flush()
-
-            # Update reference request if provided
-            if request:
-                request.status = InventoryRequestStatus.APPROVED.value  # Use .value for string
-                request.approved_at = current_time
-                request.approved_by = user
-                request.updated_at = current_time  # Update the updated_at field
 
             # Commit changes
             commit()
@@ -672,11 +1102,14 @@ def create_transaction(
                 "inventory_item_id": item_id,
                 "transaction_type": transaction_type.value,
                 "quantity": quantity,
+                "quantity_before": quantity_before,
+                "quantity_after": quantity_after,
                 "reference_request_id": request_id,
+                "reference_return_request_id": return_request_id,
                 "performed_by": user_id,
                 "performed_by_username": user.username,
                 "remarks": remarks,
-                "created_at": current_time
+                "created_at": new_transaction.created_at  # Use the automatically generated timestamp
             }
 
             return response_data
@@ -719,7 +1152,10 @@ def get_item_transactions(
             "inventory_item_id": t.inventory_item.id,
             "transaction_type": t.transaction_type,
             "quantity": t.quantity,
+            "quantity_before": getattr(t, 'quantity_before', None),
+            "quantity_after": getattr(t, 'quantity_after', None),
             "reference_request_id": t.reference_request.id if t.reference_request else None,
+            "reference_return_request_id": getattr(t, 'reference_return_request', None).id if getattr(t, 'reference_return_request', None) else None,
             "performed_by": t.performed_by.id,
             "performed_by_username": t.performed_by.username,
             "remarks": t.remarks,
@@ -737,6 +1173,7 @@ def bulk_return_items(
 ):
     """
     Process bulk returns for multiple inventory requests.
+    DEPRECATED: Use the new return request workflow instead.
     """
     transactions = []
 
@@ -760,10 +1197,13 @@ def bulk_return_items(
                 inventory_item=request.inventory_item,
                 transaction_type=TransactionType.RETURN.value,
                 quantity=request.quantity,
+                quantity_before=request.inventory_item.available_quantity,
+                quantity_after=request.inventory_item.available_quantity + request.quantity,
                 reference_request=request,
+                reference_return_request=None,
                 performed_by=current_user,
-                remarks=f"Bulk return for request {request_id}",
-                created_at=datetime.now(timezone.utc)
+                remarks=f"Bulk return for request {request_id}"
+                # Remove created_at - let Pony ORM handle it automatically
             )
 
             # Update inventory item
@@ -785,17 +1225,138 @@ def bulk_return_items(
                 "inventory_item_id": t.inventory_item.id,
                 "transaction_type": t.transaction_type,
                 "quantity": t.quantity,
+                "quantity_before": getattr(t, 'quantity_before', None),
+                "quantity_after": getattr(t, 'quantity_after', None),
                 "reference_request_id": t.reference_request.id,
+                "reference_return_request_id": None,
                 "performed_by": current_user.id,
                 "performed_by_username": current_user.username,
                 "remarks": t.remarks,
-                "created_at": t.created_at
+                "created_at": t.created_at  # Use the automatically generated timestamp
             }
             for t in transactions
         ]
 
     except Exception as e:
         rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/transactions/process-return/", response_model=InventoryTransactionResponse)
+def process_return_transaction(
+        return_request_id: int,
+        quantity: int,
+        remarks: Optional[str] = None,
+        current_user: User = Depends(get_current_user)
+):
+    """
+    Process a return transaction for an approved return request.
+    This is the new workflow for processing returns.
+    """
+    try:
+        with db_session:
+            # Get the return request within the current session
+            return_request = InventoryReturnRequest.get(id=return_request_id)
+            if not return_request:
+                raise HTTPException(status_code=404, detail="Return request not found")
+
+            if return_request.status != "Approved":
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Return request must be approved. Current status: {return_request.status}"
+                )
+
+            # Validate return quantity
+            if quantity > return_request.quantity_to_return:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Return quantity ({quantity}) exceeds requested return quantity ({return_request.quantity_to_return})"
+                )
+
+            # Get the inventory item within the same session
+            item = return_request.inventory_item
+            
+            # Check if we're not returning more than what was issued
+            max_returnable = item.quantity - item.available_quantity
+            if quantity > max_returnable:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Return quantity exceeds issued quantity. Maximum returnable: {max_returnable}"
+                )
+
+            # Get the current user within the same session
+            user = User.get(id=current_user.id)
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+
+            # Store quantities for history
+            quantity_before = item.available_quantity
+            item.available_quantity += quantity
+            quantity_after = item.available_quantity
+
+            current_time = datetime.now(timezone.utc)
+
+            # Create return transaction
+            new_transaction = InventoryTransaction(
+                inventory_item=item,
+                transaction_type=TransactionType.RETURN.value,
+                quantity=quantity,
+                quantity_before=quantity_before,
+                quantity_after=quantity_after,
+                reference_request=None,
+                reference_return_request=return_request,
+                performed_by=user,
+                remarks=remarks or f"Return processed for return request {return_request_id}"
+                # Remove created_at - let Pony ORM handle it automatically
+            )
+
+            # Update item timestamp
+            item.updated_at = current_time
+
+            # Update return request status to 'Completed'
+            return_request.status = "Completed"
+            return_request.actual_return_date = current_time
+            return_request.updated_at = current_time
+
+            # Update the original issue request status to 'Returned' if all items are returned
+            original_request = return_request.original_request
+            if original_request:
+                # Check if this completes the return for the original request
+                total_returned = sum(
+                    tr.quantity for tr in InventoryTransaction.select()
+                    if tr.reference_return_request and 
+                    tr.reference_return_request.original_request.id == original_request.id and
+                    tr.transaction_type == "Return"
+                ) + quantity
+                
+                if total_returned >= original_request.quantity:
+                    original_request.status = "Returned"
+                    original_request.actual_return_date = current_time
+                    original_request.updated_at = current_time
+
+            # Flush changes to get IDs
+            flush()
+            commit()
+
+            # Create response data
+            response_data = {
+                "id": new_transaction.id,
+                "inventory_item_id": item.id,
+                "transaction_type": TransactionType.RETURN.value,
+                "quantity": quantity,
+                "quantity_before": quantity_before,
+                "quantity_after": quantity_after,
+                "reference_request_id": None,
+                "reference_return_request_id": return_request_id,
+                "performed_by": user.id,
+                "performed_by_username": user.username,
+                "remarks": remarks or f"Return processed for return request {return_request_id}",
+                "created_at": new_transaction.created_at  # Use the automatically generated timestamp
+            }
+
+            return response_data
+
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -837,6 +1398,7 @@ def get_all_categories():
             "name": c.name,
             "description": c.description,
             "created_at": c.created_at,
+            "updated_at": getattr(c, 'updated_at', None),
             "created_by": c.created_by.id
         }
         for c in categories
@@ -855,9 +1417,18 @@ def update_category(category_id: int, category: InventoryCategoryUpdate):
     if category.description is not None:
         db_category.description = category.description
 
-    db_category.updated_at = datetime.utcnow()
+    current_time = datetime.utcnow()
+    db_category.updated_at = current_time
     commit()
-    return db_category.to_dict()
+    
+    return {
+        "id": db_category.id,
+        "name": db_category.name,
+        "description": db_category.description,
+        "created_at": db_category.created_at,
+        "updated_at": db_category.updated_at,
+        "created_by": db_category.created_by.id
+    }
 
 
 @router.delete("/categories/{category_id}", status_code=204)
@@ -883,6 +1454,7 @@ def get_all_subcategories():
             "dynamic_fields": s.dynamic_fields,
             "category_id": s.category.id,
             "created_at": s.created_at,
+            "updated_at": getattr(s, 'updated_at', None),
             "created_by": s.created_by.id
         }
         for s in subcategories
@@ -902,6 +1474,7 @@ def get_subcategory(subcategory_id: int):
         "dynamic_fields": subcategory.dynamic_fields,
         "category_id": subcategory.category.id,
         "created_at": subcategory.created_at,
+        "updated_at": getattr(subcategory, 'updated_at', None),
         "created_by": subcategory.created_by.id
     }
 
@@ -926,8 +1499,10 @@ def update_subcategory(subcategory_id: int, subcategory: InventorySubCategoryUpd
                 raise HTTPException(status_code=404, detail="New category not found")
             db_subcategory.category = new_category
 
-        db_subcategory.updated_at = datetime.utcnow()
+        current_time = datetime.utcnow()
+        db_subcategory.updated_at = current_time
         commit()
+        
         # Return only serializable fields
         return {
             "id": db_subcategory.id,
@@ -936,6 +1511,7 @@ def update_subcategory(subcategory_id: int, subcategory: InventorySubCategoryUpd
             "dynamic_fields": db_subcategory.dynamic_fields,
             "category_id": db_subcategory.category.id,
             "created_at": db_subcategory.created_at,
+            "updated_at": db_subcategory.updated_at,
             "created_by": db_subcategory.created_by.id
         }
     except Exception as e:
@@ -1168,6 +1744,7 @@ def create_calibration_history(history: CalibrationHistoryCreate):
             detail="Next due date must be after calibration date"
         )
 
+    current_time = datetime.utcnow()
     new_history = CalibrationHistory(
         calibration_schedule=schedule,
         calibration_date=history.calibration_date,
@@ -1176,7 +1753,8 @@ def create_calibration_history(history: CalibrationHistoryCreate):
         remarks=history.remarks,
         next_due_date=history.next_due_date,
         performed_by=performer,
-        created_at=datetime.utcnow()
+        created_at=current_time,
+        updated_at=current_time
     )
     commit()
 
@@ -1190,7 +1768,8 @@ def create_calibration_history(history: CalibrationHistoryCreate):
         "next_due_date": new_history.next_due_date,
         "performed_by": performer.id,
         "performed_by_username": performer.username,
-        "created_at": new_history.created_at
+        "created_at": new_history.created_at,
+        "updated_at": new_history.updated_at
     }
     return response_data
 
@@ -1210,7 +1789,8 @@ def get_all_calibration_history():
             "next_due_date": h.next_due_date,
             "performed_by": h.performed_by.id,
             "performed_by_username": h.performed_by.username,
-            "created_at": h.created_at
+            "created_at": h.created_at,
+            "updated_at": getattr(h, 'updated_at', None)
         }
         for h in histories
     ]
@@ -1232,12 +1812,13 @@ def get_calibration_history(history_id: int):
         "next_due_date": history.next_due_date,
         "performed_by": history.performed_by.id,
         "performed_by_username": history.performed_by.username,
-        "created_at": history.created_at
+        "created_at": history.created_at,
+        "updated_at": getattr(history, 'updated_at', None)
     }
 
 
 # Inventory Request Endpoints
-@router.get("/requests/", response_model=List[InventoryRequestResponse])
+@router.get("/requests/")
 @db_session
 def get_all_requests():
     """
@@ -1258,10 +1839,30 @@ def get_all_requests():
                 "id": r.id,
                 "inventory_item_id": r.inventory_item.id,
                 "inventory_item_code": r.inventory_item.item_code,
+                "inventory_item_details": {
+                    "id": r.inventory_item.id,
+                    "item_code": r.inventory_item.item_code,
+                    "dynamic_data": r.inventory_item.dynamic_data,
+                    "quantity": r.inventory_item.quantity,
+                    "available_quantity": r.inventory_item.available_quantity,
+                    "status": r.inventory_item.status,
+                    "subcategory": {
+                        "id": r.inventory_item.subcategory.id,
+                        "name": r.inventory_item.subcategory.name,
+                        "description": r.inventory_item.subcategory.description,
+                        "category": {
+                            "id": r.inventory_item.subcategory.category.id,
+                            "name": r.inventory_item.subcategory.category.name,
+                            "description": r.inventory_item.subcategory.category.description
+                        }
+                    }
+                },
                 "requested_by": r.requested_by.id,
                 "requested_by_username": r.requested_by.username,
                 "order_id": r.order.id,
+                "order_name": r.order.production_order,  # Use production_order as order name
                 "operation_id": r.operation.id if r.operation else None,
+                "operation_name": r.operation.operation_description if r.operation else None,
                 "quantity": r.quantity,
                 "purpose": r.purpose,
                 "status": status,  # Use the mapped status
@@ -1293,11 +1894,31 @@ def get_request(request_id: int):
     return {
         "id": request.id,
         "inventory_item_id": request.inventory_item.id,
+        "inventory_item_code": request.inventory_item.item_code,
+        "inventory_item_details": {
+            "id": request.inventory_item.id,
+            "item_code": request.inventory_item.item_code,
+            "dynamic_data": request.inventory_item.dynamic_data,
+            "quantity": request.inventory_item.quantity,
+            "available_quantity": request.inventory_item.available_quantity,
+            "status": request.inventory_item.status,
+            "subcategory": {
+                "id": request.inventory_item.subcategory.id,
+                "name": request.inventory_item.subcategory.name,
+                "description": request.inventory_item.subcategory.description,
+                "category": {
+                    "id": request.inventory_item.subcategory.category.id,
+                    "name": request.inventory_item.subcategory.category.name,
+                    "description": request.inventory_item.subcategory.category.description
+                }
+            }
+        },
         "requested_by": request.requested_by.id,
         "requested_by_username": request.requested_by.username,
-        "inventory_item_code": request.inventory_item.item_code,
         "order_id": request.order.id,
+        "order_name": request.order.production_order,
         "operation_id": request.operation.id if request.operation else None,
+        "operation_name": request.operation.operation_description if request.operation else None,
         "quantity": request.quantity,
         "purpose": request.purpose,
         "status": request.status,
@@ -1342,6 +1963,175 @@ def update_request(request_id: int, request: InventoryRequestUpdate):
     db_request.updated_at = datetime.utcnow()
     commit()
     return db_request.to_dict()
+
+
+@router.put("/requests/{request_id}/approve", response_model=InventoryRequestResponse)
+@db_session
+def approve_request(
+        request_id: int,
+        current_user: User = Depends(get_current_user)
+):
+    """
+    Approve an inventory request (supervisor action).
+    """
+    try:
+        # Get the request within the current session
+        request = InventoryRequest.get(id=request_id)
+        if not request:
+            raise HTTPException(status_code=404, detail="Request not found")
+
+        if request.status != "Pending":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Request is not in pending status. Current status: {request.status}"
+            )
+
+        # Get the current user within the same session
+        user = User.get(id=current_user.id)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        # Update request status
+        request.status = "Approved"
+        request.approved_by = user
+        request.approved_at = datetime.now(timezone.utc)
+        request.updated_at = datetime.now(timezone.utc)
+
+        commit()
+
+        return {
+            "id": request.id,
+            "inventory_item_id": request.inventory_item.id,
+            "inventory_item_code": request.inventory_item.item_code,
+            "inventory_item_details": {
+                "id": request.inventory_item.id,
+                "item_code": request.inventory_item.item_code,
+                "dynamic_data": request.inventory_item.dynamic_data,
+                "quantity": request.inventory_item.quantity,
+                "available_quantity": request.inventory_item.available_quantity,
+                "status": request.inventory_item.status,
+                "subcategory": {
+                    "id": request.inventory_item.subcategory.id,
+                    "name": request.inventory_item.subcategory.name,
+                    "description": request.inventory_item.subcategory.description,
+                    "category": {
+                        "id": request.inventory_item.subcategory.category.id,
+                        "name": request.inventory_item.subcategory.category.name,
+                        "description": request.inventory_item.subcategory.category.description
+                    }
+                }
+            },
+            "requested_by": request.requested_by.id,
+            "requested_by_username": request.requested_by.username,
+            "order_id": request.order.id,
+            "order_name": request.order.production_order,
+            "operation_id": request.operation.id if request.operation else None,
+            "operation_name": request.operation.operation_description if request.operation else None,
+            "quantity": request.quantity,
+            "purpose": request.purpose,
+            "status": request.status,
+            "expected_return_date": request.expected_return_date,
+            "actual_return_date": request.actual_return_date,
+            "remarks": request.remarks,
+            "approved_by": current_user.id,
+            "approved_by_username": current_user.username,
+            "approved_at": request.approved_at,
+            "created_at": request.created_at,
+            "updated_at": request.updated_at
+        }
+
+    except HTTPException as he:
+        rollback()
+        raise he
+    except Exception as e:
+        rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/requests/{request_id}/reject", response_model=InventoryRequestResponse)
+@db_session
+def reject_request(
+        request_id: int,
+        current_user: User = Depends(get_current_user),
+        remarks: Optional[str] = None
+):
+    """
+    Reject an inventory request (supervisor action).
+    """
+    try:
+        # Get the request within the current session
+        request = InventoryRequest.get(id=request_id)
+        if not request:
+            raise HTTPException(status_code=404, detail="Request not found")
+
+        if request.status != "Pending":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Request is not in pending status. Current status: {request.status}"
+            )
+
+        # Get the current user within the same session
+        user = User.get(id=current_user.id)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        # Update request status
+        request.status = "Rejected"
+        request.approved_by = user
+        request.approved_at = datetime.now(timezone.utc)
+        request.updated_at = datetime.now(timezone.utc)
+        if remarks:
+            request.remarks = f"Rejected: {remarks}"
+
+        commit()
+
+        return {
+            "id": request.id,
+            "inventory_item_id": request.inventory_item.id,
+            "inventory_item_code": request.inventory_item.item_code,
+            "inventory_item_details": {
+                "id": request.inventory_item.id,
+                "item_code": request.inventory_item.item_code,
+                "dynamic_data": request.inventory_item.dynamic_data,
+                "quantity": request.inventory_item.quantity,
+                "available_quantity": request.inventory_item.available_quantity,
+                "status": request.inventory_item.status,
+                "subcategory": {
+                    "id": request.inventory_item.subcategory.id,
+                    "name": request.inventory_item.subcategory.name,
+                    "description": request.inventory_item.subcategory.description,
+                    "category": {
+                        "id": request.inventory_item.subcategory.category.id,
+                        "name": request.inventory_item.subcategory.category.name,
+                        "description": request.inventory_item.subcategory.category.description
+                    }
+                }
+            },
+            "requested_by": request.requested_by.id,
+            "requested_by_username": request.requested_by.username,
+            "order_id": request.order.id,
+            "order_name": request.order.production_order,
+            "operation_id": request.operation.id if request.operation else None,
+            "operation_name": request.operation.operation_description if request.operation else None,
+            "quantity": request.quantity,
+            "purpose": request.purpose,
+            "status": request.status,
+            "expected_return_date": request.expected_return_date,
+            "actual_return_date": request.actual_return_date,
+            "remarks": request.remarks,
+            "approved_by": user.id,
+            "approved_by_username": user.username,
+            "approved_at": request.approved_at,
+            "created_at": request.created_at,
+            "updated_at": request.updated_at
+        }
+
+    except HTTPException as he:
+        rollback()
+        raise he
+    except Exception as e:
+        rollback()
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # Analytics Endpoints
@@ -1394,6 +2184,291 @@ def get_transaction_summary():
     return [{"transaction_type": k, "total_quantity": v} for k, v in summary.items()]
 
 
+@router.get("/analytics/return-requests-summary", response_model=dict)
+@db_session
+def get_return_requests_summary():
+    """
+    Get summary of return requests by status.
+    """
+    try:
+        return_requests = select(r for r in InventoryReturnRequest)[:]
+        
+        summary = {
+            "total": len(return_requests),
+            "by_status": {},
+            "pending_count": 0,
+            "approved_count": 0,
+            "completed_count": 0,
+            "rejected_count": 0
+        }
+        
+        for req in return_requests:
+            status = req.status
+            if status not in summary["by_status"]:
+                summary["by_status"][status] = 0
+            summary["by_status"][status] += 1
+            
+            if status == "Pending":
+                summary["pending_count"] += 1
+            elif status == "Approved":
+                summary["approved_count"] += 1
+            elif status == "Completed":
+                summary["completed_count"] += 1
+            elif status == "Rejected":
+                summary["rejected_count"] += 1
+        
+        return summary
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/analytics/request-workflow-summary", response_model=dict)
+@db_session
+def get_request_workflow_summary():
+    """
+    Get summary of both issue and return request workflows.
+    """
+    try:
+        issue_requests = select(r for r in InventoryRequest)[:]
+        return_requests = select(r for r in InventoryReturnRequest)[:]
+        
+        summary = {
+            "issue_requests": {
+                "total": len(issue_requests),
+                "by_status": {},
+                "pending_approval": 0,
+                "approved": 0,
+                "issued": 0,
+                "returned": 0,
+                "rejected": 0
+            },
+            "return_requests": {
+                "total": len(return_requests),
+                "by_status": {},
+                "pending_approval": 0,
+                "approved": 0,
+                "completed": 0,
+                "rejected": 0
+            },
+            "workflow_efficiency": {
+                "avg_time_to_approve_issue": None,
+                "avg_time_to_approve_return": None,
+                "avg_time_to_return": None
+            }
+        }
+        
+        # Process issue requests
+        for req in issue_requests:
+            status = req.status
+            if status not in summary["issue_requests"]["by_status"]:
+                summary["issue_requests"]["by_status"][status] = 0
+            summary["issue_requests"]["by_status"][status] += 1
+            
+            if status == "Pending":
+                summary["issue_requests"]["pending_approval"] += 1
+            elif status == "Approved":
+                summary["issue_requests"]["approved"] += 1
+            elif status == "Issued":
+                summary["issue_requests"]["issued"] += 1
+            elif status == "Returned":
+                summary["issue_requests"]["returned"] += 1
+            elif status == "Rejected":
+                summary["issue_requests"]["rejected"] += 1
+        
+        # Process return requests
+        for req in return_requests:
+            status = req.status
+            if status not in summary["return_requests"]["by_status"]:
+                summary["return_requests"]["by_status"][status] = 0
+            summary["return_requests"]["by_status"][status] += 1
+            
+            if status == "Pending":
+                summary["return_requests"]["pending_approval"] += 1
+            elif status == "Approved":
+                summary["return_requests"]["approved"] += 1
+            elif status == "Completed":
+                summary["return_requests"]["completed"] += 1
+            elif status == "Rejected":
+                summary["return_requests"]["rejected"] += 1
+        
+        return summary
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/analytics/transaction-history-enhanced", response_model=dict)
+@db_session
+def get_enhanced_transaction_history(
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+        item_id: Optional[int] = None,
+        transaction_type: Optional[TransactionType] = None,
+        limit: int = 1000000,
+        offset: int = 0
+):
+    """
+    Get enhanced transaction history with quantity tracking and return request details.
+    """
+    try:
+        if not end_date:
+            end_date = datetime.now(timezone.utc)
+        if not start_date:
+            start_date = end_date - timedelta(days=30)
+
+        # Build base query
+        query = select(t for t in InventoryTransaction
+                       if t.created_at >= start_date and
+                       t.created_at <= end_date)
+
+        # Apply filters
+        if item_id:
+            query = select(t for t in query if t.inventory_item.id == item_id)
+        if transaction_type:
+            query = select(t for t in query if t.transaction_type == transaction_type.value)
+
+        # Get total count for pagination
+        total_count = query.count()
+
+        # Apply pagination and ordering
+        transactions = query.order_by(lambda t: desc(t.created_at))[offset:offset + limit]
+
+        # Prepare response
+        response = {
+            "metadata": {
+                "total_count": total_count,
+                "limit": limit,
+                "offset": offset,
+                "filtered_count": len(transactions)
+            },
+            "time_range": {
+                "start_date": start_date,
+                "end_date": end_date
+            },
+            "transactions": []
+        }
+
+        for t in transactions:
+            item = t.inventory_item
+            performer = t.performed_by
+
+            # Build transaction detail with enhanced info
+            transaction_detail = {
+                "transaction": {
+                    "id": t.id,
+                    "type": t.transaction_type,
+                    "quantity": t.quantity,
+                    "quantity_before": t.quantity_before,
+                    "quantity_after": t.quantity_after,
+                    "remarks": t.remarks,
+                    "created_at": t.created_at,
+                    "performed_by": {
+                        "id": performer.id,
+                        "username": performer.username
+                    }
+                },
+                "item": {
+                    "id": item.id,
+                    "item_code": item.item_code,
+                    "dynamic_data": item.dynamic_data,
+                    "quantity": item.quantity,
+                    "available_quantity": item.available_quantity,
+                    "status": item.status,
+                    "subcategory": {
+                        "id": item.subcategory.id,
+                        "name": item.subcategory.name,
+                        "description": item.subcategory.description,
+                        "category": {
+                            "id": item.subcategory.category.id,
+                            "name": item.subcategory.category.name,
+                            "description": item.subcategory.category.description
+                        }
+                    }
+                }
+            }
+
+            # Add related request info if exists
+            if t.reference_request:
+                request = t.reference_request
+                transaction_detail["issue_request"] = {
+                    "id": request.id,
+                    "status": request.status,
+                    "purpose": request.purpose,
+                    "requested_by": {
+                        "id": request.requested_by.id,
+                        "username": request.requested_by.username
+                    },
+                    "expected_return_date": request.expected_return_date,
+                    "remarks": request.remarks,
+                    "actual_return_date": request.actual_return_date,
+                    "order_id": request.order.id,
+                    "operation_id": request.operation.id if request.operation else None
+                }
+            else:
+                transaction_detail["issue_request"] = None
+
+            # Add related return request info if exists
+            if t.reference_return_request:
+                return_req = t.reference_return_request
+                transaction_detail["return_request"] = {
+                    "id": return_req.id,
+                    "status": return_req.status,
+                    "return_reason": return_req.return_reason,
+                    "remarks": return_req.remarks,
+                    "requested_by": {
+                        "id": return_req.requested_by.id,
+                        "username": return_req.requested_by.username
+                    },
+                    "original_request_id": return_req.original_request.id,
+                    "actual_return_date": return_req.actual_return_date
+                }
+            else:
+                transaction_detail["return_request"] = None
+
+            response["transactions"].append(transaction_detail)
+
+        # Add summary statistics
+        response["summary"] = {
+            "total_transactions": total_count,
+            "transaction_types": {},
+            "total_quantity_moved": 0,
+            "quantity_changes": {
+                "total_issued": 0,
+                "total_returned": 0,
+                "net_change": 0
+            }
+        }
+
+        # Calculate summary statistics
+        for t in transactions:
+            t_type = t.transaction_type
+            if t_type not in response["summary"]["transaction_types"]:
+                response["summary"]["transaction_types"][t_type] = {
+                    "count": 0,
+                    "total_quantity": 0
+                }
+            response["summary"]["transaction_types"][t_type]["count"] += 1
+            response["summary"]["transaction_types"][t_type]["total_quantity"] += t.quantity
+            response["summary"]["total_quantity_moved"] += t.quantity
+            
+            # Track quantity changes
+            if t_type == "Issue":
+                response["summary"]["quantity_changes"]["total_issued"] += t.quantity
+            elif t_type == "Return":
+                response["summary"]["quantity_changes"]["total_returned"] += t.quantity
+        
+        response["summary"]["quantity_changes"]["net_change"] = (
+            response["summary"]["quantity_changes"]["total_returned"] - 
+            response["summary"]["quantity_changes"]["total_issued"]
+        )
+
+        return response
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # Add this new endpoint after the existing subcategories endpoints
 @router.get("/categories/{category_id}/subcategories", response_model=List[InventorySubCategoryResponse])
 @db_session
@@ -1420,6 +2495,7 @@ def get_subcategories_by_category(category_id: int):
             "dynamic_fields": s.dynamic_fields,
             "category_id": s.category.id,
             "created_at": s.created_at,
+            "updated_at": getattr(s, 'updated_at', None),
             "created_by": s.created_by.id
         }
         for s in subcategories

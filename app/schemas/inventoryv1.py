@@ -19,8 +19,16 @@ class CalibrationResult(str, Enum):
 class InventoryRequestStatus(str, Enum):
     PENDING = "Pending"
     APPROVED = "Approved"
+    ISSUED = "Issued"  # New status for issued items
     REJECTED = "Rejected"
     RETURNED = "Returned"
+
+
+class InventoryReturnRequestStatus(str, Enum):
+    PENDING = "Pending"
+    APPROVED = "Approved"
+    REJECTED = "Rejected"
+    COMPLETED = "Completed"
 
 
 class TransactionType(str, Enum):
@@ -42,10 +50,16 @@ class InventoryCategoryCreate(InventoryCategoryBase):
 class InventoryCategoryResponse(InventoryCategoryBase):
     id: int
     created_at: datetime
+    updated_at: Optional[datetime] = None
     created_by: int
 
     class Config:
         from_attributes = True
+
+
+class InventoryCategoryUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
 
 
 # Inventory SubCategory Schemas
@@ -64,10 +78,18 @@ class InventorySubCategoryResponse(InventorySubCategoryBase):
     id: int
     category_id: int
     created_at: datetime
+    updated_at: Optional[datetime] = None
     created_by: int
 
     class Config:
         from_attributes = True
+
+
+class InventorySubCategoryUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    dynamic_fields: Optional[Dict[str, Any]] = None
+    category_id: Optional[int] = None
 
 
 # Inventory Item Schemas
@@ -133,6 +155,15 @@ class InventoryItemResponse(InventoryItemBase):
         from_attributes = True
 
 
+class InventoryItemUpdate(BaseModel):
+    item_code: Optional[str] = None
+    dynamic_data: Optional[Dict[str, Any]] = None
+    quantity: Optional[int] = None
+    available_quantity: Optional[int] = None
+    status: Optional[InventoryItemStatus] = None
+    subcategory_id: Optional[int] = None
+
+
 # Calibration Schedule Schemas
 class CalibrationScheduleBase(BaseModel):
     calibration_type: str
@@ -158,6 +189,14 @@ class CalibrationScheduleResponse(CalibrationScheduleBase):
         from_attributes = True
 
 
+class CalibrationScheduleUpdate(BaseModel):
+    calibration_type: Optional[str] = None
+    frequency_days: Optional[int] = None
+    last_calibration: Optional[datetime] = None
+    next_calibration: Optional[datetime] = None
+    remarks: Optional[str] = None
+
+
 # Calibration History Schemas
 class CalibrationHistoryBase(BaseModel):
     calibration_date: datetime
@@ -177,12 +216,13 @@ class CalibrationHistoryResponse(CalibrationHistoryBase):
     calibration_schedule_id: int
     performed_by: int
     created_at: datetime
+    updated_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
 
 
-# Inventory Request Schemas
+# Inventory Request Schemas (Issue Request)
 class InventoryRequestBase(BaseModel):
     quantity: int
     purpose: str
@@ -190,7 +230,6 @@ class InventoryRequestBase(BaseModel):
     expected_return_date: datetime
     actual_return_date: Optional[datetime] = None
     remarks: Optional[str] = None
-    inventory_item_code: str
 
 
 class InventoryRequestCreate(BaseModel):
@@ -224,7 +263,7 @@ class InventoryRequestResponse(InventoryRequestBase):
     inventory_item_code: str
     requested_by: int
     requested_by_username: str
-    order_id: int
+    order_id: Optional[int]
     operation_id: Optional[int]
     approved_by: Optional[int]
     approved_by_username: Optional[str]
@@ -236,59 +275,6 @@ class InventoryRequestResponse(InventoryRequestBase):
         from_attributes = True
 
 
-# Inventory Transaction Schemas
-class InventoryTransactionBase(BaseModel):
-    transaction_type: TransactionType
-    quantity: int
-    remarks: Optional[str] = None
-
-
-class InventoryTransactionCreate(InventoryTransactionBase):
-    inventory_item_id: int
-    performed_by: int
-    reference_request_id: Optional[int] = None
-
-
-class InventoryTransactionResponse(InventoryTransactionBase):
-    id: int
-    inventory_item_id: int
-    performed_by: int
-    reference_request_id: Optional[int]
-    created_at: datetime
-
-    class Config:
-        from_attributes = True
-
-
-class InventoryCategoryUpdate(BaseModel):
-    name: Optional[str] = None
-    description: Optional[str] = None
-
-
-class InventorySubCategoryUpdate(BaseModel):
-    name: Optional[str] = None
-    description: Optional[str] = None
-    dynamic_fields: Optional[Dict[str, Any]] = None
-    category_id: Optional[int] = None
-
-
-class InventoryItemUpdate(BaseModel):
-    item_code: Optional[str] = None
-    dynamic_data: Optional[Dict[str, Any]] = None
-    quantity: Optional[int] = None
-    available_quantity: Optional[int] = None
-    status: Optional[InventoryItemStatus] = None
-    subcategory_id: Optional[int] = None
-
-
-class CalibrationScheduleUpdate(BaseModel):
-    calibration_type: Optional[str] = None
-    frequency_days: Optional[int] = None
-    last_calibration: Optional[datetime] = None
-    next_calibration: Optional[datetime] = None
-    remarks: Optional[str] = None
-
-
 class InventoryRequestUpdate(BaseModel):
     quantity: Optional[int] = None
     purpose: Optional[str] = None
@@ -298,6 +284,115 @@ class InventoryRequestUpdate(BaseModel):
     remarks: Optional[str] = None
     approved_by: Optional[int] = None
     approved_at: Optional[datetime] = None
+
+
+# Inventory Return Request Schemas (NEW)
+class InventoryReturnRequestBase(BaseModel):
+    quantity_to_return: int
+    return_reason: str
+    status: InventoryReturnRequestStatus
+    actual_return_date: Optional[datetime] = None
+    remarks: Optional[str] = None
+
+
+class InventoryReturnRequestCreate(BaseModel):
+    inventory_item_id: int
+    original_request_id: int  # Link to the original issue request
+    quantity_to_return: int
+    return_reason: str
+    remarks: Optional[str] = None
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "inventory_item_id": 1,
+                "original_request_id": 1,
+                "quantity_to_return": 2,
+                "return_reason": "Operation completed, tools no longer needed",
+                "remarks": "Tools in good condition"
+            }
+        }
+
+
+class InventoryReturnRequestResponse(InventoryReturnRequestBase):
+    id: int
+    inventory_item_id: int
+    inventory_item_code: str
+    original_request_id: int
+    requested_by: int
+    requested_by_username: str
+    approved_by: Optional[int]
+    approved_by_username: Optional[str]
+    approved_at: Optional[datetime]
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class InventoryReturnRequestUpdate(BaseModel):
+    quantity_to_return: Optional[int] = None
+    return_reason: Optional[str] = None
+    status: Optional[InventoryReturnRequestStatus] = None
+    actual_return_date: Optional[datetime] = None
+    remarks: Optional[str] = None
+    approved_by: Optional[int] = None
+    approved_at: Optional[datetime] = None
+
+
+# Inventory Transaction Schemas (Enhanced)
+class InventoryTransactionBase(BaseModel):
+    transaction_type: TransactionType
+    quantity: int
+    quantity_before: Optional[int] = None  # Made optional for backward compatibility
+    quantity_after: Optional[int] = None   # Made optional for backward compatibility
+    remarks: Optional[str] = None
+    transaction_reference: Optional[str] = None
+    location_from: Optional[str] = None
+    location_to: Optional[str] = None
+
+
+class InventoryTransactionCreate(BaseModel):
+    transaction_type: TransactionType
+    quantity: int
+    inventory_item_id: int
+    performed_by: int
+    reference_request_id: Optional[int] = None
+    reference_return_request_id: Optional[int] = None  # New field for return requests
+    remarks: Optional[str] = None
+    transaction_reference: Optional[str] = None
+    location_from: Optional[str] = None
+    location_to: Optional[str] = None
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "transaction_type": "Issue",
+                "quantity": 2,
+                "inventory_item_id": 1,
+                "performed_by": 1,
+                "reference_request_id": 1,
+                "reference_return_request_id": None,
+                "remarks": "Issuing tools for milling operation",
+                "transaction_reference": "TRX-001",
+                "location_from": "Warehouse A",
+                "location_to": "Machine 1"
+            }
+        }
+
+
+class InventoryTransactionResponse(InventoryTransactionBase):
+    id: int
+    inventory_item_id: int
+    performed_by: int
+    performed_by_username: str  # Add username field
+    reference_request_id: Optional[int]
+    reference_return_request_id: Optional[int]  # New field
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
 
 
 # Analytics Schemas

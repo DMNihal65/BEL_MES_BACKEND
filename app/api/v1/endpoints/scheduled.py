@@ -1716,6 +1716,13 @@ async def set_order_completion(order_id: int, request: OrderCompletionRequest):
                     tracking.is_completed = request.is_completed
                     tracking.triggered_at = datetime.utcnow()
 
+            # Update PartScheduleStatus to inactive when order is marked as complete
+            if request.is_completed:
+                part_schedule_status = PartScheduleStatus.get(production_order=order.production_order)
+                if part_schedule_status:
+                    part_schedule_status.status = 'inactive'
+                    part_schedule_status.updated_at = datetime.utcnow()
+
             return OrderCompletionResponse(
                 message=f"Order {order_id} completion status set to {request.is_completed}",
                 triggered_at=tracking.triggered_at.isoformat(),
@@ -1723,7 +1730,6 @@ async def set_order_completion(order_id: int, request: OrderCompletionRequest):
             )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @router.get("/order-completion-record/{order_id}", response_model=OrderCompletionStatus)
 async def get_order_completion_status(order_id: int):

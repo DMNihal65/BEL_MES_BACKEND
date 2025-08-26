@@ -17,7 +17,7 @@ class MasterBocBase(BaseModel):
     op_no: int = Field(..., description="Operation number", gt=0)
     bbox: List[float] = Field(
         ...,
-        description="Bounding box coordinates [x1, y1, x2, y2, x3, y3, x4, y4]",
+        description="Bounding box coordinates [x1, y1, x2, y2, x3, y3, x4, y4, additional]",
         min_items=8,
         max_items=8
     )
@@ -25,9 +25,9 @@ class MasterBocBase(BaseModel):
 
     @model_validator(mode='after')
     def validate_bbox_values(self) -> 'MasterBocBase':
-        """Validate that bbox contains exactly 8 values"""
+        """Validate that bbox contains exactly 9 values"""
         if len(self.bbox) != 8:
-            raise ValueError("bbox must contain exactly 8 values [x1, y1, x2, y2, x3, y3, x4, y4]")
+            raise ValueError("bbox must contain exactly 9 values [x1, y1, x2, y2, x3, y3, x4, y4, additional]")
         return self
 
 class MasterBocCreate(MasterBocBase):
@@ -72,22 +72,65 @@ class StageInspectionBase(BaseModel):
     lowertol: float = Field(..., description="Lower tolerance", le=0)
     zone: str = Field(..., description="Zone information", min_length=1)
     dimension_type: str = Field(..., description="Type of dimension", min_length=1)
-    measured_1: float = Field(..., description="First measurement")
-    measured_2: float = Field(..., description="Second measurement")
-    measured_3: float = Field(..., description="Third measurement")
-    measured_mean: float = Field(..., description="Mean of measurements")
+    measured_1: str = Field(..., description="First measurement")
+    measured_2: str = Field(..., description="Second measurement")
+    measured_3: str = Field(..., description="Third measurement")
+    measured_mean: str = Field(..., description="Mean of measurements")
     measured_instrument: str = Field(..., description="Measuring instrument used")
     used_inst: str = Field(..., description="Instrument used for measurement", min_length=1)
     op_no: int = Field(..., description="Operation number", gt=0)
     order_id: int = Field(..., description="Order ID", gt=0)
     quantity_no: Optional[int] = Field(None, description="Quantity number")
+    bbox: Optional[List[float]] = Field(
+        None,
+        description="Bounding box coordinates [x1, y1, x2, y2, x3, y3, x4, y4]",
+        min_items=8,
+        max_items=8
+    )
+
+    @model_validator(mode='after')
+    def validate_bbox_values(self) -> 'StageInspectionBase':
+        """Validate that bbox contains exactly 9 values if provided"""
+        if self.bbox is not None and len(self.bbox) != 8:
+            raise ValueError("bbox must contain exactly 9 values [x1, y1, x2, y2, x3, y3, x4, y4, additional] or be None")
+        return self
 
 class StageInspectionCreate(StageInspectionBase):
-    pass
+    def to_db_dict(self) -> dict:
+        """Convert to database format"""
+        data = self.model_dump()
+        if data.get('bbox') is not None:
+            data['bbox'] = json.dumps(data['bbox'])
+        return data
 
 class StageInspectionResponse(StageInspectionBase):
     id: int
     created_at: datetime
+
+    @classmethod
+    def from_orm(cls, db_obj):
+        """Convert from ORM object to Pydantic model"""
+        data = {
+            'id': db_obj.id,
+            'op_id': db_obj.op_id,
+            'nominal_value': db_obj.nominal_value,
+            'uppertol': db_obj.uppertol,
+            'lowertol': db_obj.lowertol,
+            'zone': db_obj.zone,
+            'dimension_type': db_obj.dimension_type,
+            'measured_1': db_obj.measured_1,
+            'measured_2': db_obj.measured_2,
+            'measured_3': db_obj.measured_3,
+            'measured_mean': db_obj.measured_mean,
+            'measured_instrument': db_obj.measured_instrument,
+            'used_inst': db_obj.used_inst,
+            'op_no': db_obj.op_no,
+            'order_id': db_obj.order_id,
+            'quantity_no': db_obj.quantity_no,
+            'bbox': json.loads(db_obj.bbox) if db_obj.bbox else None,
+            'created_at': db_obj.created_at
+        }
+        return cls(**data)
 
     class Config:
         from_attributes = True
@@ -108,15 +151,16 @@ class StageInspectionDetail(BaseModel):
     lowertol: float
     zone: str
     dimension_type: str
-    measured_1: float
-    measured_2: float
-    measured_3: float
-    measured_mean: float
+    measured_1: str
+    measured_2: str
+    measured_3: str
+    measured_mean: str
     measured_instrument: str
     used_inst: str
     op_no: int
     order_id: int
     quantity_no: Optional[int] = None
+    bbox: Optional[List[float]] = None
     created_at: datetime
 
 
@@ -137,13 +181,14 @@ class StageInspectionWithOperator(BaseModel):
     lowertol: float
     zone: str
     dimension_type: str
-    measured_1: float
-    measured_2: float
-    measured_3: float
-    measured_mean: float
+    measured_1: str
+    measured_2: str
+    measured_3: str
+    measured_mean: str
     measured_instrument: str
     used_inst: str
     quantity_no: Optional[int] = None
+    bbox: Optional[List[float]] = None
     created_at: datetime
     operator: OperatorInfo
 
