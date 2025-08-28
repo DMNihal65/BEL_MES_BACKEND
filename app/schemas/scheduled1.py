@@ -129,6 +129,8 @@ class MachineUtilization(BaseModel):
     remaining_hours: float
     utilization_percentage: float
 
+
+# Order Completion Schemas
 class OrderCompletionRequest(BaseModel):
     is_completed: bool
 
@@ -165,3 +167,140 @@ class AllCompletionStatusResponse(BaseModel):
     completion_records: List[OrderCompletionRecord]
 
 
+
+# PDC (Production Data Collection) Schemas
+class PDCBase(BaseModel):
+    """Base PDC schema with common fields"""
+    part_number: str
+    production_order: str
+    pdc_data: datetime
+    data_source: str
+    is_active: bool = True
+
+
+class PDCCreate(PDCBase):
+    """Schema for creating a new PDC record"""
+    order_id: int
+
+
+class PDCUpdate(BaseModel):
+    """Schema for updating a PDC record"""
+    part_number: Optional[str] = None
+    production_order: Optional[str] = None
+    pdc_data: Optional[datetime] = None
+    data_source: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class PDCResponse(PDCBase):
+    """Schema for PDC response"""
+    id: int
+    order_id: int
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class PDCListResponse(BaseModel):
+    """Schema for list of PDC records"""
+    pdc_records: List[PDCResponse]
+    total_count: int
+    page: int
+    page_size: int
+    total_pages: int
+
+    class Config:
+        from_attributes = True
+
+
+class PDCFilter(BaseModel):
+    """Schema for filtering PDC records"""
+    part_number: Optional[str] = None
+    production_order: Optional[str] = None
+    data_source: Optional[str] = None
+    is_active: Optional[bool] = None
+    start_date: Optional[datetime] = None
+    end_date: Optional[datetime] = None
+    order_id: Optional[int] = None
+    
+class ScheduleHistoryBase(BaseModel):
+    """Base schema for schedule history"""
+    version: int
+    is_active: bool = False
+    generated_at: datetime
+
+
+class ScheduleHistoryCreate(ScheduleHistoryBase):
+    """Schema for creating a new schedule history entry"""
+    pass
+
+
+class ScheduleHistoryUpdate(BaseModel):
+    """Schema for updating a schedule history entry"""
+    version: Optional[int] = None
+    is_active: Optional[bool] = None
+    generated_at: Optional[datetime] = None
+
+
+class ScheduleHistoryResponse(ScheduleHistoryBase):
+    """Schema for schedule history response"""
+    id: int
+
+    class Config:
+        from_attributes = True
+
+
+class ScheduleHistoryList(BaseModel):
+    """Schema for list of schedule history entries"""
+    schedule_histories: List[ScheduleHistoryResponse]
+    total_count: int
+
+
+class PlannedScheduleItemBase(BaseModel):
+    """Base schema for planned schedule items"""
+    order_id: int
+    operation_id: int
+    machine_id: int
+    initial_start_time: datetime
+    initial_end_time: datetime
+    total_quantity: int
+    remaining_quantity: int
+    status: Optional[str] = None
+    current_version: Optional[int] = None
+    schedule_history_id: Optional[int] = None
+
+
+class PlannedScheduleItemCreate(PlannedScheduleItemBase):
+    """Schema for creating a new planned schedule item"""
+    pass
+
+
+class PlannedScheduleItemUpdate(BaseModel):
+    """Schema for updating a planned schedule item"""
+    order_id: Optional[int] = None
+    operation_id: Optional[int] = None
+    machine_id: Optional[int] = None
+    initial_start_time: Optional[datetime] = None
+    initial_end_time: Optional[datetime] = None
+    total_quantity: Optional[int] = None
+    remaining_quantity: Optional[int] = None
+    status: Optional[str] = None
+    current_version: Optional[int] = None
+    schedule_history_id: Optional[int] = None
+
+
+class PlannedScheduleItemResponse(PlannedScheduleItemBase):
+    """Schema for planned schedule item response"""
+    id: int
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class PlannedScheduleItemList(BaseModel):
+    """Schema for list of planned schedule items"""
+    planned_schedule_items: List[PlannedScheduleItemResponse]
+    total_count: int

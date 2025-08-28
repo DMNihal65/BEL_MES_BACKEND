@@ -7,11 +7,12 @@ from typing import List, Dict, Any, Optional, Tuple
 import pandas as pd
 from dateutil import parser
 from fastapi import APIRouter, HTTPException, Query
-from pony.orm import db_session, select, ObjectNotFound
+from pony.orm import db_session, select, ObjectNotFound, desc
 from pydantic import BaseModel
 
 from app.models import Order, Operation, Machine, PartScheduleStatus, PlannedScheduleItem, ScheduleVersion, \
-    ProductionLog, WorkCenter, MachineStatus
+    ProductionLog, WorkCenter, MachineStatus, ScheduleHistory
+from app.crud.pdc import create_pdc_record, get_pdc_by_part_number_and_po, update_pdc_record, delete_pdc_by_production_order
 from app.crud.operation import fetch_operations
 from app.crud.component_quantities import fetch_component_quantities
 from app.crud.leadtime import fetch_lead_times
@@ -126,6 +127,14 @@ async def set_part_status(production_order: str, status_update: PartStatusUpdate
                     created_at=current_time_utc,
                     updated_at=current_time_utc
                 )
+                
+                # If creating with inactive status, delete corresponding PDC records
+                if final_status == 'inactive':
+                    try:
+                        delete_pdc_by_production_order(production_order)
+                    except Exception as pdc_error:
+                        # Log the error but don't fail the main operation
+                        print(f"Warning: Failed to delete PDC records for {production_order}: {str(pdc_error)}")
             else:
                 # Only update the timestamp if changing from inactive to active
                 if status_record.status == 'inactive' and final_status == 'active':
@@ -134,11 +143,24 @@ async def set_part_status(production_order: str, status_update: PartStatusUpdate
                 # Always update the status
                 status_record.status = final_status
 
-            # Format the activation timestamp to include both date and time in IST
-            activation_time_str = current_time_ist.strftime("%Y-%m-%d %H:%M:%S") if final_status == 'active' else None
+                # If status is being set to inactive, delete corresponding PDC records
+                if final_status == 'inactive':
+                    try:
+                        delete_pdc_by_production_order(production_order)
+                    except Exception as pdc_error:
+                        # Log the error but don't fail the main operation
+                        print(f"Warning: Failed to delete PDC records for {production_order}: {str(pdc_error)}")
+
+                # Format the activation timestamp to include both date and time in IST
+                activation_time_str = current_time_ist.strftime("%Y-%m-%d %H:%M:%S") if final_status == 'active' else None
+
+            # Prepare response message
+            response_message = f"Production order {production_order} status set to {final_status}"
+            if final_status == 'inactive':
+                response_message += " and corresponding PDC records have been deleted"
 
             return {
-                "message": f"Production order {production_order} status set to {final_status}",
+                "message": response_message,
                 "will_be_scheduled": final_status == 'active',
                 "activation_time": activation_time_str,
                 "part_number": order.part_number
@@ -227,8 +249,11 @@ def extract_quantity(quantity_str: str) -> tuple[int, int, int]:
 
 
 @db_session
-def store_schedule(schedule_df, component_status):
-    """Store the generated schedule in the database, avoiding duplicate entries"""
+def store_schedule(schedule_df, component_status, schedule_history=None, global_version: Optional[int] = None):
+    """Store the generated schedule in the database, avoiding duplicate entries
+    If schedule_history is provided, link new items to that history.
+    If global_version is provided, set PlannedScheduleItem.current_version and ScheduleVersion.version_number to it.
+    """
     try:
         stored_items = []
 
@@ -242,7 +267,7 @@ def store_schedule(schedule_df, component_status):
             order = Order.get(part_number=part_no, production_order=production_order)
 
             if not order:
-                # print(f"No order found for part {part_no} with production order {production_order}")
+                print(f"No order found for part {part_no} with production order {production_order}")
                 continue
 
             # Find the specific operation for this order and operation description
@@ -251,13 +276,13 @@ def store_schedule(schedule_df, component_status):
             ).first()
 
             if not operation:
-                # print(f"No operation found for order {order.id} with description {operation_desc}")
+                print(f"No operation found for order {order.id} with description {operation_desc}")
                 continue
 
             try:
                 machine = Machine[machine_id]
             except ObjectNotFound:
-                # print(f"Machine with ID {machine_id} not found")
+                print(f"Machine with ID {machine_id} not found")
                 continue
 
             total_qty, current_qty, _ = extract_quantity(row['quantity'])
@@ -268,10 +293,6 @@ def store_schedule(schedule_df, component_status):
 
             start_time = row['start_time'].to_pydatetime()
             end_time = row['end_time'].to_pydatetime()
-
-
-            # start_time = row['start_time']
-            # end_time = row['end_time']
 
             # Check if this exact schedule already exists
             existing_schedule = PlannedScheduleItem.select(
@@ -307,12 +328,13 @@ def store_schedule(schedule_df, component_status):
                 total_quantity=total_qty,
                 remaining_quantity=total_qty - current_qty,
                 status='scheduled',
-                current_version=1
+                current_version=global_version if global_version is not None else 1,
+                schedule_history=schedule_history
             )
 
             schedule_version = ScheduleVersion(
                 schedule_item=schedule_item,
-                version_number=1,
+                version_number=global_version if global_version is not None else 1,
                 planned_start_time=start_time,
                 planned_end_time=end_time,
                 planned_quantity=total_qty,
@@ -336,8 +358,7 @@ def store_schedule(schedule_df, component_status):
         traceback.print_exc()
         raise e
 
-
-@router.get("/schedule-batch/", response_model=ScheduleResponse)
+@router.get("/schedule-planned/", response_model=ScheduleResponse)
 async def schedule():
     """Generate schedule for active parts and store in database"""
     try:
@@ -368,7 +389,7 @@ async def schedule():
 
             # Log schedulable work centers
             schedulable_work_centers = [wc for wc in WorkCenter.select() if wc.is_schedulable]
-            # print(f"Schedulable work centers: {[wc.code for wc in schedulable_work_centers]}")
+            print(f"Schedulable work centers: {[wc.code for wc in schedulable_work_centers]}")
 
             # Get list of schedulable work center IDs for filtering
             schedulable_work_center_ids = {wc.id for wc in schedulable_work_centers}
@@ -379,10 +400,10 @@ async def schedule():
             # Convert to a set for faster lookups
             active_production_orders_set = set(active_production_orders)
 
-            # print(f"Active production orders: {active_production_orders_set}")
+            print(f"Active production orders: {active_production_orders_set}")
 
             if not active_production_orders_set:
-                # print("No active production orders found")
+                print("No active production orders found")
                 return ScheduleResponse(
                     scheduled_operations=[],
                     overall_end_time=datetime.utcnow(),
@@ -433,7 +454,7 @@ async def schedule():
         df = fetch_operations()
 
         if df.empty:
-            # print("No operations found in fetch_operations()")
+            print("No operations found in fetch_operations()")
             return ScheduleResponse(
                 scheduled_operations=[],
                 overall_end_time=datetime.utcnow(),
@@ -444,8 +465,8 @@ async def schedule():
                 work_centers=work_centers_data  # Return work centers even if no operations
             )
 
-        # print(f"Original operations dataframe shape: {df.shape}")
-        # print(f"Columns in operations dataframe: {df.columns.tolist()}")
+        print(f"Original operations dataframe shape: {df.shape}")
+        print(f"Columns in operations dataframe: {df.columns.tolist()}")
 
         # Add production_order column to dataframe
         if 'production_order' not in df.columns:
@@ -487,7 +508,7 @@ async def schedule():
 
         # Double check if we have any operations for active production orders
         if df.empty:
-            # print("No operations left after filtering for active production orders and schedulable work centers")
+            print("No operations left after filtering for active production orders and schedulable work centers")
             return ScheduleResponse(
                 scheduled_operations=[],
                 overall_end_time=datetime.utcnow(),
@@ -515,7 +536,7 @@ async def schedule():
         df = df[df['work_center_id'].isin(schedulable_work_center_ids)]
 
         if df.empty:
-            # print("No operations left after filtering for schedulable work centers")
+            print("No operations left after filtering for schedulable work centers")
             return ScheduleResponse(
                 scheduled_operations=[],
                 overall_end_time=datetime.utcnow(),
@@ -528,7 +549,7 @@ async def schedule():
 
         # Get the active part numbers based on the filtered dataframe
         active_part_numbers_in_df = df['partno'].unique().tolist()
-        # print(f"Active part numbers in filtered dataframe: {active_part_numbers_in_df}")
+        print(f"Active part numbers in filtered dataframe: {active_part_numbers_in_df}")
 
         # Create component_quantities dictionary with the correct format
         component_quantities = {}
@@ -541,7 +562,7 @@ async def schedule():
             if key not in component_quantities and key in part_po_to_quantity:
                 component_quantities[key] = part_po_to_quantity[key]
 
-        # print(f"Component quantities for scheduling: {component_quantities}")
+        print(f"Component quantities for scheduling: {component_quantities}")
 
         # Get lead times
         lead_times = fetch_lead_times()
@@ -557,14 +578,14 @@ async def schedule():
 
         # Final verification
         if not schedule_df.empty:
-            # print(f"Final schedule has {len(schedule_df)} operations")
-            # print(f"Production orders in final schedule: {schedule_df['production_order'].unique().tolist()}")
+            print(f"Final schedule has {len(schedule_df)} operations")
+            print(f"Production orders in final schedule: {schedule_df['production_order'].unique().tolist()}")
 
             # Verify all production orders in the schedule are active
             scheduled_pos = set(schedule_df['production_order'].unique())
             invalid_pos = scheduled_pos - active_production_orders_set
             if invalid_pos:
-                # print(f"WARNING: Found inactive production orders in schedule: {invalid_pos}")
+                print(f"WARNING: Found inactive production orders in schedule: {invalid_pos}")
                 # Filter out any operations with inactive production orders
                 schedule_df = schedule_df[schedule_df['production_order'].isin(active_production_orders_set)]
 
@@ -585,7 +606,441 @@ async def schedule():
 
         # Replace the original component_status with filtered version
         component_status = filtered_component_status
-        # print(f"Filtered component_status keys: {list(component_status.keys())}")
+        print(f"Filtered component_status keys: {list(component_status.keys())}")
+
+        stored_schedule = None
+        if not schedule_df.empty:
+            with db_session:
+                stored_schedule = store_schedule_new(schedule_df, component_status)
+
+        scheduled_operations = []
+        if not schedule_df.empty:
+            with db_session:
+                machine_details = {}
+                for machine in Machine.select():
+                    machine_name = f"{machine.work_center.code}-{machine.make}"
+                    machine_details[machine.id] = {
+                        'name': machine_name,
+                        'id': machine.id
+                    }
+
+            # Convert schedule dataframe to response objects
+            for _, row in schedule_df.iterrows():
+                machine_id = row['machine_id']
+                machine_name = machine_details.get(machine_id, {'name': f'Machine-{machine_id}'})['name']
+
+                # Get production_order
+                production_order = row.get('production_order')
+
+                # Double-check that this is an active production order
+                if production_order not in active_production_orders_set:
+                    print(f"Skipping operation for inactive production order: {production_order}")
+                    continue
+
+                # Get part description from mapping
+                part_description = po_to_part_description_mapping.get(production_order, "")
+
+                scheduled_operations.append(
+                    ScheduledOperation(
+                        component=row['partno'],
+                        part_description=part_description,  # Add part description to the response
+                        description=row['operation'],
+                        machine=machine_name,
+                        start_time=row['start_time'],
+                        end_time=row['end_time'],
+                        quantity=row['quantity'],
+                        production_order=production_order
+                    )
+                )
+
+        # Ensure correct types for overall_end_time
+        if overall_end_time is None:
+            overall_end_time = datetime.utcnow()
+
+        # Convert daily_production from list to dict if needed
+        if isinstance(daily_production, list):
+            daily_production = {}
+
+        # Always return work_centers_data, even if it's empty
+        return ScheduleResponse(
+            scheduled_operations=scheduled_operations,
+            overall_end_time=overall_end_time,
+            overall_time=str(overall_time),
+            daily_production=daily_production,
+            component_status=component_status,
+            partially_completed=partially_completed,
+            work_centers=work_centers_data  # Always return work centers data
+        )
+
+    except Exception as e:
+        print(f"Error in schedule endpoint: {str(e)}")
+        traceback.print_exc()  # Add this for full error details
+        raise HTTPException(status_code=500, detail=str(e))
+
+@db_session
+def store_schedule_new(schedule_df, component_status):
+    """Store the generated schedule in the database, with simplified storage that skips versioning"""
+    from app.models.scheduled import PlannedItem
+    from app.models import Order, Operation, Machine
+    try:
+        stored_items = []
+
+        for _, row in schedule_df.iterrows():
+            part_no = row['partno']
+            operation_desc = row['operation']
+            machine_id = row['machine_id']
+            production_order = row.get('production_order')
+
+            # Find the specific order using both part number and production order
+            order = Order.get(part_number=part_no, production_order=production_order)
+
+            if not order:
+                print(f"No order found for part {part_no} with production order {production_order}")
+                continue
+
+            # Find the specific operation for this order and operation description
+            operation = Operation.select(
+                lambda op: op.order == order and op.operation_description == operation_desc
+            ).first()
+
+            if not operation:
+                print(f"No operation found for order {order.id} with description {operation_desc}")
+                continue
+
+            try:
+                machine = Machine[machine_id]
+            except ObjectNotFound:
+                print(f"Machine with ID {machine_id} not found")
+                continue
+
+            total_qty, current_qty, _ = extract_quantity(row['quantity'])
+
+            # Get activation time from PartScheduleStatus (IST) for reference
+            part_status = PartScheduleStatus.get(production_order=production_order)
+            if not part_status:
+                print(f"No PartScheduleStatus found for production order {production_order}")
+                continue
+            ist_offset = timedelta(hours=5, minutes=30)
+            activation_time = part_status.updated_at + ist_offset
+            activation_time = activation_time.replace(second=0, microsecond=0)  # for comparison precision
+
+            # CRITICAL FIX: Use the actual start_time from the schedule, not activation_time!
+            # This preserves the sequential scheduling logic
+            start_time = row['start_time'].to_pydatetime()
+            end_time = row['end_time'].to_pydatetime()
+            
+            print(f"Storing schedule for order {order.id}, operation {operation.id}: "
+                  f"Start: {start_time.strftime('%Y-%m-%d %H:%M:%S')}, "
+                  f"End: {end_time.strftime('%Y-%m-%d %H:%M:%S')}")
+
+            # Invalidate any existing schedule for this order/operation/machine/quantity with a different start_time
+            existing_wrong_start = PlannedItem.select(
+                lambda s: s.order == order and
+                          s.operation == operation and
+                          s.machine == machine and
+                          s.total_quantity == total_qty and
+                          s.initial_start_time != start_time
+            )[:]
+            for wrong_sched in existing_wrong_start:
+                print(f"Invalidating old schedule with wrong start_time for order {order.id}, operation {operation.id}, machine {machine.id}")
+                wrong_sched.status = 'invalidated'
+
+            # Check if this exact schedule already exists
+            existing_schedule = PlannedItem.select(
+                lambda s: s.order == order and
+                          s.operation == operation and
+                          s.machine == machine and
+                          s.initial_start_time == start_time and
+                          s.initial_end_time == end_time and
+                          s.total_quantity == total_qty
+            ).first()
+
+            if existing_schedule:
+                print(f"Exact duplicate schedule found for order {order.id}, operation {operation.id}, machine {machine.id}")
+                stored_items.append({
+                    'schedule_item_id': existing_schedule.id,
+                    'total_quantity': total_qty,
+                    'current_quantity': current_qty,
+                    'status': 'existing'
+                })
+                continue
+
+            # Create new schedule item with the ACTUAL start_time from scheduling (not activation_time)
+            schedule_item = PlannedItem(
+                order=order,
+                operation=operation,
+                machine=machine,
+                initial_start_time=start_time,  # Use the sequential start_time!
+                initial_end_time=end_time,
+                total_quantity=total_qty,
+                remaining_quantity=total_qty - current_qty,
+                status='scheduled',
+                current_version=1  # Keep this for compatibility but won't use versions
+            )
+
+            stored_items.append({
+                'schedule_item_id': schedule_item.id,
+                'total_quantity': total_qty,
+                'current_quantity': current_qty,
+                'status': 'new'
+            })
+
+        return stored_items
+
+    except Exception as e:
+        print(f"Error storing schedule: {str(e)}")
+        traceback.print_exc()
+        raise e
+
+@router.get("/schedule-batch/", response_model=ScheduleResponse)
+async def schedule():
+    """Generate schedule for active parts and store in database"""
+    try:
+        # Initialize work_centers_data at the start
+        work_centers_data = []
+
+        # Always fetch work centers data regardless of active production orders
+        with db_session:
+            # Fetch work centers and their machines for the response
+            for work_center in WorkCenter.select():
+                machines_in_wc = []
+                for machine in work_center.machines:
+                    machines_in_wc.append({
+                        "id": str(machine.id),
+                        "name": machine.make,
+                        "model": machine.model,
+                        "type": machine.type
+                    })
+
+                work_centers_data.append(
+                    WorkCenterMachine(
+                        work_center_code=work_center.code,
+                        work_center_name=work_center.work_center_name or "",
+                        machines=machines_in_wc,
+                        is_schedulable=work_center.is_schedulable  # Include the flag in response
+                    )
+                )
+
+            # Log schedulable work centers
+            schedulable_work_centers = [wc for wc in WorkCenter.select() if wc.is_schedulable]
+            print(f"Schedulable work centers: {[wc.code for wc in schedulable_work_centers]}")
+
+            # Get list of schedulable work center IDs for filtering
+            schedulable_work_center_ids = {wc.id for wc in schedulable_work_centers}
+
+            # Fetch all production orders with active status
+            active_production_orders = select(p.production_order for p in PartScheduleStatus if p.status == 'active')[:]
+
+            # Convert to a set for faster lookups
+            active_production_orders_set = set(active_production_orders)
+
+            print(f"Active production orders: {active_production_orders_set}")
+
+            if not active_production_orders_set:
+                print("No active production orders found")
+                return ScheduleResponse(
+                    scheduled_operations=[],
+                    overall_end_time=datetime.utcnow(),
+                    overall_time="0",
+                    daily_production={},
+                    component_status={},
+                    partially_completed=["No parts are marked as active for scheduling"],
+                    work_centers=work_centers_data  # Return work centers even if no active orders
+                )
+
+            # Get mapping of production orders to part numbers, descriptions, and required quantities
+            po_to_part_mapping = {}
+            po_to_part_description_mapping = {}  # New mapping for part descriptions
+            part_po_to_quantity = {}
+
+            # Get all active part statuses with their required quantities
+            active_part_statuses = select(p for p in PartScheduleStatus if p.status == 'active')[:]
+
+            for part_status in active_part_statuses:
+                po = part_status.production_order
+                part_number = part_status.part_number
+                po_to_part_mapping[po] = part_number
+
+                # Get quantity and part description from Order if possible
+                order = Order.get(production_order=po, part_number=part_number)
+                quantity = order.launched_quantity if order else 0
+
+                # Store the part description in the mapping
+                if order and order.part_description:
+                    po_to_part_description_mapping[po] = order.part_description
+                else:
+                    po_to_part_description_mapping[po] = ""  # Empty string if no description
+
+                # If no quantity found in Order, use a default value
+                if quantity <= 0:
+                    # Try to find the associated Order and get its launched_quantity
+                    order = Order.get(part_number=part_number)
+                    quantity = order.launched_quantity if order else 10  # Default to 10 if no quantity found
+
+                    # Try to get description from this order as well
+                    if order and order.part_description and po not in po_to_part_description_mapping:
+                        po_to_part_description_mapping[po] = order.part_description
+
+                # Store the part-PO specific quantity
+                part_po_to_quantity[(part_number, po)] = quantity
+
+        # Fetch operations for all parts
+        df = fetch_operations()
+
+        if df.empty:
+            print("No operations found in fetch_operations()")
+            return ScheduleResponse(
+                scheduled_operations=[],
+                overall_end_time=datetime.utcnow(),
+                overall_time="0",
+                daily_production={},
+                component_status={},
+                partially_completed=["No operations found in database"],
+                work_centers=work_centers_data  # Return work centers even if no operations
+            )
+
+        print(f"Original operations dataframe shape: {df.shape}")
+        print(f"Columns in operations dataframe: {df.columns.tolist()}")
+
+        # Add production_order column to dataframe
+        if 'production_order' not in df.columns:
+            # Maps part numbers to their active production orders
+            part_to_pos = {}
+            for part_number in df['partno'].unique():
+                part_to_pos[part_number] = []
+                for po in active_production_orders_set:
+                    if po_to_part_mapping.get(po) == part_number:
+                        part_to_pos[part_number].append(po)
+
+            # Expand the dataframe to include all active production orders
+            # Filter for operations from schedulable work centers and expand the dataframe
+            expanded_rows = []
+            for (part_number, po), quantity in part_po_to_quantity.items():
+                # Query actual operations for this specific (part_number, production_order)
+                # CRITICAL FIX: Only include operations from work centers that are marked as schedulable
+                matching_ops = Operation.select(
+                    lambda o: o.order.part_number == part_number and
+                              o.order.production_order == po and
+                              o.work_center.is_schedulable == True  # Explicit check for is_schedulable=True
+                )
+
+                for op in matching_ops:
+                    expanded_rows.append({
+                        'partno': part_number,
+                        'operation': op.operation_description,
+                        'machine_id': op.machine.id,
+                        'sequence': op.operation_number,
+                        'time': float(op.ideal_cycle_time),
+                        'production_order': po,
+                        'work_center_id': op.work_center.id  # Add work center ID for filtering
+                    })
+
+            if expanded_rows:
+                df = pd.DataFrame(expanded_rows)
+            else:
+                df = pd.DataFrame()  # Empty dataframe if no active production orders found
+
+        # Double check if we have any operations for active production orders
+        if df.empty:
+            print("No operations left after filtering for active production orders and schedulable work centers")
+            return ScheduleResponse(
+                scheduled_operations=[],
+                overall_end_time=datetime.utcnow(),
+                overall_time="0",
+                daily_production={},
+                component_status={},
+                partially_completed=["No operations found for active production orders in schedulable work centers"],
+                work_centers=work_centers_data  # Return work centers even if no operations for active orders
+            )
+
+        # Filter to keep only rows with active production orders
+        df = df[df['production_order'].isin(active_production_orders_set)]
+
+        # ADDITIONAL FILTER: Ensure all operations are from schedulable work centers
+        # Create a mapping from machine_id to work_center_id
+        machine_to_wc = {}
+        with db_session:
+            for machine in Machine.select():
+                machine_to_wc[machine.id] = machine.work_center.id
+
+        # Add a column with work center ID for each operation based on its machine
+        df['work_center_id'] = df['machine_id'].map(machine_to_wc)
+
+        # Filter out operations from non-schedulable work centers
+        df = df[df['work_center_id'].isin(schedulable_work_center_ids)]
+
+        if df.empty:
+            print("No operations left after filtering for schedulable work centers")
+            return ScheduleResponse(
+                scheduled_operations=[],
+                overall_end_time=datetime.utcnow(),
+                overall_time="0",
+                daily_production={},
+                component_status={},
+                partially_completed=["All operations are in non-schedulable work centers"],
+                work_centers=work_centers_data
+            )
+
+        # Get the active part numbers based on the filtered dataframe
+        active_part_numbers_in_df = df['partno'].unique().tolist()
+        print(f"Active part numbers in filtered dataframe: {active_part_numbers_in_df}")
+
+        # Create component_quantities dictionary with the correct format
+        component_quantities = {}
+        for _, row in df.iterrows():
+            part_number = row['partno']
+            production_order = row['production_order']
+            key = (part_number, production_order)
+
+            # Use the saved quantity for this part-PO combination
+            if key not in component_quantities and key in part_po_to_quantity:
+                component_quantities[key] = part_po_to_quantity[key]
+
+        print(f"Component quantities for scheduling: {component_quantities}")
+
+        # Get lead times
+        lead_times = fetch_lead_times()
+
+        # Filter lead_times to only include parts in filtered operations
+        lead_times = {k: v for k, v in lead_times.items() if k in active_part_numbers_in_df}
+
+        # Call scheduling algorithm with filtered dataframe and properly structured component_quantities
+        schedule_df, overall_end_time, overall_time, daily_production, \
+            component_status, partially_completed = schedule_operations(
+            df, component_quantities, lead_times
+        )
+
+        # Final verification
+        if not schedule_df.empty:
+            print(f"Final schedule has {len(schedule_df)} operations")
+            print(f"Production orders in final schedule: {schedule_df['production_order'].unique().tolist()}")
+
+            # Verify all production orders in the schedule are active
+            scheduled_pos = set(schedule_df['production_order'].unique())
+            invalid_pos = scheduled_pos - active_production_orders_set
+            if invalid_pos:
+                print(f"WARNING: Found inactive production orders in schedule: {invalid_pos}")
+                # Filter out any operations with inactive production orders
+                schedule_df = schedule_df[schedule_df['production_order'].isin(active_production_orders_set)]
+
+        # Filter component_status to only include entries with active production orders
+        filtered_component_status = {}
+        for key, status in component_status.items():
+            production_order = None
+
+            # Check if this is a combined key (partno_production_order)
+            if '_' in key:
+                partno, production_order = key.split('_', 1)
+            else:
+                production_order = status.get('production_order')
+
+            # Only include if the production_order is active
+            if production_order in active_production_orders_set:
+                filtered_component_status[key] = status
+
+        # Replace the original component_status with filtered version
+        component_status = filtered_component_status
+        print(f"Filtered component_status keys: {list(component_status.keys())}")
 
         stored_schedule = None
         if not schedule_df.empty:
@@ -613,7 +1068,7 @@ async def schedule():
 
                 # Double-check that this is an active production order
                 if production_order not in active_production_orders_set:
-                    # print(f"Skipping operation for inactive production order: {production_order}")
+                    print(f"Skipping operation for inactive production order: {production_order}")
                     continue
 
                 # Get part description from mapping
@@ -631,6 +1086,50 @@ async def schedule():
                         production_order=production_order
                     )
                 )
+
+        # # Compute and store PDC from scheduled operations (skip default machines)
+        # try:
+        #     part_production_end_times = {}
+        #     data_sources = {}
+
+        #     for op in scheduled_operations:
+        #         # Skip default machines
+        #         if isinstance(op.machine, str) and 'default' in op.machine.lower():
+        #             continue
+
+        #         part_number = op.component
+        #         production_order = op.production_order
+        #         end_time = op.end_time
+
+        #         if not all([part_number, production_order, end_time]):
+        #             continue
+
+        #         key = (part_number, production_order)
+        #         if key not in part_production_end_times or end_time > part_production_end_times[key]:
+        #             part_production_end_times[key] = end_time
+        #             data_sources[key] = 'scheduled'
+
+        #     if part_production_end_times:
+        #         with db_session:
+        #             for (part_number, production_order), pdc_data in part_production_end_times.items():
+        #                 order = Order.get(production_order=production_order)
+        #                 if not order:
+        #                     continue
+        #                 # If a PDC already exists for this part/PO, update it; else create new
+        #                 existing = get_pdc_by_part_number_and_po(part_number, production_order)
+        #                 if existing:
+        #                     update_pdc_record(existing[0].id, pdc_data=pdc_data, updated_at=datetime.utcnow())
+        #                 else:
+        #                     create_pdc_record(
+        #                         order_id=order.id,
+        #                         part_number=part_number,
+        #                         production_order=production_order,
+        #                         pdc_data=pdc_data,
+        #                         data_source=data_sources.get((part_number, production_order), 'scheduled'),
+        #                         is_active=True
+        #                     )
+        # except Exception as e:
+        #     print(f"Error computing/storing PDC in schedule endpoint: {str(e)}")
 
         # Ensure correct types for overall_end_time
         if overall_end_time is None:
@@ -1240,7 +1739,7 @@ def get_machine_utilization(
     if not 1 <= month <= 12:
         raise HTTPException(status_code=400, detail="Month must be between 1 and 12")
 
-    # print(f"\n=== MACHINE UTILIZATION DEBUG (Month: {month}/{year}) ===")
+    print(f"\n=== MACHINE UTILIZATION DEBUG (Month: {month}/{year}) ===")
 
     # Calculate working days in the month (excluding weekends)
     _, days_in_month = calendar.monthrange(year, month)
@@ -1251,7 +1750,7 @@ def get_machine_utilization(
         if weekday < 5:
             working_days += 1
 
-    # print(f"Working days in {month}/{year}: {working_days}")
+    print(f"Working days in {month}/{year}: {working_days}")
 
     # Calculate available hours
     # Formula: working hours (8) * working days in month * 0.85 (efficiency)
@@ -1260,7 +1759,7 @@ def get_machine_utilization(
 
     # Monthly calculation based on working days only
     available_hours = working_days * daily_working_hours * efficiency_factor
-    # print(f"Base available hours: {working_days} days × {daily_working_hours} hours × {efficiency_factor} = {available_hours}")
+    print(f"Base available hours: {working_days} days Ã— {daily_working_hours} hours Ã— {efficiency_factor} = {available_hours}")
 
     # Set date range for the month
     start_date = datetime(year, month, 1)
@@ -1269,11 +1768,11 @@ def get_machine_utilization(
     else:
         end_date = datetime(year, month + 1, 1)
 
-    # print(f"Date range: {start_date} to {end_date}")
+    print(f"Date range: {start_date} to {end_date}")
 
     # Get all active production orders first
     active_production_orders = select(ps.production_order for ps in PartScheduleStatus if ps.status == 'active')[:]
-    # print(f"Active production orders: {len(active_production_orders)}")
+    print(f"Active production orders: {len(active_production_orders)}")
 
     # Query to fetch machines
     machines_query = select(m for m in Machine)
@@ -1281,14 +1780,14 @@ def get_machine_utilization(
         machines_query = machines_query.filter(lambda m: m.id == machine_id)
 
     machines = machines_query[:]
-    # print(f"Processing {len(machines)} machines")
+    print(f"Processing {len(machines)} machines")
 
     # Pre-fetch all machine status records for the date range to avoid multiple database queries
     machine_statuses = select(ms for ms in MachineStatus 
                              if ms.available_from is not None 
                              and ((ms.available_from <= end_date and (ms.available_to is None or ms.available_to >= start_date))))[:]
     
-    # print(f"Found {len(machine_statuses)} machine status records in date range")
+    print(f"Found {len(machine_statuses)} machine status records in date range")
     
     # Group machine statuses by machine ID for faster lookup
     machine_status_map = {}
@@ -1308,7 +1807,7 @@ def get_machine_utilization(
                                      (p.initial_end_time > start_date and p.initial_end_time <= end_date) or
                                     (p.initial_start_time <= start_date and p.initial_end_time >= end_date)))[:]
     
-    # print(f"Found {len(all_schedule_items)} schedule items in date range")
+    print(f"Found {len(all_schedule_items)} schedule items in date range")
     
     # Group schedule items by machine ID for faster lookup
     schedule_items_map = {}
@@ -1319,11 +1818,11 @@ def get_machine_utilization(
 
     result = []
     for machine in machines:
-        # print(f"\n--- Processing Machine {machine.id} ({machine.make}) ---")
+        print(f"\n--- Processing Machine {machine.id} ({machine.make}) ---")
         
         # Get planned schedule items for this machine (from pre-fetched data)
         schedule_items = schedule_items_map.get(machine.id, [])
-        # print(f"Machine {machine.id} has {len(schedule_items)} schedule items")
+        print(f"Machine {machine.id} has {len(schedule_items)} schedule items")
 
         # Calculate utilized hours from planned schedule items
         utilized_hours = 0
@@ -1367,7 +1866,7 @@ def get_machine_utilization(
 
                 current_day += timedelta(days=1)
 
-        # print(f"Machine {machine.id} utilized hours: {utilized_hours}")
+        print(f"Machine {machine.id} utilized hours: {utilized_hours}")
 
         # Ensure utilized hours don't exceed available hours
         utilized_hours = min(utilized_hours, available_hours)
@@ -1385,7 +1884,7 @@ def get_machine_utilization(
         
         # Get statuses for this machine
         machine_statuses_list = machine_status_map.get(machine.id, [])
-        # print(f"Machine {machine.id} has {len(machine_statuses_list)} status records")
+        print(f"Machine {machine.id} has {len(machine_statuses_list)} status records")
         
         # Process downtime periods more efficiently
         current_status = None
@@ -1405,8 +1904,8 @@ def get_machine_utilization(
                     break
             
             if current_status and current_status.status.id == 2:  # Machine is OFF
-                # print(f"Machine {machine.id} is OFF at {current_time}")
-                # print(f"Status record: from={current_status.available_from}, to={current_status.available_to}")
+                print(f"Machine {machine.id} is OFF at {current_time}")
+                print(f"Status record: from={current_status.available_from}, to={current_status.available_to}")
                 
                 # Machine is unavailable
                 if current_status.available_to:
@@ -1414,8 +1913,8 @@ def get_machine_utilization(
                     downtime_interval_end = current_status.available_to
                     hours_to_add = overlap_with_shift(current_time, downtime_interval_end, 6, 22)
                     downtime_hours += hours_to_add
-                    # print(f"Will be available again at: {current_status.available_to}")
-                    # print(f"Downtime hours added: {hours_to_add}")
+                    print(f"Will be available again at: {current_status.available_to}")
+                    print(f"Downtime hours added: {hours_to_add}")
                     current_time = downtime_interval_end
                     # Move to next status if this one ends
                     if current_status.available_to <= current_time:
@@ -1426,19 +1925,19 @@ def get_machine_utilization(
                     downtime_interval_end = end_date
                     hours_to_add = overlap_with_shift(current_time, downtime_interval_end, 6, 22)
                     downtime_hours += hours_to_add
-                    # print(f"Machine permanently unavailable, adding {hours_to_add} hours")
+                    print(f"Machine permanently unavailable, adding {hours_to_add} hours")
                     break
             else:
                 # Machine is available, move to next hour
                 current_time += timedelta(hours=1)
 
-        # print(f"Machine {machine.id} total downtime hours: {downtime_hours}")
+        print(f"Machine {machine.id} total downtime hours: {downtime_hours}")
         
         # Subtract downtime hours from available, utilized, and remaining hours
         available_hours = max(0, available_hours - downtime_hours)
         utilized_hours = min(utilized_hours, available_hours)
         remaining_hours = max(0, available_hours - utilized_hours)
-        # print(f"Final metrics for Machine {machine.id}: {downtime_hours} {available_hours} {utilized_hours} {remaining_hours}")
+        print(f"Final metrics for Machine {machine.id}: {downtime_hours} {available_hours} {utilized_hours} {remaining_hours}")
 
         result.append(MachineUtilization(
             machine_id=machine.id,
@@ -1453,7 +1952,7 @@ def get_machine_utilization(
             utilization_percentage=round(utilization_percentage, 2)
         ))
 
-    # print(f"\n=== END MACHINE UTILIZATION DEBUG ===")
+    print(f"\n=== END MACHINE UTILIZATION DEBUG ===")
     return result
 
 
@@ -1475,8 +1974,8 @@ def get_machine_utilization_by_range(
     if start_date > end_date:
         raise HTTPException(status_code=400, detail="End date must be after start date")
 
-    # print(f"\n=== MACHINE UTILIZATION RANGE DEBUG ===")
-    # print(f"Date range: {start_date} to {end_date}")
+    print(f"\n=== MACHINE UTILIZATION RANGE DEBUG ===")
+    print(f"Date range: {start_date} to {end_date}")
 
     # Calculate working days in the range (excluding weekends) - optimized
     working_days = 0
@@ -1497,7 +1996,7 @@ def get_machine_utilization_by_range(
             if weekday < 5:  # Monday to Friday
                 working_days += 1
 
-    # print(f"Working days in range: {working_days}")
+    print(f"Working days in range: {working_days}")
 
     # Calculate available hours
     # Formula: working hours (15) * working days in range * 0.85 (efficiency)
@@ -1506,11 +2005,11 @@ def get_machine_utilization_by_range(
 
     # Base available hours for the date range based on working days
     base_available_hours = working_days * daily_working_hours * efficiency_factor
-    # print(f"Base available hours: {working_days} days × {daily_working_hours} hours × {efficiency_factor} = {base_available_hours}")
+    print(f"Base available hours: {working_days} days Ã— {daily_working_hours} hours Ã— {efficiency_factor} = {base_available_hours}")
 
     # Get all active production orders first
     active_production_orders = select(ps.production_order for ps in PartScheduleStatus if ps.status == 'active')[:]
-    # print(f"Active production orders: {len(active_production_orders)}")
+    print(f"Active production orders: {len(active_production_orders)}")
 
     # Query to fetch machines
     machines_query = select(m for m in Machine)
@@ -1518,14 +2017,14 @@ def get_machine_utilization_by_range(
         machines_query = machines_query.filter(lambda m: m.id == machine_id)
 
     machines = machines_query[:]
-    # print(f"Processing {len(machines)} machines")
+    print(f"Processing {len(machines)} machines")
 
     # Pre-fetch all machine status records for the date range to avoid multiple database queries
     machine_statuses = select(ms for ms in MachineStatus 
                              if ms.available_from is not None 
                              and ((ms.available_from <= end_date and (ms.available_to is None or ms.available_to >= start_date))))[:]
     
-    # print(f"Found {len(machine_statuses)} machine status records in date range")
+    print(f"Found {len(machine_statuses)} machine status records in date range")
     
     # Group machine statuses by machine ID for faster lookup
     machine_status_map = {}
@@ -1545,7 +2044,7 @@ def get_machine_utilization_by_range(
                                     (p.initial_end_time > start_date and p.initial_end_time <= end_date) or
                                     (p.initial_start_time <= start_date and p.initial_end_time >= end_date)))[:]
     
-    # print(f"Found {len(all_schedule_items)} schedule items in date range")
+    print(f"Found {len(all_schedule_items)} schedule items in date range")
     
     # Group schedule items by machine ID for faster lookup
     schedule_items_map = {}
@@ -1557,7 +2056,7 @@ def get_machine_utilization_by_range(
     result = []
 
     for machine in machines:
-        # print(f"\n--- Processing Machine {machine.id} ({machine.make}) ---")
+        print(f"\n--- Processing Machine {machine.id} ({machine.make}) ---")
         
         # Start with base available hours for this machine
         available_hours = base_available_hours
@@ -1568,7 +2067,7 @@ def get_machine_utilization_by_range(
         
         # Get statuses for this machine
         machine_statuses_list = machine_status_map.get(machine.id, [])
-        # print(f"Machine {machine.id} has {len(machine_statuses_list)} status records")
+        print(f"Machine {machine.id} has {len(machine_statuses_list)} status records")
         
         # Process downtime periods more efficiently
         downtime_periods = []
@@ -1593,8 +2092,8 @@ def get_machine_utilization_by_range(
                     break
             
             if current_status and current_status.status.id == 2:  # Machine is OFF
-                # print(f"Machine {machine.id} is OFF at {current_time}")
-                # print(f"Status record: from={current_status.available_from}, to={current_status.available_to}")
+                print(f"Machine {machine.id} is OFF at {current_time}")
+                print(f"Status record: from={current_status.available_from}, to={current_status.available_to}")
                 
                 # Machine is unavailable
                 if current_status.available_to:
@@ -1602,8 +2101,8 @@ def get_machine_utilization_by_range(
                     downtime_interval_end = current_status.available_to
                     hours_to_add = overlap_with_shift(current_time, downtime_interval_end, 6, 22) 
                     downtime_hours += hours_to_add
-                    # print(f"Will be available again at: {current_status.available_to}")
-                    # print(f"Downtime hours added (with efficiency): {hours_to_add}")
+                    print(f"Will be available again at: {current_status.available_to}")
+                    print(f"Downtime hours added (with efficiency): {hours_to_add}")
                     current_time = downtime_interval_end
                     # Move to next status if this one ends
                     if current_status.available_to <= current_time:
@@ -1614,17 +2113,17 @@ def get_machine_utilization_by_range(
                     downtime_interval_end = end_date
                     hours_to_add = overlap_with_shift(current_time, downtime_interval_end, 6, 22) 
                     downtime_hours += hours_to_add
-                    # print(f"Machine permanently unavailable, adding {hours_to_add} hours (with efficiency)")
+                    print(f"Machine permanently unavailable, adding {hours_to_add} hours (with efficiency)")
                     break
             else:
                 # Machine is available, move to next hour
                 current_time += timedelta(hours=1)
 
-        # print(f"Machine {machine.id} total downtime hours: {downtime_hours}")
+        print(f"Machine {machine.id} total downtime hours: {downtime_hours}")
 
         # Get planned schedule items for this machine (from pre-fetched data)
         schedule_items = schedule_items_map.get(machine.id, [])
-        # print(f"Machine {machine.id} has {len(schedule_items)} schedule items")
+        print(f"Machine {machine.id} has {len(schedule_items)} schedule items")
 
         # Calculate utilized hours from planned schedule items
         utilized_hours = 0
@@ -1667,14 +2166,14 @@ def get_machine_utilization_by_range(
 
                 current_day += timedelta(days=1)
 
-        # print(f"Machine {machine.id} utilized hours: {utilized_hours}")
+        print(f"Machine {machine.id} utilized hours: {utilized_hours}")
 
         # Adjust for downtime and calculate final metrics
         available_hours = max(0, base_available_hours - downtime_hours)
         utilized_hours = min(utilized_hours, available_hours)
         remaining_hours = max(0, available_hours - utilized_hours)
         utilization_percentage = (utilized_hours / available_hours * 100) if available_hours > 0 else 0
-        # print(f"Final metrics for Machine {machine.id}: {downtime_hours} {available_hours} {utilized_hours} {remaining_hours}")
+        print(f"Final metrics for Machine {machine.id}: {downtime_hours} {available_hours} {utilized_hours} {remaining_hours}")
 
         # Get the work center name from the related work center
         work_center_name = machine.work_center.code if machine.work_center else None
@@ -1692,7 +2191,7 @@ def get_machine_utilization_by_range(
             utilization_percentage=round(utilization_percentage, 2)
         ))
 
-    # print(f"\n=== END MACHINE UTILIZATION RANGE DEBUG ===")
+    print(f"\n=== END MACHINE UTILIZATION RANGE DEBUG ===")
     return result
 
 
@@ -1731,6 +2230,7 @@ async def set_order_completion(order_id: int, request: OrderCompletionRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.get("/order-completion-record/{order_id}", response_model=OrderCompletionStatus)
 async def get_order_completion_status(order_id: int):
     """Get completion status for an order"""
@@ -1742,7 +2242,7 @@ async def get_order_completion_status(order_id: int):
             
             # Get project name
             project_name = order.project.name if order.project else "Unknown Project"
-            # print(f"DEBUG: Order {order_id} - Project ID: {order.project.id if order.project else 'None'}, Project Name: {project_name}")
+            print(f"DEBUG: Order {order_id} - Project ID: {order.project.id if order.project else 'None'}, Project Name: {project_name}")
             
             # Get completion tracking
             tracking = OrderCompleted.get(order_id=order)
@@ -1784,7 +2284,7 @@ async def get_all_completion_status():
             for record in tracking_records:
                 order = record.order_id
                 project_name = order.project.name if order.project else "Unknown Project"
-                # print(f"DEBUG: Order {order.id} - Project ID: {order.project.id if order.project else 'None'}, Project Name: {project_name}")
+                print(f"DEBUG: Order {order.id} - Project ID: {order.project.id if order.project else 'None'}, Project Name: {project_name}")
                 
                 # Calculate status and progress
                 if record.is_completed:
@@ -1844,3 +2344,235 @@ async def check_order_completion(part_number: str, production_order: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@router.get("/schedule/latest", response_model=ScheduleResponse)
+async def get_latest_schedule():
+    """Fetch the latest schedule for the latest/active schedule history.
+    - Determine current history (is_active=True, else highest version)
+    - Filter PlannedScheduleItem by that history
+    - Take highest ScheduleVersion per item
+    Returns the same response shape as schedule-batch."""
+    try:
+        work_centers_data = []
+        scheduled_operations: List[ScheduledOperation] = []
+
+        with db_session:
+            # Build work centers data for response (same as schedule-batch)
+            for work_center in WorkCenter.select():
+                machines_in_wc = []
+                for machine in work_center.machines:
+                    machines_in_wc.append({
+                        "id": str(machine.id),
+                        "name": machine.make,
+                        "model": machine.model,
+                        "type": machine.type
+                    })
+
+                work_centers_data.append(
+                    WorkCenterMachine(
+                        work_center_code=work_center.code,
+                        work_center_name=work_center.work_center_name or "",
+                        machines=machines_in_wc,
+                        is_schedulable=work_center.is_schedulable
+                    )
+                )
+
+            # Pick current schedule history: active first, else highest version
+            current_history = select(h for h in ScheduleHistory if h.is_active == True).order_by(lambda h: desc(h.generated_at)).first()
+            if not current_history:
+                current_history = select(h for h in ScheduleHistory).order_by(lambda h: desc(h.version)).first()
+
+            if not current_history:
+                return ScheduleResponse(
+                    scheduled_operations=[],
+                    overall_end_time=datetime.utcnow(),
+                    overall_time="0",
+                    daily_production={},
+                    component_status={},
+                    partially_completed=["No schedule history found"],
+                    work_centers=work_centers_data
+                )
+
+            # Consider only active production orders (to mirror schedule-batch semantics)
+            active_production_orders = set(select(p.production_order for p in PartScheduleStatus if p.status == 'active')[:])
+
+            # Preload machine display names
+            machine_details = {}
+            for machine in Machine.select():
+                machine_name = f"{machine.work_center.code}-{machine.make}"
+                machine_details[machine.id] = {
+                    'name': machine_name,
+                    'id': machine.id
+                }
+
+            # Planned items only for the selected schedule history and active POs
+            planned_items = select(p for p in PlannedScheduleItem 
+                                   if p.schedule_history == current_history and 
+                                      p.order.production_order in active_production_orders)[:]
+
+            latest_versions: List[ScheduleVersion] = []
+            for item in planned_items:
+                version = select(v for v in ScheduleVersion if v.schedule_item == item).order_by(lambda v: desc(v.version_number)).first()
+                if version is not None:
+                    latest_versions.append(version)
+
+            if not latest_versions:
+                return ScheduleResponse(
+                    scheduled_operations=[],
+                    overall_end_time=datetime.utcnow(),
+                    overall_time="0",
+                    daily_production={},
+                    component_status={},
+                    partially_completed=["No schedule versions found for current history"],
+                    work_centers=work_centers_data
+                )
+
+            # Build response scheduled operations
+            for version in latest_versions:
+                schedule_item = version.schedule_item
+                order = schedule_item.order
+                operation = schedule_item.operation
+                machine = schedule_item.machine
+
+                quantity_str = f"Process({version.completed_quantity}/{version.planned_quantity}pcs)"
+                machine_name = machine_details.get(machine.id, {'name': f'Machine-{machine.id}'})['name']
+
+                scheduled_operations.append(
+                    ScheduledOperation(
+                        component=order.part_number,
+                        description=operation.operation_description,
+                        machine=machine_name,
+                        start_time=version.planned_start_time,
+                        end_time=version.planned_end_time,
+                        quantity=quantity_str,
+                        production_order=order.production_order
+                    )
+                )
+
+            # Compute window
+            min_start = min(v.planned_start_time for v in latest_versions)
+            max_end = max(v.planned_end_time for v in latest_versions)
+            overall_end_time = max_end or datetime.utcnow()
+            total_seconds = max(0, int((max_end - min_start).total_seconds())) if latest_versions else 0
+
+            return ScheduleResponse(
+                scheduled_operations=scheduled_operations,
+                overall_end_time=overall_end_time,
+                overall_time=str(total_seconds),
+                daily_production={},
+                component_status={},
+                partially_completed=[],
+                work_centers=work_centers_data
+            )
+
+    except Exception as e:
+        print(f"Error in latest schedule endpoint: {str(e)}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/schedule/update", response_model=ScheduleResponse)
+async def update_schedule():
+    """Archive current schedule into ScheduleHistory and generate a new one as next version.
+    Steps:
+    - Determine current history (active else highest version) and mark inactive
+    - Create new history with version+1 and set active
+    - Run scheduling algorithm to generate schedule_df
+    - Persist items linked to new history with global version = history.version
+    - Return the newly generated latest schedule for that history
+    """
+    try:
+        # Determine new history version and create it
+        with db_session:
+            current_history = select(h for h in ScheduleHistory if h.is_active == True).order_by(lambda h: desc(h.generated_at)).first()
+            if not current_history:
+                current_history = select(h for h in ScheduleHistory).order_by(lambda h: desc(h.version)).first()
+
+            next_version = (current_history.version if current_history else 0) + 1
+
+            if current_history and current_history.is_active:
+                current_history.is_active = False
+
+            new_history = ScheduleHistory(version=next_version, is_active=True, generated_at=datetime.utcnow())
+
+        # Build schedule inputs similar to schedule-batch
+        with db_session:
+            # Active POs
+            active_production_orders = set(select(p.production_order for p in PartScheduleStatus if p.status == 'active')[:])
+
+        # Fetch operations dataframe
+        df = fetch_operations()
+        if df.empty:
+            return await get_latest_schedule()
+
+        # Build mapping of active POs per part number and a part_po to quantity using same approach as schedule-batch
+        po_to_part_mapping = {}
+        part_po_to_quantity = {}
+        with db_session:
+            active_part_statuses = select(p for p in PartScheduleStatus if p.status == 'active')[:]
+            for part_status in active_part_statuses:
+                po = part_status.production_order
+                part_number = part_status.part_number
+                po_to_part_mapping[po] = part_number
+                order = Order.get(production_order=po, part_number=part_number)
+                quantity = order.launched_quantity if order else 0
+                if quantity <= 0:
+                    order_alt = Order.get(part_number=part_number)
+                    quantity = order_alt.launched_quantity if order_alt else 10
+                part_po_to_quantity[(part_number, po)] = quantity
+
+        # Expand operations only for active POs and schedulable work centers
+        expanded_rows = []
+        with db_session:
+            for (part_number, po), quantity in part_po_to_quantity.items():
+                matching_ops = Operation.select(
+                    lambda o: o.order.part_number == part_number and
+                              o.order.production_order == po and
+                              o.work_center.is_schedulable == True
+                )
+                for op in matching_ops:
+                    expanded_rows.append({
+                        'partno': part_number,
+                        'operation': op.operation_description,
+                        'machine_id': op.machine.id,
+                        'sequence': op.operation_number,
+                        'time': float(op.ideal_cycle_time),
+                        'production_order': po,
+                        'work_center_id': op.work_center.id
+                    })
+
+        if expanded_rows:
+            df = pd.DataFrame(expanded_rows)
+        else:
+            df = pd.DataFrame()
+
+        if df.empty:
+            # Nothing to schedule; return latest (empty)
+            return await get_latest_schedule()
+
+        # Filter to active POs
+        df = df[df['production_order'].isin(active_production_orders)]
+
+        # Filter operations to schedulable work centers based on machine -> wc mapping
+        machine_to_wc = {}
+        with db_session:
+            for machine in Machine.select():
+                machine_to_wc[machine.id] = machine.work_center.id
+        df['work_center_id'] = df['machine_id'].map(machine_to_wc)
+
+        # Run algorithm
+        schedule_df, overall_end_time, overall_time, daily_production, component_status, partially_completed = schedule_operations(
+            df, part_po_to_quantity, fetch_lead_times()
+        )
+
+        # Persist schedule linked to new history and using global version equal to history.version
+        with db_session:
+            store_schedule(schedule_df, component_status, schedule_history=new_history, global_version=next_version)
+
+        # Return newly created latest schedule (history-aware endpoint will pick it up)
+        return await get_latest_schedule()
+
+    except Exception as e:
+        print(f"Error in update schedule endpoint: {str(e)}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))

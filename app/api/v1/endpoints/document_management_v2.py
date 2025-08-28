@@ -3,8 +3,16 @@ import tempfile
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query, Path, status, Form
 from typing import List, Union, Annotated, Optional, Dict, Any
+from collections import defaultdict
 import io
 
+import pandas as pd
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, PageBreak
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors
 from starlette.responses import FileResponse
 
 from ....models import DocType, Operation, DocFolder, Document, DocumentAccessLog, DocumentVersion
@@ -2465,30 +2473,31 @@ class DocumentsByTypeResponse(BaseModel):
 @router.post("/ballooned-drawing/upload/", response_model=DocumentResponse)
 async def upload_ballooned_drawing(
         file: UploadFile = File(...),
-        part_number: str = Form(...),  # Now required
-        operation_number: str = Form(...),  # Required operation number
+        part_number: str = Form(...),
+        operation_number: str = Form(...),
         document_name: str = Form(...),
         description: Optional[str] = Form(None),
-        version_number: str = Form(...),
-        production_order: Optional[str] = Form(None),  # Now optional
+        production_order: Optional[str] = Form(None),
         metadata: Optional[str] = Form("{}"),
         current_user: User = Depends(get_current_user)
 ):
-    """Upload a ballooned drawing for a specific part number and operation"""
+    """Upload a ballooned drawing for a specific part number and operation.
+       Reuses existing document if available and adds a new version.
+    """
     try:
         with db_session:
             user = User.get(id=current_user.id)
             if not user:
                 raise HTTPException(status_code=404, detail="User not found")
 
-            # Get the order if production order is provided
+            # Lookup production order if provided
             order = None
             if production_order:
                 order = Order.get(production_order=production_order)
                 if not order:
                     raise HTTPException(status_code=404, detail="Production order not found")
 
-            # Get or create Ballooned Drawing document type
+            # Get or create Document Type
             doc_type_obj = DocumentTypeV2.get(name="BALLOONED_DRAWING")
             if not doc_type_obj:
                 doc_type_obj = DocumentTypeV2(
@@ -2498,7 +2507,7 @@ async def upload_ballooned_drawing(
                 )
                 commit()
 
-            # Get or create root folder for Balloon drawings
+            # Get or create root "Balloon" folder
             root_path = "Balloon"
             balloon_folder = FolderV2.get(lambda f: f.path == root_path)
             if not balloon_folder:
@@ -2512,7 +2521,7 @@ async def upload_ballooned_drawing(
                 balloon_folder.is_active = True
                 commit()
 
-            # Get or create part number folder
+            # Part number folder
             part_path = f"{root_path}/{part_number}"
             part_folder = FolderV2.get(lambda f: f.path == part_path)
             if not part_folder:
@@ -2527,7 +2536,7 @@ async def upload_ballooned_drawing(
                 part_folder.is_active = True
                 commit()
 
-            # Get or create operation folder under part number
+            # Operation folder
             op_folder_name = f"OP{operation_number}"
             op_path = f"{part_path}/{op_folder_name}"
             op_folder = FolderV2.get(lambda f: f.path == op_path)
@@ -2543,33 +2552,56 @@ async def upload_ballooned_drawing(
                 op_folder.is_active = True
                 commit()
 
-            # Validate file extension
-            file_ext = file.filename.split('.')[-1].lower()
-            if f".{file_ext}" not in doc_type_obj.allowed_extensions:
+            # File extension validation
+            file_ext = f".{file.filename.split('.')[-1].lower()}"
+            if file_ext not in doc_type_obj.allowed_extensions:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"File type .{file_ext} not allowed for Ballooned Drawing documents"
+                    detail=f"File type {file_ext} not allowed for Ballooned Drawing documents"
                 )
 
-            # Create document
-            new_doc = DocumentV2(
-                name=document_name,
-                folder=op_folder,  # Now using operation folder
-                doc_type=doc_type_obj,
-                description=description,
-                part_number=part_number,  # Using part number as primary identifier
-                production_order=order,  # Order is now optional
-                created_by=user
-            )
-            commit()
+            # Check if document already exists
+            existing_doc = DocumentV2.select(
+                lambda d: d.name == document_name and
+                          d.folder == op_folder and
+                          d.part_number == part_number and
+                          d.doc_type == doc_type_obj
+            ).first()
 
-            # Handle file upload and version creation
+            if existing_doc:
+                new_doc = existing_doc
+            else:
+                new_doc = DocumentV2(
+                    name=document_name,
+                    folder=op_folder,
+                    doc_type=doc_type_obj,
+                    description=description,
+                    part_number=part_number,
+                    production_order=order,
+                    created_by=user
+                )
+                commit()
+
+            # Get next version number (fixed)
+            # Get next version number (fixed for float or string inputs)
+            existing_versions = list(
+                DocumentVersionV2.select(lambda v: v.document == new_doc)
+                .order_by(lambda v: int(float(v.version_number)))
+            )
+
+            next_version_number = (
+                str(int(float(existing_versions[-1].version_number)) + 1)
+                if existing_versions else "1"
+            )
+
+            # Read file and compute checksum
             file_content = await file.read()
             checksum = hashlib.sha256(file_content).hexdigest()
 
-            # Path structure with part number and operation number
-            minio_path = f"documents/v2/Balloon/{part_number}/OP{operation_number}/{new_doc.id}/v{version_number}/{file.filename}"
+            # MinIO path
+            minio_path = f"documents/v2/Balloon/{part_number}/OP{operation_number}/{new_doc.id}/v{next_version_number}/{file.filename}"
 
+            # Upload to MinIO
             try:
                 file.file.seek(0)
                 minio.upload_file(
@@ -2582,20 +2614,18 @@ async def upload_ballooned_drawing(
 
             # Parse metadata
             try:
-                metadata_dict = json.loads(metadata) if metadata else {}
+                metadata_dict = json.loads(metadata or "{}")
             except json.JSONDecodeError:
                 metadata_dict = {}
 
-            # Add production order and operation number to metadata
             metadata_dict["production_order"] = production_order
             metadata_dict["operation_number"] = operation_number
-            if part_number:
-                metadata_dict["part_number"] = part_number
+            metadata_dict["part_number"] = part_number
 
             # Create version
             version = DocumentVersionV2(
                 document=new_doc,
-                version_number=version_number,
+                version_number=next_version_number,
                 minio_path=minio_path,
                 file_size=len(file_content),
                 checksum=checksum,
@@ -2604,7 +2634,7 @@ async def upload_ballooned_drawing(
             )
             new_doc.latest_version = version
 
-            # Create access log
+            # Log access
             DocumentAccessLogV2(
                 document=new_doc,
                 version=version,
@@ -2646,7 +2676,6 @@ async def upload_ballooned_drawing(
         error_details = traceback.format_exc()
         print(f"Error uploading ballooned drawing: {error_details}")
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @router.get("/ballooned-drawing/download/{part_number}/{operation_number}")
 def download_ballooned_drawing_by_part_and_op(
@@ -3338,6 +3367,7 @@ async def list_machines_with_documents(
 
 
 
+
 @router.post("/report/upload/", response_model=DocumentResponse)
 async def upload_report_document(
         file: UploadFile = File(...),
@@ -3456,9 +3486,13 @@ async def upload_report_document(
 
                 # If operation number is provided, get the operation and create its folder
                 if operation_number is not None:
-                    operation = Operation.get(lambda op: op.order == production_order and op.operation_number == operation_number)
-                    if not operation:
-                        raise HTTPException(status_code=404, detail=f"Operation {operation_number} not found for order {order_number}")
+                    # Special handling for operation 999 (Final Inspection)
+                    if operation_number == 999:
+                        operation = None  # No need to validate against operations table for final inspection
+                    else:
+                        operation = Operation.get(lambda op: op.order == production_order and op.operation_number == operation_number)
+                        if not operation:
+                            raise HTTPException(status_code=404, detail=f"Operation {operation_number} not found for order {order_number}")
 
                     # Create a folder for the operation_number inside the order folder
                     operation_folder_path = f"{order_folder_path}/OP{operation_number}"
@@ -5295,286 +5329,808 @@ async def get_ipid_folder_structure(
     
 
     
+# @router.post("/report/generate-consolidated/{order_number}", response_model=DocumentResponse)
+# async def generate_consolidated_report(
+#     order_number: str,
+#     current_user: User = Depends(get_current_user)
+# ):
+#     """
+#     Generate a consolidated report by merging PDFs from each operation folder for a given PO number.
+#     The consolidated report will be stored in a 'Consolidated Reports' folder under the PO number.
+#     """
+#     try:
+#         with db_session:
+#             user = User.get(id=current_user.id)
+#             if not user:
+#                 raise HTTPException(status_code=404, detail="User not found")
+
+#             # Get the order
+#             order = Order.get(production_order=order_number)
+#             if not order:
+#                 raise HTTPException(status_code=404, detail=f"Order {order_number} not found")
+
+#             # Get or create root folder structure
+#             root_folder = FolderV2.get(lambda f: f.path == "Document Types")
+#             if not root_folder:
+#                 root_folder = FolderV2(
+#                     name="Document Types",
+#                     path="Document Types",
+#                     created_by=user
+#                 )
+#                 commit()
+#             elif not root_folder.is_active:
+#                 root_folder.is_active = True
+#                 commit()
+
+#             # Get or create Report folder
+#             report_path = "Document Types/REPORT"
+#             report_folder = FolderV2.get(lambda f: f.path == report_path)
+#             if not report_folder:
+#                 report_folder = FolderV2(
+#                     name="REPORT",
+#                     path=report_path,
+#                     parent_folder=root_folder,
+#                     created_by=user
+#                 )
+#                 commit()
+#             elif not report_folder.is_active:
+#                 report_folder.is_active = True
+#                 commit()
+
+#             # Get or create PO folder
+#             po_folder_path = f"{report_path}/{order_number}"
+#             po_folder = FolderV2.get(lambda f: f.path == po_folder_path)
+#             if not po_folder:
+#                 po_folder = FolderV2(
+#                     name=order_number,
+#                     path=po_folder_path,
+#                     parent_folder=report_folder,
+#                     created_by=user
+#                 )
+#                 commit()
+#             elif not po_folder.is_active:
+#                 po_folder.is_active = True
+#                 commit()
+
+#             # Get or create Consolidated Reports folder
+#             consolidated_folder_path = f"{po_folder_path}/Consolidated Reports"
+#             consolidated_folder = FolderV2.get(lambda f: f.path == consolidated_folder_path)
+#             if not consolidated_folder:
+#                 consolidated_folder = FolderV2(
+#                     name="Consolidated Reports",
+#                     path=consolidated_folder_path,
+#                     parent_folder=po_folder,
+#                     created_by=user
+#                 )
+#                 commit()
+#             elif not consolidated_folder.is_active:
+#                 consolidated_folder.is_active = True
+#                 commit()
+
+#             # Get all operation folders under the PO folder
+#             operation_folders = []
+#             print(f"Searching for operation folders under PO folder: {po_folder.path}")
+            
+#             # First, get all folders under the PO folder (including inactive ones)
+#             all_folders = list(FolderV2.select(
+#                 lambda f: f.path.startswith(po_folder.path + "/") and 
+#                          f.path != consolidated_folder_path and
+#                          f.path != po_folder.path
+#             ))
+            
+#             print(f"Found all folders (active and inactive): {[(f.path, f.is_active) for f in all_folders]}")
+            
+#             # Filter for operation folders and reactivate if needed
+#             for folder in all_folders:
+#                 if folder.name.startswith("OP"):
+#                     if not folder.is_active:
+#                         print(f"Reactivating inactive operation folder: {folder.path}")
+#                         folder.is_active = True
+#                         commit()
+#                     operation_folders.append(folder)
+#                     print(f"Found operation folder: {folder.path} (active: {folder.is_active})")
+            
+#             print(f"Found operation folders: {[f.path for f in operation_folders]}")
+            
+#             # Also try a direct search for specific operation folders if none found
+#             if not operation_folders:
+#                 print("No operation folders found, trying direct search...")
+#                 direct_search = list(FolderV2.select())
+#                 for f in direct_search:
+#                     if f.path.startswith(po_folder.path + "/OP"):
+#                         print(f"Direct search found: {f.path} (active: {f.is_active})")
+#                         if not f.is_active:
+#                             f.is_active = True
+#                             commit()
+#                         operation_folders.append(f)
+
+#             if not operation_folders:
+#                 raise HTTPException(status_code=404, detail="No operation folders found")
+
+#             # Create a temporary directory to store PDFs
+#             with tempfile.TemporaryDirectory() as temp_dir:
+#                 merger = PyPDF2.PdfMerger()
+#                 found_pdfs = False
+
+#                 # Sort operation folders by operation number
+#                 operation_folders.sort(key=lambda f: int(f.name.replace("OP", "")))
+#                 print(f"Processing operation folders in order: {[f.name for f in operation_folders]} with paths: {[f.path for f in operation_folders]}")
+
+#                 # Collect PDFs from each operation folder
+#                 for op_folder in operation_folders:
+#                     print(f"Processing operation folder: {op_folder.name} (path: {op_folder.path})")
+                    
+#                     # Get all folders under this operation folder (including the operation folder itself)
+#                     operation_related_folders = []
+#                     operation_related_folders.append(op_folder)  # Include the operation folder itself
+                    
+#                     # Get all subfolders under this operation folder
+#                     subfolders = list(FolderV2.select(
+#                         lambda f: f.path.startswith(op_folder.path + "/") and f.is_active
+#                     ))
+#                     operation_related_folders.extend(subfolders)
+                    
+#                     print(f"Found {len(operation_related_folders)} folders under {op_folder.name}: {[f.path for f in operation_related_folders]}")
+                    
+#                     # Collect all PDFs from all folders under this operation
+#                     operation_pdfs = []
+#                     for folder in operation_related_folders:
+#                         # Get all PDF documents in this folder
+#                         pdfs_in_folder = list(select(d for d in DocumentV2 
+#                                         if d.folder == folder and 
+#                                         d.is_active and 
+#                                         d.latest_version and 
+#                                         d.latest_version.minio_path.lower().endswith('.pdf')
+#                                         ).order_by(lambda d: desc(d.created_at)))
+                        
+#                         for pdf_doc in pdfs_in_folder:
+#                             operation_pdfs.append((pdf_doc, folder))
+#                             print(f"Found PDF in {folder.path}: {pdf_doc.name} (version: {pdf_doc.latest_version.version_number})")
+                    
+#                     # Sort all PDFs by creation date (most recent first)
+#                     operation_pdfs.sort(key=lambda x: x[0].created_at, reverse=True)
+                    
+#                     # Add all PDFs to the merger
+#                     pdf_counter = 1
+#                     for pdf_doc, folder in operation_pdfs:
+#                         found_pdfs = True
+#                         # Create a safe filename by removing invalid characters
+#                         safe_name = "".join(c for c in pdf_doc.name if c.isalnum() or c in ('-', '_'))
+#                         pdf_filename = f"{op_folder.name}_doc{pdf_counter}.pdf"
+#                         pdf_path = os.path.join(temp_dir, pdf_filename)
+                        
+#                         try:
+#                             with open(pdf_path, 'wb') as pdf_file:
+#                                 file_data = minio.download_file(pdf_doc.latest_version.minio_path)
+#                                 pdf_file.write(file_data.read())
+#                             merger.append(pdf_path)
+#                             print(f"Added {pdf_filename} to merger from folder: {folder.path} (original: {pdf_doc.name})")
+#                         except Exception as e:
+#                             print(f"Error processing PDF {pdf_doc.name}: {str(e)}")
+#                             continue
+#                         pdf_counter += 1
+                    
+#                     if not operation_pdfs:
+#                         print(f"No PDFs found in any folder under operation: {op_folder.name}")
+
+#                 if not found_pdfs:
+#                     raise HTTPException(status_code=404, detail="No PDF reports found in operation folders")
+
+#                 # Create the consolidated PDF
+#                 consolidated_pdf_path = os.path.join(temp_dir, f"Consolidated_Report_{order_number}.pdf")
+#                 merger.write(consolidated_pdf_path)
+#                 merger.close()
+
+#                 # Create document in the consolidated folder
+#                 doc_type_obj = DocumentTypeV2.get(name="REPORT")
+#                 if not doc_type_obj:
+#                     raise HTTPException(status_code=404, detail="REPORT document type not found")
+
+#                 # Create the document
+#                 new_doc = DocumentV2(
+#                     name=f"Consolidated_Report_{order_number}",
+#                     folder=consolidated_folder,
+#                     doc_type=doc_type_obj,
+#                     description=f"Consolidated report for PO {order_number}",
+#                     part_number=order_number,
+#                     production_order=order,
+#                     created_by=user
+#                 )
+#                 commit()
+
+#                 # Upload the consolidated PDF to MinIO
+#                 version_number = "1.0"
+#                 minio_path = f"documents/v2/{consolidated_folder.path}/{new_doc.id}/v{version_number}/Consolidated_Report_{order_number}.pdf"
+                
+#                 with open(consolidated_pdf_path, 'rb') as pdf_file:
+#                     file_content = pdf_file.read()
+#                     checksum = hashlib.sha256(file_content).hexdigest()
+                    
+#                     minio.upload_file(
+#                         file=open(consolidated_pdf_path, 'rb'),
+#                         object_name=minio_path,
+#                         content_type="application/pdf"
+#                     )
+
+#                 # Create version
+#                 version = DocumentVersionV2(
+#                     document=new_doc,
+#                     version_number=version_number,
+#                     minio_path=minio_path,
+#                     file_size=len(file_content),
+#                     checksum=checksum,
+#                     created_by=user,
+#                     metadata={
+#                         "consolidated_report": True,
+#                         "order_number": order_number,
+#                         "generation_date": datetime.utcnow().isoformat()
+#                     }
+#                 )
+#                 new_doc.latest_version = version
+
+#                 # Create access log
+#                 DocumentAccessLogV2(
+#                     document=new_doc,
+#                     version=version,
+#                     user=user,
+#                     action_type="UPDATE",
+#                     ip_address="0.0.0.0"
+#                 )
+
+#                 commit()
+
+#                 return {
+#                     "id": new_doc.id,
+#                     "name": new_doc.name,
+#                     "folder_id": new_doc.folder.id,
+#                     "doc_type_id": new_doc.doc_type.id,
+#                     "description": new_doc.description,
+#                     "part_number": new_doc.part_number,
+#                     "production_order_id": new_doc.production_order.id if new_doc.production_order else None,
+#                     "created_at": new_doc.created_at,
+#                     "created_by_id": new_doc.created_by.id,
+#                     "is_active": new_doc.is_active,
+#                     "latest_version": {
+#                         "id": version.id,
+#                         "document_id": new_doc.id,
+#                         "version_number": version.version_number,
+#                         "minio_path": version.minio_path,
+#                         "file_size": version.file_size,
+#                         "checksum": version.checksum,
+#                         "created_at": version.created_at,
+#                         "created_by_id": version.created_by.id,
+#                         "is_active": version.is_active,
+#                         "metadata": version.metadata
+#                     }
+#                 }
+
+#     except Exception as e:
+#         print(f"Error in generate_consolidated_report: {str(e)}")
+#         import traceback
+#         print(traceback.format_exc())
+#         raise HTTPException(
+#             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+#             detail=f"An error occurred: {str(e)}"
+#         )
+    
+
+
+
+
+
+def save_df_to_pdf(df, metadata, pdf_path):
+
+    # Document setup
+    doc = SimpleDocTemplate(pdf_path, pagesize=landscape(A4),
+                            leftMargin=20, rightMargin=20, topMargin=20, bottomMargin=20)
+    styles = getSampleStyleSheet()
+
+    # ------------------------
+    # Column Widths
+    # ------------------------
+    inspection_col_widths = [30, 150, 50, 50, 40] + [45] * 10
+    total_width = sum(inspection_col_widths)
+
+    meta_col_widths = [total_width * 0.15, total_width * 0.35,
+                       total_width * 0.15, total_width * 0.35]
+
+    elements = []
+    page_counter = 1  # Start counting pages
+    total_pages = 0  # Placeholder for total pages, to be updated after document build
+
+    # ------------------------
+    # Title Table
+    # ------------------------
+    title_para = Paragraph("<b>INSPECTION REPORT</b>",
+                           ParagraphStyle("title", parent=styles["Title"], fontSize=14))
+    title_table = Table([[title_para]], colWidths=[total_width])
+    title_table.setStyle(TableStyle([("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                                    ("FONTSIZE", (0, 0), (-1, -1), 14),
+                                    ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
+                                    ]))
+
+    # ------------------------
+    # Metadata Table (on all pages)
+    # ------------------------
+    def add_metadata_page_number(metadata, page_num, total_pages):
+        # Update metadata with page number information
+        metadata[4] = ["Stage Detail ", f"Page {page_num} of {total_pages}", "", " "]
+        meta_table = Table(metadata, colWidths=meta_col_widths)
+        meta_table.setStyle(TableStyle([("FONTSIZE", (0, 0), (-1, -1), 10),
+                                       ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
+                                       ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+                                       ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                                       ]))
+        return meta_table
+
+    # ------------------------
+    # Paginated Inspection Tables
+    # ------------------------
+    measurement_cols = [c for c in df.columns if c.isdigit()]
+    fixed_cols = ["Sl. No.", "Nominal", "Upper Tol", "Lower Tol", "Zone"]
+    total_rows = len(df)
+    total_pages = (len(measurement_cols) // 10) + (1 if len(measurement_cols) % 10 > 0 else 0)
+
+    for page_idx, start in enumerate(range(0, len(measurement_cols), 10)):
+        elements.append(title_table)
+
+        subset = measurement_cols[start:start + 10]
+
+        # pad with None to reach 10 if fewer
+        if len(subset) < 10:
+            subset += [None] * (10 - len(subset))
+
+        # headers always 1–10
+        page_labels = [str(i) for i in range(start + 1, start + len(subset) + 1)]
+
+        # rows
+        page_data = []
+        for _, row in df.iterrows():
+            base = [row["Sl. No."], row["Nominal"], row["Upper Tol"], row["Lower Tol"], row["Zone"]]
+            values = [(row[c] if c and c in df.columns else "") for c in subset]
+            page_data.append(base + values)
+
+        inspection_data = [["ID", "Nominal", "Upper\nTol", "Lower\nTol", "Zone"] + page_labels] + page_data
+
+        inspection_table = Table(inspection_data, repeatRows=1, colWidths=inspection_col_widths)
+        inspection_table.setStyle(TableStyle([("FONTSIZE", (0, 0), (-1, -1), 10),
+                                             ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
+                                             ("ALIGN", (0, 0), (-1, 0), "CENTER"),
+                                             ("BACKGROUND", (0, 0), (-1, 0), colors.white),
+                                             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                                             ("ALIGN", (0, 1), (-1, -1), "CENTER"),
+                                             ]))
+        # Nominal column left aligned
+        nominal_col_index = inspection_data[0].index("Nominal")
+        inspection_table.setStyle(TableStyle([("ALIGN", (nominal_col_index, 0), (nominal_col_index, -1), "LEFT"),
+                                             ]))
+
+        # Add metadata and page number to each page
+        elements.append(add_metadata_page_number(metadata, page_counter, total_pages))
+        page_counter += 1
+
+        elements.append(inspection_table)
+
+        # Add page break if more pages remain
+        if start + 10 < len(measurement_cols):
+            elements.append(PageBreak())
+
+    # ------------------------
+    # Build PDF
+    # ------------------------
+    doc.build(elements)
 @router.post("/report/generate-consolidated/{order_number}", response_model=DocumentResponse)
-async def generate_consolidated_report(
-    order_number: str,
-    current_user: User = Depends(get_current_user)
+async def generate_consolidated_report_yeet(
+        order_number: str,
+        operation_no: str = Query(..., description="Operation number for the report"),
+        current_user: User = Depends(get_current_user)
 ):
-    """
-    Generate a consolidated report by merging PDFs from each operation folder for a given PO number.
-    The consolidated report will be stored in a 'Consolidated Reports' folder under the PO number.
-    """
+    print(f"\n=== Starting consolidated report generation ===")
+    print(f"Order Number: {order_number}")
+    print(f"Operation Number: {operation_no}")
+    print(f"User ID: {current_user.id}")
+
+    # Sanitize order number by removing leading/trailing whitespace
+    order_number = order_number.strip()
+    print(f"Sanitized Order Number: {order_number}")
+
     try:
+        grouped_measurements = defaultdict(list)
+        import io, hashlib
+
         with db_session:
             user = User.get(id=current_user.id)
             if not user:
                 raise HTTPException(status_code=404, detail="User not found")
-
-            # Get the order
+            # Get order using sanitized order number
             order = Order.get(production_order=order_number)
             if not order:
-                raise HTTPException(status_code=404, detail=f"Order {order_number} not found")
+                print(f"Order not found with exact match: {order_number}")
+                # Try with original order number in case the database has whitespace
+                order = Order.get(production_order=order_number.strip())
+                if not order:
+                    print(f"Order not found with stripped value either: {order_number.strip()}")
+                    raise HTTPException(status_code=404, detail=f"Order {order_number} not found")
+            print(f"Found Order: ID={order.id}, PO={order.production_order}")
 
-            # Get or create root folder structure
+            print("\n=== Setting up Folder Structure ===")
+            # Folder structure (all inside same db_session)
+            # Create root folder if it doesn't exist
+            print("Checking/Creating root folder...")
             root_folder = FolderV2.get(lambda f: f.path == "Document Types")
             if not root_folder:
+                print("Creating root folder: Document Types")
                 root_folder = FolderV2(
-                    name="Document Types",
-                    path="Document Types",
+                    name="Document Types", 
+                    path="Document Types", 
                     created_by=user
                 )
                 commit()
-            elif not root_folder.is_active:
-                root_folder.is_active = True
-                commit()
+            print(f"Root folder ID: {root_folder.id}")
 
-            # Get or create Report folder
-            report_path = "Document Types/REPORT"
-            report_folder = FolderV2.get(lambda f: f.path == report_path)
+            # Create REPORT folder if it doesn't exist
+            print("\nChecking/Creating REPORT folder...")
+            report_folder = FolderV2.get(lambda f: f.path == "Document Types/REPORT")
             if not report_folder:
+                print("Creating REPORT folder")
                 report_folder = FolderV2(
-                    name="REPORT",
-                    path=report_path,
-                    parent_folder=root_folder,
+                    name="REPORT", 
+                    path="Document Types/REPORT", 
+                    parent_folder=root_folder, 
                     created_by=user
                 )
                 commit()
-            elif not report_folder.is_active:
-                report_folder.is_active = True
-                commit()
+            print(f"REPORT folder ID: {report_folder.id}")
 
-            # Get or create PO folder
-            po_folder_path = f"{report_path}/{order_number}"
+            # Create PO folder if it doesn't exist
+            print("\nChecking/Creating PO folder...")
+            po_folder_path = f"Document Types/REPORT/{order_number}"
             po_folder = FolderV2.get(lambda f: f.path == po_folder_path)
             if not po_folder:
+                print(f"Creating PO folder: {order_number}")
                 po_folder = FolderV2(
-                    name=order_number,
-                    path=po_folder_path,
-                    parent_folder=report_folder,
+                    name=order_number, 
+                    path=po_folder_path, 
+                    parent_folder=report_folder, 
                     created_by=user
                 )
                 commit()
-            elif not po_folder.is_active:
-                po_folder.is_active = True
-                commit()
+            print(f"PO folder ID: {po_folder.id}")
 
-            # Get or create Consolidated Reports folder
+            # Create Consolidated Reports folder if it doesn't exist
+            print("\nChecking/Creating Consolidated Reports folder...")
             consolidated_folder_path = f"{po_folder_path}/Consolidated Reports"
             consolidated_folder = FolderV2.get(lambda f: f.path == consolidated_folder_path)
             if not consolidated_folder:
+                print("Creating Consolidated Reports folder")
                 consolidated_folder = FolderV2(
-                    name="Consolidated Reports",
-                    path=consolidated_folder_path,
-                    parent_folder=po_folder,
+                    name="Consolidated Reports", 
+                    path=consolidated_folder_path, 
+                    parent_folder=po_folder, 
                     created_by=user
                 )
                 commit()
-            elif not consolidated_folder.is_active:
-                consolidated_folder.is_active = True
+            print(f"Consolidated Reports folder ID: {consolidated_folder.id}")
+            
+            # Create operation-specific subfolder if it doesn't exist
+            print("\nChecking/Creating operation folder...")
+            operation_folder_name = "FINAL" if operation_no == "999" else f"OP{operation_no}"
+            operation_folder_path = f"{consolidated_folder_path}/{operation_folder_name}"
+            print(f"Operation folder path: {operation_folder_path}")
+            operation_folder = FolderV2.get(lambda f: f.path == operation_folder_path)
+            if not operation_folder:
+                print(f"Creating operation folder: {operation_folder_name}")
+                operation_folder = FolderV2(
+                    name=operation_folder_name, 
+                    path=operation_folder_path, 
+                    parent_folder=consolidated_folder, 
+                    created_by=user
+                )
                 commit()
+            print(f"Operation folder ID: {operation_folder.id}")
 
-            # Get all operation folders under the PO folder
-            operation_folders = []
-            print(f"Searching for operation folders under PO folder: {po_folder.path}")
+                        # Measurements
+            try:
+                print("\n=== Fetching Measurements ===")
+                # Use Pony ORM's get_connection method for direct SQL execution
+                from app.database.connection import db
+                
+                # Get the underlying database connection
+                with db_session:
+                    conn = db.get_connection()
+                    cursor = conn.cursor()
+
+                    print(f"Fetching inspections for operation {operation_no}...")
+                    # For specific operation
+                    query = '''
+                        SELECT id, order_id, op_no, quantity_no, op_id, 
+                               nominal_value, uppertol, lowertol, zone, dimension_type,
+                               measured_1, measured_2, measured_3, measured_mean, 
+                               measured_instrument, used_inst, bbox, is_done, created_at
+                        FROM quality.stage_inspection 
+                        WHERE order_id = %s 
+                        AND op_no = %s
+                        ORDER BY id
+                    '''
+                    print(f"Query params: order_id={order.id}, op_no={operation_no}")
+                    cursor.execute(query, (order.id, operation_no))
+
+                    rows = cursor.fetchall()
+                    cursor.close()
+
+                print(f"Found {len(rows) if rows else 0} measurements")
+                if not rows:
+                    error_msg = "No stage inspections found for "
+                    error_msg += f"order {order_number}" if operation_no == "999" else f"order {order_number}, operation {operation_no}"
+                    print(f"Error: {error_msg}")
+                    raise HTTPException(status_code=404, detail=error_msg)
+
+                # Convert rows to measurement objects manually
+                measurements = []
+                for row in rows:
+                    # Create a simple object with the row data matching actual table structure
+                    measurement = type('Measurement', (object,), {})()
+                    measurement.id = row[0]
+                    measurement.order_id = row[1]
+                    measurement.op_no = row[2]
+                    measurement.quantity_no = row[3]
+                    measurement.op_id = row[4]
+                    measurement.nominal_value = row[5]
+                    measurement.uppertol = row[6]
+                    measurement.lowertol = row[7]
+                    measurement.zone = row[8]
+                    measurement.dimension_type = row[9]
+                    measurement.measured_1 = row[10]
+                    measurement.measured_2 = row[11]
+                    measurement.measured_3 = row[12]
+                    measurement.measured_mean = row[13]
+                    measurement.measured_instrument = row[14]
+                    measurement.used_inst = row[15]
+                    measurement.bbox = row[16]
+                    measurement.is_done = row[17]
+                    measurement.created_at = row[18]
+                    measurements.append(measurement)
+
+            except Exception as e:
+                error_msg = str(e)
+                print(f"Query error: {error_msg}")
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Error querying measurements: {error_msg}"
+                )
+
+            for m in measurements:
+                grouped_measurements[m.quantity_no].append(m)
+
+            first_measurement = measurements[0]
+            unique_values = grouped_measurements[1]
+
+            # Use the operation_no parameter, not the measurement op_no for display
+            operation_display = "FINAL" if operation_no == "999" else f"OP{operation_no}"
+
+            metadata = [
+                ["Part Description", order.part_description or "-", "Inspection Plan", str(order.id)],
+                ["Project", order.project.name if order.project else "-", "Part Number", order.part_number],
+                ["Launched Quantity", order.launched_quantity, "Production Order", order.production_order],
+                ["Measured Quantity", f"{len(grouped_measurements.keys())}/{order.launched_quantity}", "Timestamp",
+                 pd.Timestamp.now().strftime("%d-%m-%Y %H:%M:%S")],
+                ["Stage Detail ", operation_display, "", " "],
+            ]
+
+            report_data = []
+
+            for m in unique_values:
+                row = [m.nominal_value, m.uppertol, m.lowertol, m.zone]
+                for quantity_no in sorted(grouped_measurements.keys()):
+                    matching = next(
+                        (x for x in grouped_measurements[quantity_no] if x.nominal_value == m.nominal_value), None)
+                    row.append(matching.measured_mean if matching else None)
+                report_data.append(row)
+
+            print(report_data)
+
+            columns = ["Nominal", "Upper Tol", "Lower Tol", "Zone"] + [str(q) for q in sorted(grouped_measurements.keys())]
+            df = pd.DataFrame(report_data, columns=columns)
+            df.insert(0, "Sl. No.", range(1, len(df) + 1))
+
+            # Generate PDF in-memory
+            pdf_buffer = io.BytesIO()
+            save_df_to_pdf(df, metadata, pdf_buffer)
+            pdf_buffer.seek(0)
+            file_content = pdf_buffer.read()
+            checksum = hashlib.sha256(file_content).hexdigest()
+
+            # Upload to MinIO
+            version_number = "1.0"
+            minio_path = f"documents/v2/{consolidated_folder.path}/{order_number}/v{version_number}/Consolidated_Report_{order_number}.pdf"
+            MinioService().upload_file(
+                file=io.BytesIO(file_content),
+                object_name=minio_path,
+                content_type="application/pdf"
+            )
+
+            print("\n=== Document Creation ===")
+            doc_type_obj = DocumentTypeV2.get(name="REPORT")
+            if not doc_type_obj:
+                print("Error: REPORT document type not found")
+                raise HTTPException(status_code=404, detail="REPORT document type not found")
+            print(f"Found REPORT document type: ID={doc_type_obj.id}")
+
+            # Get latest consolidated doc if exists using raw SQL to avoid complex query issues
+            doc_name = f"Consolidated_Report_{order_number}_{'FINAL' if operation_no == '999' else f'OP{operation_no}'}"
+            print(f"Document name: {doc_name}")
             
-            # First, get all folders under the PO folder (including inactive ones)
-            all_folders = list(FolderV2.select(
-                lambda f: f.path.startswith(po_folder.path + "/") and 
-                         f.path != consolidated_folder_path and
-                         f.path != po_folder.path
-            ))
-            
-            print(f"Found all folders (active and inactive): {[(f.path, f.is_active) for f in all_folders]}")
-            
-            # Filter for operation folders and reactivate if needed
-            for folder in all_folders:
-                if folder.name.startswith("OP"):
-                    if not folder.is_active:
-                        print(f"Reactivating inactive operation folder: {folder.path}")
-                        folder.is_active = True
-                        commit()
-                    operation_folders.append(folder)
-                    print(f"Found operation folder: {folder.path} (active: {folder.is_active})")
-            
-            print(f"Found operation folders: {[f.path for f in operation_folders]}")
-            
-            # Also try a direct search for specific operation folders if none found
-            if not operation_folders:
-                print("No operation folders found, trying direct search...")
-                direct_search = list(FolderV2.select())
-                for f in direct_search:
-                    if f.path.startswith(po_folder.path + "/OP"):
-                        print(f"Direct search found: {f.path} (active: {f.is_active})")
-                        if not f.is_active:
-                            f.is_active = True
-                            commit()
-                        operation_folders.append(f)
+            with db_session:
+                conn = db.get_connection()
+                cursor = conn.cursor()
+                
+                query = '''
+                    SELECT id, name, folder_id_v2, doc_type_id_v2, description, part_number, 
+                           production_order_id_v2, created_by_id_v2, created_at, is_active
+                    FROM document_management_v2.documents 
+                    WHERE folder_id_v2 = %s 
+                    AND name = %s 
+                    AND is_active = true
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                '''
+                cursor.execute(query, (operation_folder.id, doc_name))
+                doc_row = cursor.fetchone()
+                cursor.close()
 
-            if not operation_folders:
-                raise HTTPException(status_code=404, detail="No operation folders found")
-
-            # Create a temporary directory to store PDFs
-            with tempfile.TemporaryDirectory() as temp_dir:
-                merger = PyPDF2.PdfMerger()
-                found_pdfs = False
-
-                # Sort operation folders by operation number
-                operation_folders.sort(key=lambda f: int(f.name.replace("OP", "")))
-                print(f"Processing operation folders in order: {[f.name for f in operation_folders]} with paths: {[f.path for f in operation_folders]}")
-
-                # Collect PDFs from each operation folder
-                for op_folder in operation_folders:
-                    print(f"Processing operation folder: {op_folder.name} (path: {op_folder.path})")
+            existing_doc = None
+            if doc_row:
+                # Create a document object from the row
+                existing_doc = type('Document', (object,), {})()
+                existing_doc.id = doc_row[0]
+                existing_doc.name = doc_row[1]
+                existing_doc.folder_id_v2 = doc_row[2]
+                existing_doc.doc_type_id_v2 = doc_row[3]
+                existing_doc.description = doc_row[4]
+                existing_doc.part_number = doc_row[5]
+                existing_doc.production_order_id_v2 = doc_row[6]
+                existing_doc.created_by_id_v2 = doc_row[7]
+                existing_doc.created_at = doc_row[8]
+                existing_doc.is_active = doc_row[9]
+                
+                # Get the latest version for this document
+                with db_session:
+                    conn = db.get_connection()
+                    cursor = conn.cursor()
                     
-                    # Get all folders under this operation folder (including the operation folder itself)
-                    operation_related_folders = []
-                    operation_related_folders.append(op_folder)  # Include the operation folder itself
-                    
-                    # Get all subfolders under this operation folder
-                    subfolders = list(FolderV2.select(
-                        lambda f: f.path.startswith(op_folder.path + "/") and f.is_active
-                    ))
-                    operation_related_folders.extend(subfolders)
-                    
-                    print(f"Found {len(operation_related_folders)} folders under {op_folder.name}: {[f.path for f in operation_related_folders]}")
-                    
-                    # Collect all PDFs from all folders under this operation
-                    operation_pdfs = []
-                    for folder in operation_related_folders:
-                        # Get all PDF documents in this folder
-                        pdfs_in_folder = list(select(d for d in DocumentV2 
-                                        if d.folder == folder and 
-                                        d.is_active and 
-                                        d.latest_version and 
-                                        d.latest_version.minio_path.lower().endswith('.pdf')
-                                        ).order_by(lambda d: desc(d.created_at)))
-                        
-                        for pdf_doc in pdfs_in_folder:
-                            operation_pdfs.append((pdf_doc, folder))
-                            print(f"Found PDF in {folder.path}: {pdf_doc.name} (version: {pdf_doc.latest_version.version_number})")
-                    
-                    # Sort all PDFs by creation date (most recent first)
-                    operation_pdfs.sort(key=lambda x: x[0].created_at, reverse=True)
-                    
-                    # Add all PDFs to the merger
-                    pdf_counter = 1
-                    for pdf_doc, folder in operation_pdfs:
-                        found_pdfs = True
-                        # Create a safe filename by removing invalid characters
-                        safe_name = "".join(c for c in pdf_doc.name if c.isalnum() or c in ('-', '_'))
-                        pdf_filename = f"{op_folder.name}_doc{pdf_counter}.pdf"
-                        pdf_path = os.path.join(temp_dir, pdf_filename)
-                        
-                        try:
-                            with open(pdf_path, 'wb') as pdf_file:
-                                file_data = minio.download_file(pdf_doc.latest_version.minio_path)
-                                pdf_file.write(file_data.read())
-                            merger.append(pdf_path)
-                            print(f"Added {pdf_filename} to merger from folder: {folder.path} (original: {pdf_doc.name})")
-                        except Exception as e:
-                            print(f"Error processing PDF {pdf_doc.name}: {str(e)}")
-                            continue
-                        pdf_counter += 1
-                    
-                    if not operation_pdfs:
-                        print(f"No PDFs found in any folder under operation: {op_folder.name}")
+                    version_query = '''
+                        SELECT version_number
+                        FROM document_management_v2.document_versions
+                        WHERE document_id_v2 = %s
+                        ORDER BY created_at DESC
+                        LIMIT 1
+                    '''
+                    cursor.execute(version_query, (existing_doc.id,))
+                    version_row = cursor.fetchone()
+                    cursor.close()
+                
+                existing_doc.latest_version = None
+                if version_row:
+                    existing_doc.latest_version = type('Version', (object,), {})()
+                    existing_doc.latest_version.version_number = version_row[0]
 
-                if not found_pdfs:
-                    raise HTTPException(status_code=404, detail="No PDF reports found in operation folders")
-
-                # Create the consolidated PDF
-                consolidated_pdf_path = os.path.join(temp_dir, f"Consolidated_Report_{order_number}.pdf")
-                merger.write(consolidated_pdf_path)
-                merger.close()
-
-                # Create document in the consolidated folder
-                doc_type_obj = DocumentTypeV2.get(name="REPORT")
-                if not doc_type_obj:
-                    raise HTTPException(status_code=404, detail="REPORT document type not found")
-
-                # Create the document
+            if existing_doc:
+                print("\nFound existing document, getting latest version...")
+                # Get the actual DocumentV2 object from the database
+                new_doc = DocumentV2.get(id=existing_doc.id)
+                print(f"Retrieved document: ID={new_doc.id}")
+                latest_version = new_doc.latest_version
+                if latest_version and latest_version.version_number:
+                    try:
+                        major, minor = map(int, latest_version.version_number.split("."))
+                        version_number = f"{major}.{minor + 1}"
+                        print(f"Incrementing version from {latest_version.version_number} to {version_number}")
+                    except Exception as e:
+                        print(f"Error parsing version number: {e}")
+                        # fallback if version format unexpected
+                        version_number = "1.0"
+                        print("Using fallback version: 1.0")
+                else:
+                    version_number = "1.0"
+                    print("No previous version found, using version: 1.0")
+            else:
+                print("\nCreating new document...")
+                # Create new document
                 new_doc = DocumentV2(
-                    name=f"Consolidated_Report_{order_number}",
-                    folder=consolidated_folder,
+                    name=f"Consolidated_Report_{order_number}_{'FINAL' if operation_no == '999' else f'OP{operation_no}'}",
+                    folder=operation_folder,
                     doc_type=doc_type_obj,
-                    description=f"Consolidated report for PO {order_number}",
+                    description=f"Consolidated report for PO {order_number} {'Final Inspection' if operation_no == '999' else f'Operation {operation_no}'}",
                     part_number=order_number,
                     production_order=order,
                     created_by=user
                 )
                 commit()
-
-                # Upload the consolidated PDF to MinIO
                 version_number = "1.0"
-                minio_path = f"documents/v2/{consolidated_folder.path}/{new_doc.id}/v{version_number}/Consolidated_Report_{order_number}.pdf"
-                
-                with open(consolidated_pdf_path, 'rb') as pdf_file:
-                    file_content = pdf_file.read()
-                    checksum = hashlib.sha256(file_content).hexdigest()
-                    
-                    minio.upload_file(
-                        file=open(consolidated_pdf_path, 'rb'),
-                        object_name=minio_path,
-                        content_type="application/pdf"
-                    )
+                print(f"Created new document: ID={new_doc.id}, Version={version_number}")
 
-                # Create version
-                version = DocumentVersionV2(
-                    document=new_doc,
-                    version_number=version_number,
-                    minio_path=minio_path,
-                    file_size=len(file_content),
-                    checksum=checksum,
-                    created_by=user,
-                    metadata={
-                        "consolidated_report": True,
-                        "order_number": order_number,
-                        "generation_date": datetime.utcnow().isoformat()
-                    }
+            print("\n=== File Upload and Version Creation ===")
+            # Compute MinIO path
+            minio_path = f"documents/v2/{operation_folder.path}/{new_doc.id}/v{version_number}/Consolidated_Report_{order_number}_{'FINAL' if operation_no == '999' else f'OP{operation_no}'}.pdf"
+            print(f"MinIO path: {minio_path}")
+
+            # Upload to MinIO directly from memory
+            print("Uploading file to MinIO...")
+            try:
+                MinioService().upload_file(
+                    file=io.BytesIO(file_content),
+                    object_name=minio_path,
+                    content_type="application/pdf"
                 )
-                new_doc.latest_version = version
-
-                # Create access log
-                DocumentAccessLogV2(
-                    document=new_doc,
-                    version=version,
-                    user=user,
-                    action_type="UPDATE",
-                    ip_address="0.0.0.0"
+                print("File uploaded successfully")
+            except Exception as e:
+                print(f"Error uploading to MinIO: {str(e)}")
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Error uploading file to MinIO: {str(e)}"
                 )
 
-                commit()
-
-                return {
-                    "id": new_doc.id,
-                    "name": new_doc.name,
-                    "folder_id": new_doc.folder.id,
-                    "doc_type_id": new_doc.doc_type.id,
-                    "description": new_doc.description,
-                    "part_number": new_doc.part_number,
-                    "production_order_id": new_doc.production_order.id if new_doc.production_order else None,
-                    "created_at": new_doc.created_at,
-                    "created_by_id": new_doc.created_by.id,
-                    "is_active": new_doc.is_active,
-                    "latest_version": {
-                        "id": version.id,
-                        "document_id": new_doc.id,
-                        "version_number": version.version_number,
-                        "minio_path": version.minio_path,
-                        "file_size": version.file_size,
-                        "checksum": version.checksum,
-                        "created_at": version.created_at,
-                        "created_by_id": version.created_by.id,
-                        "is_active": version.is_active,
-                        "metadata": version.metadata
-                    }
+            print("\nCreating document version...")
+            # Create new version
+            version = DocumentVersionV2(
+                document=new_doc,
+                version_number=version_number,
+                minio_path=minio_path,
+                file_size=len(file_content),
+                checksum=checksum,
+                created_by=user,
+                metadata={
+                    "consolidated_report": True,
+                    "order_number": order_number,
+                    "generation_date": datetime.utcnow().isoformat()
                 }
+            )
+            print(f"Created version: {version_number} for document {new_doc.id}")
+            new_doc.latest_version = version
+
+            # Create access log
+            DocumentAccessLogV2(
+                document=new_doc,
+                version=version,
+                user=user,
+                action_type="UPDATE",
+                ip_address="0.0.0.0"
+            )
+
+            commit()
+
+            return {
+                "id": new_doc.id,
+                "name": new_doc.name,
+                "folder_id": new_doc.folder.id,
+                "doc_type_id": new_doc.doc_type.id,
+                "description": new_doc.description,
+                "part_number": new_doc.part_number,
+                "production_order_id": new_doc.production_order.id if new_doc.production_order else None,
+                "created_at": new_doc.created_at,
+                "created_by_id": new_doc.created_by.id,
+                "is_active": new_doc.is_active,
+                "latest_version": {
+                    "id": new_doc.latest_version.id,
+                    "document_id": new_doc.id,
+                    "version_number": new_doc.latest_version.version_number,
+                    "minio_path": new_doc.latest_version.minio_path,
+                    "file_size": new_doc.latest_version.file_size,
+                    "checksum": new_doc.latest_version.checksum,
+                    "created_at": new_doc.latest_version.created_at,
+                    "created_by_id": new_doc.latest_version.created_by.id,
+                    "is_active": new_doc.latest_version.is_active,
+                    "metadata": new_doc.latest_version.metadata
+                }
+            }
 
     except Exception as e:
-        print(f"Error in generate_consolidated_report: {str(e)}")
+        print(f"YEET ERROR: {str(e)}")
         import traceback
         print(traceback.format_exc())
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"An error occurred: {str(e)}"
         )
+

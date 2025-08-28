@@ -39,6 +39,7 @@ class Machine(db.Entity):
     planned_schedule_items = Set('PlannedScheduleItem', reverse='machine')
     credential = Optional('MachineCredential', reverse='machine', cascade_delete=True)
     notification = Set('MachineCalibrationLog')
+    planned_items = Set('PlannedItem')
 
 
 class MachineShift(db.Entity):
@@ -113,7 +114,9 @@ class Order(db.Entity):
     documents_v2 = Set('DocumentV2', reverse='production_order')
     order_tools = Set("OrderTool", reverse="order")  # Updated relationship name
     master_bocs = Set('MasterBoc', reverse='order')  # Add this line for MasterBoc relationship
-    order_completed = Set('OrderCompleted', reverse='order_id')  # Add this line for OrderCompleted relationship
+    order_completed = Set('OrderCompleted', reverse='order_id')
+    planned_items = Set('PlannedItem')
+    pdc_records = Set('PDC', reverse='order_id')
 
 
 
@@ -140,6 +143,7 @@ class Operation(db.Entity):
     machine_raw_1 = Set('MachineRaw', reverse='scheduled_job')
     machine_raw_2 = Set('MachineRaw', reverse='actual_job')
     inventory_requests = Set("InventoryRequest")
+    planned_items = Set('PlannedItem')
 
 
 class ProcessPlan(db.Entity):
@@ -236,4 +240,3 @@ class OrderCompleted(db.Entity):
     order_id = Required(Order, reverse='order_completed')
     is_completed = Required(bool, default=False)
     triggered_at = Required(datetime, default=datetime.utcnow)
-

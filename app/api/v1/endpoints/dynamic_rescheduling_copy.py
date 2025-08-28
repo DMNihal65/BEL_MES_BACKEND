@@ -190,7 +190,7 @@ def propagate_delay_to_dependent_operations(part_number: str, completed_operatio
                                          if item.operation == dependent_op)[:])
 
             if not schedule_items:
-                print(f"No scheduled items found for operation {dependent_op.operation_number}")
+                # print(f"No scheduled items found for operation {dependent_op.operation_number}")
                 continue
 
             schedule_items.sort(key=lambda x: x.id, reverse=True)

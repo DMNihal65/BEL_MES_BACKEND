@@ -7,10 +7,16 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 import time
 from functools import lru_cache
-
 from app.api.v1.endpoints.dynamic_rescheduling import get_combined_schedule
 from app.api.v1.endpoints.operatorlog2 import validate_operation_sequence
+from app.api.v1.endpoints.scheduled import schedule as schedule_batch
 from app.models import ScheduleVersion, Order, Operation, ProductionLog
+from app.schemas.pdc import PDCCreate, PDCResponse, PDCListResponse
+from app.crud.pdc import (
+    create_pdc_record,
+    get_pdc_by_part_number_and_po,
+    get_all_pdc_records
+)
 
 router = APIRouter(prefix="/api/v1/scheduling", tags=["scheduling"])
 
@@ -405,7 +411,7 @@ import traceback
 #                 "data_source": "none"
 #             })
 #         else:
-#             print(f"DEBUG: {target_key} not found in either part_production_end_times or active_parts — returning empty list")
+#             print(f"DEBUG: {target_key} not found in either part_production_end_times or active_parts â€” returning empty list")
 #
 #         end_time = time.time()
 #         print(f"PDC endpoint completed in {end_time - start_time:.2f} seconds. Result count: {len(result)}")
@@ -616,7 +622,7 @@ class OrderCompletionResponse(BaseModel):
 
 
 
-@router.post("/check-order-completion-simple/{part_number}/{production_order}")
+@router.post("/check-order-completion-simple(pdc)/{part_number}/{production_order}")
 @db_session
 def check_order_completion_status_simple(part_number: str, production_order: str):
     """
@@ -716,7 +722,7 @@ from typing import Optional, List, Dict, Any
 executor = ThreadPoolExecutor(max_workers=10)
 
 
-@router.get("/check-order-completion-simple/{part_number}/{production_order}")
+@router.get("/check-order-completion-simple(old)/{part_number}/{production_order}")
 async def check_order_completion_status_simple(part_number: str, production_order: str):
     """
     Simplified version - Check if all operations for a production order are completed.
@@ -827,7 +833,7 @@ async def check_order_completion_status_simple(part_number: str, production_orde
 
 
 # Alternative version without async if the above still causes issues
-@router.get("/check-order-completion-simple-sync/{part_number}/{production_order}")
+@router.get("/check-order-completion-simple-sync(old)/{part_number}/{production_order}")
 @db_session
 def check_order_completion_status_simple_sync(part_number: str, production_order: str):
     """
@@ -918,7 +924,7 @@ def check_order_completion_status_simple_sync(part_number: str, production_order
     }
 
 
-@router.get("/check-order-completion-simple")
+@router.get("/check-order-completion-simple(old)")
 @db_session
 def get_all_orders_completion_status():
     """
@@ -1025,3 +1031,167 @@ def get_all_orders_completion_status():
         },
         "completed_orders": completed_orders_status
     }
+
+
+# ============================================================================
+# PDC CRUD ENDPOINTS
+# ============================================================================
+
+@router.post("/pdc", response_model=PDCResponse)
+async def create_pdc(pdc_data: PDCCreate):
+    """
+    Create a new PDC record
+    """
+    try:
+        pdc_record = create_pdc_record(
+            order_id=pdc_data.order_id,
+            part_number=pdc_data.part_number,
+            production_order=pdc_data.production_order,
+            pdc_data=pdc_data.pdc_data,
+            data_source=pdc_data.data_source,
+            is_active=pdc_data.is_active
+        )
+        return pdc_record
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Error creating PDC record: {str(e)}"
+        )
+
+
+@router.post("/pdc/calculate-and-store", response_model=List[PDCResponse])
+async def calculate_and_store_pdc():
+    """
+    Calculate PDC from scheduled operations and store in database
+    """
+    try:
+        # Step 1: Call schedule-batch function directly to get fresh scheduled operations
+        try:
+            schedule_response = await schedule_batch()
+            scheduled_operations = schedule_response.scheduled_operations
+        except Exception as e:
+            print(f"Error calling schedule-batch function: {str(e)}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Error fetching schedule data: {str(e)}"
+            )
+
+        # Step 2: Extract scheduled operations from the response
+        
+        if not scheduled_operations:
+            print("No scheduled operations found")
+            return []
+
+        print(f"Found {len(scheduled_operations)} scheduled operations")
+
+        # Step 3: Calculate PDC from scheduled operations only
+        part_production_end_times = {}
+        data_sources = {}
+
+        for op in scheduled_operations:
+            try:
+                # Skip default machines when calculating PDC end times
+                machine_name = getattr(op, 'machine', None)
+                if isinstance(machine_name, str) and 'default' in machine_name.lower():
+                    # Do not include operations scheduled on default machines
+                    continue
+
+                part_number = op.component
+                production_order = op.production_order
+                end_time = op.end_time
+
+                if not all([part_number, production_order, end_time]):
+                    continue
+
+                key = (part_number, production_order)
+                # Update if this end time is later than existing one
+                if key not in part_production_end_times or end_time > part_production_end_times[key]:
+                    part_production_end_times[key] = end_time
+                    data_sources[key] = "scheduled"
+                    
+            except (ValueError, TypeError, AttributeError) as e:
+                print(f"Error processing scheduled operation: {str(e)}")
+                continue
+
+        print(f"Calculated PDC for {len(part_production_end_times)} part-production_order combinations")
+
+        # Step 4: Store PDC records in database
+        stored_records = []
+        
+        @db_session
+        def store_pdc_records():
+            records = []
+            for (part_number, production_order), pdc_data in part_production_end_times.items():
+                try:
+                    # Find the order ID for this part number and production order
+                    order = Order.get(production_order=production_order)
+                    if not order:
+                        print(f"Order not found for production_order: {production_order}")
+                        continue
+                    
+                    # Create PDC record
+                    pdc_record = create_pdc_record(
+                        order_id=order.id,
+                        part_number=part_number,
+                        production_order=production_order,
+                        pdc_data=pdc_data,
+                        data_source=data_sources.get((part_number, production_order), "scheduled"),
+                        is_active=True
+                    )
+                    
+                    if pdc_record:
+                        records.append(pdc_record)
+                        print(f"Stored PDC record: {part_number} - {production_order} - {pdc_data}")
+                        
+                except Exception as e:
+                    print(f"Error storing PDC record for {part_number} - {production_order}: {str(e)}")
+                    continue
+            return records
+        
+        stored_records = store_pdc_records()
+
+        print(f"Successfully stored {len(stored_records)} PDC records")
+        return stored_records
+
+    except Exception as e:
+        print(f"Error calculating and storing PDC data: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error calculating and storing PDC: {str(e)}"
+        )
+
+
+@router.get("/pdc/by-part-po", response_model=List[PDCResponse])
+async def get_pdc_by_part_and_po(part_number: str, production_order: str):
+    """
+    Get PDC records by part number and production order using query parameters
+    (e.g. /pdc/by-part-po?part_number=PN123&production_order=PO456).
+    """
+    try:
+        records = get_pdc_by_part_number_and_po(part_number, production_order)
+        return records
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Error retrieving PDC records: {str(e)}"
+        )
+
+
+@router.get("/pdc", response_model=PDCListResponse)
+async def get_all_pdc():
+    """
+    Get all active PDC records.
+    """
+    try:
+        records = get_all_pdc_records()
+        return {
+            "records": records,
+            "total_count": len(records)
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Error retrieving all PDC records: {str(e)}"
+        )

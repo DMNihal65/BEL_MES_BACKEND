@@ -3,6 +3,15 @@ from pony.orm import *
 from . import User, Order, Operation, Machine
 from ..database.connection import db
 
+class ScheduleHistory(db.Entity):
+    """Tracks different versions of schedule generations"""
+    _table_ = ("scheduling", "schedule_history")
+    id = PrimaryKey(int, auto=True)
+    version = Required(int)
+    is_active = Required(bool, default=False)
+    generated_at = Required(datetime, default=datetime.utcnow)
+    planned_schedule_items = Set('PlannedScheduleItem', reverse='schedule_history')
+
 class PartScheduleStatus(db.Entity):
     """Controls which parts are active for scheduling"""
     _table_ = ("scheduling", "part_schedule_status")
@@ -31,6 +40,7 @@ class PlannedScheduleItem(db.Entity):
     current_version = Optional(int)
     created_at = Required(datetime, default=datetime.utcnow)
     schedule_versions = Set('ScheduleVersion')
+    schedule_history = Optional(ScheduleHistory, reverse='planned_schedule_items', column='schedule_history_id')
 
 class ScheduleVersion(db.Entity):
     """Tracks different versions of schedules"""
@@ -77,3 +87,17 @@ class ProductionLog(db.Entity):
     quantity_rejected = Optional(int)
     notes = Optional(str)
 
+class PlannedItem(db.Entity):
+    """Stores the planned_items table"""
+    _table_ = ("scheduling", "planned_items")
+    id = PrimaryKey(int, auto=True)
+    order = Required(Order)
+    operation = Required(Operation)
+    machine = Required(Machine)
+    initial_start_time = Required(datetime)
+    initial_end_time = Required(datetime)
+    total_quantity = Required(int)
+    remaining_quantity = Required(int)
+    status = Optional(str)
+    current_version = Optional(int)
+    created_at = Required(datetime, default=datetime.utcnow)
