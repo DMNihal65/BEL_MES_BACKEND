@@ -31,6 +31,17 @@ from enum import Enum
 from fastapi.logger import logger
 import PyPDF2
 
+
+def get_filename_from_path(path: str) -> str:
+    """
+    Extract filename from a path string.
+    Args:
+        path (str): The full path string
+    Returns:
+        str: The extracted filename
+    """
+    return os.path.basename(path)
+
 router = APIRouter()
 minio = MinioService()
 
@@ -2187,6 +2198,258 @@ async def get_ipid_documents_by_po(
 #                     filename = f"{part_number}_OP{operation_number}_{doc_type.value}_{document.latest_version.version_number}.{document.latest_version.minio_path.split('.')[-1]}"
 #                 else:
 #                     filename = f"{part_number}_{doc_type.value}_{document.latest_version.version_number}.{document.latest_version.minio_path.split('.')[-1]}"
+
+#                 return StreamingResponse(
+#                     file_data,
+#                     media_type="application/octet-stream",
+#                     headers={
+#                         "Content-Disposition": f'attachment; filename="{filename}"'
+#                     }
+#                 )
+#             except Exception as e:
+#                 raise HTTPException(
+#                     status_code=500,
+#                     detail=f"Failed to download file: {str(e)}"
+#                 )
+
+#     except Exception as e:
+#         raise HTTPException(
+#             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+#             detail=f"An error occurred: {str(e)}"
+#         )
+
+
+
+# @router.get("/documents/download-latest_new/{part_number}/{doc_type}")
+# async def download_latest_document_new_endpoint(
+#         part_number: str,
+#         doc_type: DocumentTypes,
+#         operation_number: int | None = Query(None, description="Required for IPID documents"),
+#         current_user: User = Depends(get_current_user)
+# ):
+#     """Download latest version of a document by part number and document type"""
+#     try:
+#         with db_session:
+#             # Get document type
+#             doc_type_obj = DocumentTypeV2.get(name=doc_type.value)
+#             if not doc_type_obj:
+#                 raise HTTPException(
+#                     status_code=404,
+#                     detail=f"Document type {doc_type.value} not found"
+#                 )
+
+#             def check_file_versions(doc_id, operation_number):
+#                 """Check for all versions of a file"""
+#                 found_versions = []
+#                 base_path = f"documents/v2/Document Types/{doc_type.value}/{part_number}"
+#                 if operation_number is not None:
+#                     base_path = f"{base_path}/OP{operation_number}"
+#                 base_path = f"{base_path}/{doc_id}"
+                
+#                 try:
+#                     # List all objects in the base path to find version folders
+#                     objects = minio.client.list_objects(bucket_name="documents3", prefix=base_path + "/")
+#                     version_folders = set()
+#                     for obj in objects:
+#                         # Extract version folder from path
+#                         parts = obj.object_name.split('/')
+#                         for part in parts:
+#                             if part.startswith('v') and len(part) > 1 and part[1:].replace('.', '').isdigit():
+#                                 version_folders.add(part)
+                    
+#                     print(f"Found version folders: {sorted(version_folders)}")
+                    
+#                     if not version_folders:
+#                         print(f"No version folders found in {base_path}")
+#                         return found_versions
+                    
+#                     # Sort version folders by version number
+#                     sorted_versions = sorted(version_folders, key=lambda v: [float(x) if '.' in x else int(x) for x in v[1:].split('.')])
+#                     print(f"Sorted version folders: {sorted_versions}")
+                    
+#                     # Try each version folder, starting from highest
+#                     for v in reversed(sorted_versions):
+#                         try:
+#                             path = f"{base_path}/{v}"
+#                             # List files in this version folder
+#                             version_objects = minio.client.list_objects(bucket_name="documents3", prefix=path + "/")
+#                             for obj in version_objects:
+#                                 try:
+#                                     print(f"Checking path: {obj.object_name}")
+#                                     # Try to get the file
+#                                     stream = minio.download_file(obj.object_name)
+#                                     version_num = int(v[1:]) if v[1:].isdigit() else float(v[1:])
+#                                     found_versions.append((obj.object_name, version_num))
+#                                     print(f"Found file in version {v}: {obj.object_name}")
+#                                 except Exception as e:
+#                                     print(f"Error accessing file {obj.object_name}: {str(e)}")
+#                                     continue
+#                         except Exception as e:
+#                             print(f"Error listing files in version {v}: {path}, error: {str(e)}")
+#                             continue
+#                 except Exception as e:
+#                     print(f"Error listing objects in path {base_path}: {str(e)}")
+                
+#                 # Sort found versions by version number and return all of them
+#                 found_versions.sort(key=lambda x: x[1], reverse=True)
+#                 return found_versions
+
+#             # Special handling for IPID documents
+#             if doc_type == DocumentTypes.IPID:
+#                 if operation_number is None:
+#                     raise HTTPException(
+#                         status_code=400,
+#                         detail="Operation number is required for IPID documents"
+#                     )
+
+#                 # Get all active documents for this part number
+#                 documents = list(DocumentV2.select(
+#                     lambda d: d.part_number == part_number and
+#                               d.doc_type.id == doc_type_obj.id and
+#                               d.is_active
+#                 ))
+
+#                 print(f"Found {len(documents)} active documents for part number {part_number}")
+
+#                 # Find all matching versions across all documents
+#                 matching_versions = []
+#                 for doc in documents:
+#                     print(f"Processing document {doc.id}")
+                    
+#                     # Get database versions
+#                     db_versions = list(DocumentVersionV2.select(
+#                         lambda v: v.document == doc and v.is_active
+#                     ))
+                    
+#                     print(f"Found {len(db_versions)} database versions for document {doc.id}")
+                    
+#                     # Process each version
+#                     for version in db_versions:
+#                         try:
+#                             metadata = version.metadata
+#                             if isinstance(metadata, str):
+#                                 metadata = json.loads(metadata)
+                            
+#                             print(f"Version {version.id} metadata: {metadata}")
+#                             stored_op_num = metadata.get("operation_number")
+#                             # Convert operation numbers to integers for comparison
+#                             if isinstance(stored_op_num, str):
+#                                 stored_op_num = int(stored_op_num)
+                            
+#                             if stored_op_num == operation_number:
+#                                 print(f"Found matching operation number {operation_number} in version {version.id}")
+#                                 # Check all version folders
+#                                 found_versions = check_file_versions(doc.id, operation_number)
+#                                 for path, ver_num in found_versions:
+#                                     matching_versions.append((doc, version, [ver_num], path))
+#                                     print(f"Found matching version: doc_id={doc.id}, version_id={version.id}, version_path={path}, version_num={ver_num}, created_at={version.created_at}")
+#                         except (json.JSONDecodeError, AttributeError, ValueError) as e:
+#                             print(f"Error processing version {version.id} metadata: {str(e)}")
+#                             continue
+
+#                 if not matching_versions:
+#                     # Try to provide more detailed error message
+#                     if not documents:
+#                         error_detail = f"No documents found for part number {part_number}"
+#                     else:
+#                         error_detail = f"No IPID document found for part number {part_number} and operation {operation_number}. "
+#                         error_detail += f"Found {len(documents)} documents but none match the operation number."
+                    
+#                     raise HTTPException(
+#                         status_code=404,
+#                         detail=error_detail
+#                     )
+
+#                 # Sort by version number (primary) and creation date (secondary)
+#                 matching_versions.sort(key=lambda x: (x[2], x[1].created_at.timestamp() if x[1].created_at else 0), reverse=True)
+#                 document, version, version_num, minio_path = matching_versions[0]
+#                 print(f"Selected latest version: doc_id={document.id}, version_id={version.id}, version_path={minio_path}, version_num={version_num}, created_at={version.created_at}")
+                
+#                 # Instead of updating the version's path, use the found path directly
+#                 try:
+#                     file_data = minio.download_file(minio_path)
+                    
+#                     # Generate filename based on document type
+#                     filename = f"PO{part_number}_OP{operation_number}_{doc_type.value}_v{version_num[0]}.{minio_path.split('.')[-1]}"
+
+#                     return StreamingResponse(
+#                         file_data,
+#                         media_type="application/octet-stream",
+#                         headers={
+#                             "Content-Disposition": f'attachment; filename="{filename}"'
+#                         }
+#                     )
+#                 except Exception as e:
+#                     raise HTTPException(
+#                         status_code=500,
+#                         detail=f"Failed to download file: {str(e)}"
+#                     )
+
+#             else:
+#                 # For other document types, get all active documents
+#                 documents = list(DocumentV2.select(
+#                     lambda d: d.part_number == part_number and
+#                               d.doc_type.id == doc_type_obj.id and
+#                               d.is_active
+#                 ))
+
+#                 if not documents:
+#                     raise HTTPException(
+#                         status_code=404,
+#                         detail=f"No {doc_type.value} document found for part number {part_number}"
+#                     )
+
+#                 # Get all versions across all documents
+#                 all_versions = []
+#                 for doc in documents:
+#                     # Get database versions
+#                     db_versions = list(DocumentVersionV2.select(
+#                         lambda v: v.document == doc and v.is_active
+#                     ))
+                    
+#                     # Process each version
+#                     for version in db_versions:
+#                         # Get filename from the original path
+#                         filename = get_filename_from_path(version.minio_path)
+#                         # Check all version folders
+#                         found_versions = check_file_versions(doc.id, None)
+#                         for path, ver_num in found_versions:
+#                             all_versions.append((doc, version, [ver_num], path))
+#                             print(f"Found version: doc_id={doc.id}, version_id={version.id}, version_path={path}, version_num={ver_num}, created_at={version.created_at}")
+
+#                 if not all_versions:
+#                     raise HTTPException(
+#                         status_code=404,
+#                         detail=f"No active versions found for {doc_type.value} document"
+#                     )
+
+#                 # Sort by version number (primary) and creation date (secondary)
+#                 all_versions.sort(key=lambda x: (x[2], x[1].created_at.timestamp() if x[1].created_at else 0), reverse=True)
+#                 document, version, version_num, minio_path = all_versions[0]
+#                 print(f"Selected latest version: doc_id={document.id}, version_id={version.id}, version_path={minio_path}, version_num={version_num}, created_at={version.created_at}")
+                
+#                 # Update the version's MinIO path to the latest found
+#                 version.minio_path = minio_path
+#                 commit()
+
+#             # Log access
+#             DocumentAccessLogV2(
+#                 document=document,
+#                 version=version,
+#                 user=User.get(id=current_user.id),
+#                 action_type=DocumentAction.DOWNLOAD,
+#                 ip_address="0.0.0.0"
+#             )
+#             commit()
+
+#             try:
+#                 file_data = minio.download_file(version.minio_path)
+
+#                 # Generate filename based on document type
+#                 if doc_type == DocumentTypes.IPID:
+#                     filename = f"PO{part_number}_OP{operation_number}_{doc_type.value}_v{version_num[0]}.{version.minio_path.split('.')[-1]}"
+#                 else:
+#                     filename = f"{part_number}_{doc_type.value}_v{version_num[0]}.{version.minio_path.split('.')[-1]}"
 
 #                 return StreamingResponse(
 #                     file_data,
