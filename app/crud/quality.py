@@ -1,6 +1,7 @@
 # quality_crud.py
+import logging
 from typing import Optional, List
-from pony.orm import db_session, commit, select, distinct
+from pony.orm import db_session, commit, select, distinct, desc
 import json
 from fastapi import APIRouter, HTTPException, Depends, Path, Query
 from datetime import datetime
@@ -22,31 +23,27 @@ class MasterBocCRUD:
     def create_master_boc(data: MasterBocCreate) -> MasterBocResponse:
         """Create a new Master BOC entry or update existing one based on bbox"""
         try:
-            # Verify that Order and Document exist
-            order = Order.get(id=data.order_id)
+            # Get the most recent order with this part_number
+            order = select(o for o in Order if o.part_number == data.part_number).order_by(lambda o: desc(o.id)).first()
             if not order:
-                raise ValueError(f"Order with ID {data.order_id} not found")
+                raise ValueError(f"Order with part_number {data.part_number} not found")
 
-            document = DocumentTypeV2.get(id=data.document_id)
-            if not document:
-                raise ValueError(f"Document with ID {data.document_id} not found")
-
-            # Validate bbox has exactly 9 values
+            # Validate bbox has exactly 8 values
             if len(data.bbox) != 8:
-                raise ValueError("bbox must contain exactly 9 values [x1, y1, x2, y2, x3, y3, x4, y4, additional]")
+                raise ValueError("bbox must contain exactly 8 values [x1, y1, x2, y2, x3, y3, x4, y4]")
 
             # Convert to database format
             db_data = data.to_db_dict()
 
-            # Check if a master_boc with the same bbox exists
+            # Check if a master_boc with the same bbox exists for this part number and operation
             existing_master_boc = select(m for m in MasterBoc
-                                         if m.order.id == data.order_id
+                                         if m.part_number == data.part_number
                                          and m.op_no == data.op_no
                                          and m.bbox == db_data['bbox']).first()
 
             if existing_master_boc:
                 # Update existing master_boc
-                existing_master_boc.document = document
+                existing_master_boc.part_number = data.part_number
                 existing_master_boc.nominal = db_data['nominal']
                 existing_master_boc.uppertol = db_data['uppertol']
                 existing_master_boc.lowertol = db_data['lowertol']
@@ -58,8 +55,7 @@ class MasterBocCRUD:
             else:
                 # Create new instance with proper relationships
                 master_boc = MasterBoc(
-                    order=order,
-                    document=document,
+                    part_number=data.part_number,
                     nominal=db_data['nominal'],
                     uppertol=db_data['uppertol'],
                     lowertol=db_data['lowertol'],
@@ -91,20 +87,21 @@ class MasterBocCRUD:
 
     @staticmethod
     @db_session
-    def get_by_order_and_op_no(
-            order_id: int,
+    def get_by_part_number_and_op_no(
+            part_number: str,
             op_no: int,
             measurement_instruments: Optional[List[str]] = None
     ) -> List[MasterBocResponse]:
-        """Get all Master BOCs for an order and specific operation number"""
+        """Get all Master BOCs for a part number and specific operation number"""
         try:
-            # Verify that Order exists
-            order = Order.get(id=order_id)
-            if not order:
-                raise ValueError(f"Order with ID {order_id} not found")
+            # Get all orders with this part_number
+            orders = select(o for o in Order if o.part_number == part_number)[:]
+            if not orders:
+                raise ValueError(f"No orders found with part_number {part_number}")
 
+            # Query MasterBocs where the linked Order's part_number matches
             query = select(m for m in MasterBoc
-                           if m.order.id == order_id and m.op_no == op_no)
+                           if m.part_number == part_number and m.op_no == op_no)
 
             # Add measurement instruments filter if provided
             if measurement_instruments:
@@ -117,10 +114,12 @@ class MasterBocCRUD:
         except Exception as e:
             raise ValueError(f"Failed to get Master BOCs: {str(e)}")
 
+
+
     @staticmethod
     @db_session
-    def get_ipids_by_order(order_id: int) -> OrderIPIDResponse:
-        """Get all IPIDs for an order, grouped by operation number"""
+    def get_ipids_by_order_and_part_number(order_id: int, part_number: str) -> OrderIPIDResponse:
+        """Get all IPIDs for an order and part number combination"""
         # Get order information
         order = Order.get(id=order_id)
         if not order:
@@ -133,8 +132,8 @@ class MasterBocCRUD:
         if not operations:
             raise ValueError(f"No operations found for order {order_id}")
 
-        # Get all master bocs for this order
-        master_bocs = select(m for m in MasterBoc if m.order == order).order_by(
+        # Get all master bocs for this part number
+        master_bocs = select(m for m in MasterBoc if m.part_number == part_number).order_by(
             MasterBoc.op_no)[:]
 
         # Create operation groups (will be empty if no master bocs found)
@@ -160,7 +159,7 @@ class MasterBocCRUD:
         return OrderIPIDResponse(
             order_id=order.id,
             production_order=order.production_order,
-            part_number=order.part_number,
+            part_number=part_number,  # Use the provided part number
             operation_groups=operation_groups,  # Will be empty list if no master bocs
             operations=[op.operation_number for op in operations]  # Added operations list
         )
@@ -175,32 +174,54 @@ class MasterBocCRUD:
         unique_instruments = sorted(set(instruments[:]))
         return unique_instruments
 
-
 class StageInspectionCRUD:
     @staticmethod
     @db_session
     def create_stage_inspection(data: StageInspectionCreate) -> StageInspectionResponse:
         """Create a new Stage Inspection entry with validation for quantity progression"""
+        logging.basicConfig(level=logging.INFO)
+        logger = logging.getLogger(__name__)
+
         try:
+            logger.info(
+                f"Starting stage inspection creation for order_id: {data.order_id}, "
+                f"op_no: {data.op_no}, quantity: {data.quantity_no}"
+            )
+
+            # Always fetch the order first
+            order = Order.get(id=data.order_id)
+            if not order:
+                logger.error(f"Order with ID {data.order_id} not found.")
+                raise ValueError(f"Order with ID {data.order_id} not found")
+
+            part_number = order.part_number
+            logger.info(
+                f"Successfully fetched order {order.id} with part_number {part_number}"
+            )
+
             # For quantity > 1, verify that quantity 1 exists and FTP has been approved
             if data.quantity_no is not None and data.quantity_no > 1:
                 # Verify that the first quantity exists
-                first_quantity = select(si for si in StageInspection
-                                        if si.order_id == data.order_id
-                                        and si.op_no == data.op_no
-                                        and si.quantity_no == 1).first()
+                first_quantity = select(
+                    si for si in StageInspection
+                    if si.order_id == data.order_id
+                    and si.op_no == data.op_no
+                    and si.quantity_no == 1
+                ).first()
 
                 if not first_quantity:
                     raise ValueError(
-                        f"Cannot add quantity {data.quantity_no} because quantity 1 does not exist for order {data.order_id}, operation {data.op_no}")
+                        f"Cannot add quantity {data.quantity_no} because quantity 1 does not exist "
+                        f"for order {data.order_id}, operation {data.op_no}"
+                    )
 
                 # Check if FTP is approved for this order and operation
-                # Get all master_bocs for this order and operation to find IPIDs
-                master_bocs = select(m for m in MasterBoc
-                                     if m.order.id == data.order_id
-                                     and m.op_no == data.op_no)[:]
+                master_bocs = select(
+                    m for m in MasterBoc
+                    if m.part_number == part_number
+                    and m.op_no == data.op_no
+                )[:]
 
-                # Check FTP status for all IPIDs - all must be completed
                 all_ftp_completed = True
                 for master_boc in master_bocs:
                     ftp_status = FTP.get(order_id=data.order_id, ipid=master_boc.ipid)
@@ -210,27 +231,34 @@ class StageInspectionCRUD:
 
                 if not all_ftp_completed:
                     raise ValueError(
-                        f"Cannot add quantity {data.quantity_no} because FTP approval for quantity 1 is still pending for order {data.order_id}, operation {data.op_no}")
+                        f"Cannot add quantity {data.quantity_no} because FTP approval for quantity 1 "
+                        f"is still pending for order {data.order_id}, operation {data.op_no}"
+                    )
 
             # Check if a stage inspection with the same key data exists
-            # Convert bbox to string for comparison if it exists
             bbox_str = json.dumps(data.bbox) if data.bbox else None
-            
-            existing_inspection = select(si for si in StageInspection
-                                        if si.order_id == data.order_id
-                                        and si.op_no == data.op_no
-                                        and si.quantity_no == data.quantity_no
-                                        and si.zone == data.zone
-                                        and si.dimension_type == data.dimension_type
-                                        and si.nominal_value == data.nominal_value
-                                        and ((si.bbox == bbox_str) if bbox_str is not None else (si.bbox is None))).first()
+
+            existing_inspection = select(
+                si for si in StageInspection
+                if si.order_id == data.order_id
+                and si.op_no == data.op_no
+                and si.quantity_no == data.quantity_no
+                and si.zone == data.zone
+                and si.dimension_type == data.dimension_type
+                and si.nominal_value == data.nominal_value
+                and (
+                    (si.bbox == bbox_str)
+                    if bbox_str is not None
+                    else (si.bbox is None)
+                )
+            ).first()
 
             # Convert to database format
             stage_inspection_data = data.to_db_dict()
-            
-            # Remove quantity_no from stage_inspection_data if it's None to avoid setting it
-            if stage_inspection_data.get('quantity_no') is None:
-                stage_inspection_data.pop('quantity_no', None)
+
+            # Remove quantity_no if None (avoid setting null explicitly)
+            if stage_inspection_data.get("quantity_no") is None:
+                stage_inspection_data.pop("quantity_no", None)
 
             if existing_inspection:
                 # Update existing inspection
@@ -243,31 +271,31 @@ class StageInspectionCRUD:
 
             commit()
 
-            # After creating/updating stage inspection, update FTP status if this is quantity 1
-            if data.quantity_no == 1:
-                # Find all master_bocs for this order and operation
-                master_bocs = select(m for m in MasterBoc
-                                     if m.order.id == data.order_id
-                                     and m.op_no == data.op_no)[:]
+            # After creating/updating stage inspection, create or update FTP status
+            master_bocs = select(
+                m for m in MasterBoc
+                if m.part_number == part_number
+                and m.op_no == data.op_no
+            )[:]
 
-                # Update FTP status for each master_boc's IPID
-                for master_boc in master_bocs:
-                    # Get or create FTP entry
-                    ftp = FTP.get(order_id=data.order_id, ipid=master_boc.ipid)
-                    if not ftp:
-                        ftp = FTP(
-                            order_id=data.order_id,
-                            ipid=master_boc.ipid,
-                            is_completed=False  # Initially set to false
-                        )
-                    else:
-                        # Don't update existing FTP entries
-                        pass
+            for master_boc in master_bocs:
+                ftp = FTP.get(order_id=data.order_id, ipid=master_boc.ipid)
+                if not ftp:
+                    ftp = FTP(
+                        order_id=data.order_id,
+                        ipid=master_boc.ipid,
+                        is_completed=False  # Initially set to false
+                    )
+                # Do not overwrite existing FTP entries
 
             commit()
             return StageInspectionResponse.from_orm(stage_inspection)
 
+        except NameError as ne:
+            logger.error(f"NameError in create_stage_inspection: {ne}", exc_info=True)
+            raise ValueError(f"Failed to create Stage Inspection: {ne}")
         except Exception as e:
+            logger.error(f"An unexpected error occurred in create_stage_inspection: {e}", exc_info=True)
             raise ValueError(f"Failed to create Stage Inspection: {str(e)}")
 
     @staticmethod
@@ -283,8 +311,13 @@ class StageInspectionCRUD:
             # If this is quantity 1
             if inspection.quantity_no == 1:
                 # Get all master_bocs for this order and operation
+                order = Order.get(id=inspection.order_id)
+                if not order:
+                    raise ValueError(f"Order with ID {inspection.order_id} not found")
+                    
+                part_number = order.part_number
                 master_bocs = select(m for m in MasterBoc
-                                     if m.order.id == inspection.order_id
+                                     if m.part_number == part_number
                                      and m.op_no == inspection.op_no)[:]
 
                 # Update FTP status for each master_boc's IPID
@@ -403,8 +436,9 @@ class FTPCRUD:
             if not order:
                 raise ValueError(f"Order with ID {order_id} not found")
 
-            # Get the master_boc entry for this ipid using the order relationship
-            master_boc = select(m for m in MasterBoc if m.order == order and m.ipid == ipid).first()
+            # Get the master_boc entry for this ipid using the part number
+            part_number = order.part_number
+            master_boc = select(m for m in MasterBoc if m.part_number == part_number and m.ipid == ipid).first()
             if not master_boc:
                 raise ValueError(f"No master_boc found for order_id {order_id} and ipid {ipid}")
 

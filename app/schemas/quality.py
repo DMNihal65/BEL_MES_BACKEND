@@ -6,8 +6,7 @@ import json
 # In quality_schema.py - Update MasterBocBase
 class MasterBocBase(BaseModel):
     """Base schema for Master BOC"""
-    order_id: int = Field(..., description="Order ID", gt=0)
-    document_id: int = Field(..., description="Document ID", gt=0)
+    part_number: str = Field(..., description="Part Number (foreign key to Order.part_number)", min_length=1)
     nominal: str = Field(..., description="Nominal value")
     uppertol: float = Field(..., description="Upper tolerance", ge=0)
     lowertol: float = Field(..., description="Lower tolerance", le=0)
@@ -17,7 +16,7 @@ class MasterBocBase(BaseModel):
     op_no: int = Field(..., description="Operation number", gt=0)
     bbox: List[float] = Field(
         ...,
-        description="Bounding box coordinates [x1, y1, x2, y2, x3, y3, x4, y4, additional]",
+        description="Bounding box coordinates [x1, y1, x2, y2, x3, y3, x4, y4]",
         min_items=8,
         max_items=8
     )
@@ -46,8 +45,7 @@ class MasterBocResponse(MasterBocBase):
         """Convert from ORM object to Pydantic model"""
         data = {
             'id': db_obj.id,
-            'order_id': db_obj.order.id,
-            'document_id': db_obj.document.id,
+            'part_number': db_obj.part_number,  # Now directly a string
             'nominal': db_obj.nominal,
             'uppertol': db_obj.uppertol,
             'lowertol': db_obj.lowertol,

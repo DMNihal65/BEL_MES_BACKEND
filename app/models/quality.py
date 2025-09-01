@@ -1,8 +1,8 @@
 from pony.orm import *
 from ..database.connection import db  # Import the shared db instance
 from datetime import datetime
-from .master_order import Order
-from .document_management_v2 import DocumentV2, DocumentTypeV2
+from .master_order import Order  # Import Order for foreign key relationship
+# from .document_management_v2 import DocumentV2, DocumentTypeV2
 
 
 class MasterBoc(db.Entity):
@@ -12,9 +12,7 @@ class MasterBoc(db.Entity):
     _table_ = ("quality", "master_boc")  # (schema_name, table_name)
 
     id = PrimaryKey(int, auto=True)
-    order = Required(Order, column='order_id', reverse='master_bocs')  # Added reverse relationship
-    document = Optional(DocumentTypeV2, column='document_id', reverse='master_bocs')
-  # Changed to reference DocumentTypeV2
+    part_number = Required(str)  # Part number string
     nominal = Required(str)
     uppertol = Required(float)
     lowertol = Required(float)
@@ -25,6 +23,42 @@ class MasterBoc(db.Entity):
     bbox = Required(str)  # Storing as JSON string or specific format
     ipid = Required(str)  # Added new field
     created_at = Required(datetime, default=lambda: datetime.now())
+
+
+# class PartNumberIPID(db.Entity):
+#     _table_ = ("quality", "pn_ipid")
+
+#     id = PrimaryKey(int, auto=True)
+#     part_number = Required(str)
+#     op_no = Required(int)
+#     ipid = Required(str)
+#     created_at = Required(datetime, default=lambda: datetime.now())
+
+#     # Enforce unique constraint
+#     composite_index = (part_number, op_no)
+#     # master_bocs_pn = Set('MasterBocPN', reverse='pn_ipid')
+
+# class MasterBocPN(db.Entity):
+#     """
+#     Master BOC table for storing bill of characteristics data
+#     """
+#     _table_ = ("quality", "master_boc_pn")  # (schema_name, table_name)
+
+#     id = PrimaryKey(int, auto=True)
+#     # pn_ipid = Required(PartNumberIPID, reverse='master_bocs_pn')  # FK here
+#     part_number = Required(str)
+#     # document = Optional(DocumentTypeV2, column='document_id', reverse='master_bocs_pn')
+#   # Changed to reference DocumentTypeV2
+#     nominal = Required(str)
+#     uppertol = Required(float)
+#     lowertol = Required(float)
+#     zone = Required(str)
+#     dimension_type = Required(str)
+#     measured_instrument = Required(str)
+#     op_no = Required(int)
+#     bbox = Required(str)  # Storing as JSON string or specific format
+#     ipid = Required(str)  # Added new field
+#     created_at = Required(datetime, default=lambda: datetime.now())
 
 
 class StageInspection(db.Entity):

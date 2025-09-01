@@ -30,9 +30,9 @@ class DocumentTypeV2(db.Entity):
     allowed_extensions = Required(Json)  # e.g., [".pdf", ".dwg", ".dxf"]
     is_active = Required(bool, default=True)
     documents = Set('DocumentV2')
-    master_bocs = Set('MasterBoc', reverse='document')
+    # master_bocs = Set('MasterBoc', reverse='document')
 
-    master_bocs = Set('MasterBoc', reverse='document')
+    # master_bocs = Set('MasterBoc', reverse='document')
 
 
 class DocumentV2(db.Entity):

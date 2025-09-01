@@ -38,8 +38,7 @@ async def create_master_boc(
     Example request body:
     ```json
     {
-        "order_id": 1,
-        "document_id": 1,
+        "part_number": "PN123",
         "nominal": "10.5",
         "uppertol": 0.1,
         "lowertol": -0.1,
@@ -47,7 +46,7 @@ async def create_master_boc(
         "dimension_type": "diameter",
         "measured_instrument": "caliper",
         "op_no": 10,
-        "bbox": [100.0, 200.0, 300.0, 200.0, 300.0, 400.0, 100.0, 400.0, 0.0],
+        "bbox": [100.0, 200.0, 300.0, 200.0, 300.0, 400.0, 100.0, 400.0],
         "ipid": "IP123"
     }
     ```
@@ -104,28 +103,31 @@ async def get_master_boc(
 
 
 @router.get(
-    "/master-boc/order/{order_id}",
+    "/master-boc/part-number/{part_number}",
     response_model=List[MasterBocResponse]
 )
-async def get_master_bocs_by_order(
-        order_id: int = Path(..., gt=0),
+async def get_master_bocs_by_part_number(
+        part_number: str = Path(..., min_length=1),
         op_no: int = Query(..., gt=0),
         measurement_instruments: List[str] = Query(None, description="Filter by multiple measurement instruments"),
         current_user=Depends(get_current_user)
 ) -> Any:
     """
-    Get all Master BOCs for an order and operation number
+    Get all Master BOCs for a part number and operation number
     Optionally filter by multiple measurement instruments
     """
     try:
-        master_bocs = MasterBocCRUD.get_by_order_and_op_no(
-            order_id,
+        master_bocs = MasterBocCRUD.get_by_part_number_and_op_no(
+            part_number,
             op_no,
             measurement_instruments
         )
         return master_bocs
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+
 
 
 @router.post(
@@ -328,20 +330,22 @@ async def get_stage_inspection_grouped(
 
 
 @router.get(
-    "/master-boc/ipids/{order_id}",
+    "/master-boc/ipids/{order_id}/{part_number}",
     response_model=OrderIPIDResponse
 )
-async def get_order_ipids(
+async def get_ipids_by_order_and_part_number(
         order_id: int = Path(..., gt=0),
+        part_number: str = Path(..., min_length=1),
         current_user=Depends(get_current_user)
 ) -> Any:
     """
-    Get all IPIDs for an order including:
-    - Order information (production order, part number)
+    Get all IPIDs for an order and part number combination:
+    - Order information from the order table
+    - Master BOC details from the part number
     - List of IPIDs with their operation numbers and zones
     """
     try:
-        ipid_data = MasterBocCRUD.get_ipids_by_order(order_id)
+        ipid_data = MasterBocCRUD.get_ipids_by_order_and_part_number(order_id, part_number)
         return ipid_data
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))

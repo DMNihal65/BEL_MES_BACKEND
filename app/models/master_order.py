@@ -113,7 +113,7 @@ class Order(db.Entity):
     inventory_requests = Set("InventoryRequest")
     documents_v2 = Set('DocumentV2', reverse='production_order')
     order_tools = Set("OrderTool", reverse="order")  # Updated relationship name
-    master_bocs = Set('MasterBoc', reverse='order')  # Add this line for MasterBoc relationship
+    # master_bocs = Set('MasterBoc', reverse='order')  # Add this line for MasterBoc relationship
     order_completed = Set('OrderCompleted', reverse='order_id')
     planned_items = Set('PlannedItem')
     pdc_records = Set('PDC', reverse='order_id')
