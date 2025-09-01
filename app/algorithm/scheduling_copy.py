@@ -36,10 +36,10 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
     # Enhanced Debug Logging
     for (partno, production_order) in component_quantities.keys():
         part_df = df[(df['partno'] == partno) & (df['production_order'] == production_order)]
-        print(f"\nPart {partno} Debug:")
-        print(f"Operations Count: {len(part_df)}")
-        if not part_df.empty:
-            print(part_df[['operation', 'machine_id', 'sequence', 'time']].to_string())
+        # print(f"\nPart {partno} Debug:")
+        # print(f"Operations Count: {len(part_df)}")
+        # if not part_df.empty:
+        #     print(part_df[['operation', 'machine_id', 'sequence', 'time']].to_string())
 
     if df.empty:
         print("ERROR: Input DataFrame is empty!")

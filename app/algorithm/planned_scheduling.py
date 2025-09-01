@@ -70,11 +70,39 @@ def get_shift_end(dt: datetime) -> datetime:
     return dt.replace(hour=22, minute=0, second=0, microsecond=0)
 
 
+def validate_shift_timing(start_time: datetime, end_time: datetime) -> Tuple[datetime, datetime]:
+    """
+    Validate and adjust shift timing to ensure operations fit within working hours.
+    Returns adjusted start and end times.
+    Includes operations that end exactly at 22:00 (10:00 PM).
+    """
+    # Ensure start time is within shift hours
+    adjusted_start = adjust_to_shift_hours(start_time)
+    
+    # If end time extends beyond shift hours, adjust to shift end
+    # Include operations that end exactly at 22:00 (10:00 PM)
+    shift_end = get_shift_end(adjusted_start)
+    if end_time > shift_end:  # Changed from >= to > to include exactly at 22:00
+        adjusted_end = shift_end
+    else:
+        adjusted_end = end_time
+    
+    return adjusted_start, adjusted_end
+
+
 @db_session
 def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, str], int],
                         lead_times: Dict[str, datetime] = None) -> \
         Tuple[pd.DataFrame, datetime, float, Dict, Dict, List[str]]:
-    """Main scheduling function that ONLY uses activation time for scheduling with shift hour constraints and working day validation"""
+    """Main scheduling function that ONLY uses activation time for scheduling.
+    
+    IMPORTANT: No operations are invalidated - all operations are scheduled regardless of:
+    - Shift hour constraints (6 AM to 10 PM)
+    - Working day constraints (Monday to Saturday)
+    - Timing violations
+    
+    Operations may extend beyond shift hours or working days but will still be scheduled.
+    """
 
     # print("\n==== ACTIVATION TIME ONLY SCHEDULING WITH SHIFT HOURS AND WORKING DAYS ====")
     # print(f"Total Parts Requested: {len(component_quantities)}")
@@ -83,6 +111,26 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
     if df.empty:
         print("ERROR: Input DataFrame is empty!")
         return pd.DataFrame(), datetime.now(), 0.0, {}, {}, ["Empty input DataFrame"]
+
+    # FILTER OUT DEFAULT MACHINES BEFORE ANY SCHEDULING LOGIC
+    # print("\n==== FILTERING DEFAULT MACHINES ====")
+    default_machine_ids = [
+        m.id for m in Machine.select()
+        if m.type == "Default" and m.make == "Default" and m.model == "Default"
+    ]
+    # print(f"Default Machine IDs to exclude: {default_machine_ids}")
+
+    if default_machine_ids:
+        original_shape = df.shape
+        df = df[~df['machine_id'].isin(default_machine_ids)]
+        # print(f"Filtered DataFrame: {original_shape} -> {df.shape}")
+
+        if df.empty:
+            # print("WARNING: No operations remain after filtering out default machines!")
+            return pd.DataFrame(), datetime.now(), 0.0, {}, {}, [
+                "No operations remain after filtering default machines"]
+    else:
+        print("No default machines found to filter")
 
     # Get activation times - THIS IS THE ONLY CONSTRAINT WE CARE ABOUT
     part_activation_times = {}
@@ -103,21 +151,14 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
                 active_parts[key] = component_quantities[key]
 
     # print("\n==== ACTIVATION TIMES FOUND (ADJUSTED TO SHIFT HOURS AND WORKING DAYS) ====")
-    for key, activation_time in part_activation_times.items():
-        if key in active_parts:
-            print(
-                f"Part: {key[0]}, PO: {key[1]}, Activation: {activation_time.strftime('%Y-%m-%d %H:%M:%S')} ({activation_time.strftime('%A')})")
+    # for key, activation_time in part_activation_times.items():
+    #     if key in active_parts:
+    #         print(
+    #             f"Part: {key[0]}, PO: {key[1]}, Activation: {activation_time.strftime('%Y-%m-%d %H:%M:%S')} ({activation_time.strftime('%A')})")
 
     if not active_parts:
         print("CRITICAL: No active parts found!")
         return pd.DataFrame(), datetime.now(), 0.0, {}, {}, ["No active parts found"]
-
-    # Get operations for active parts
-    part_operations = {}
-    for (partno, production_order), group in df.groupby(['partno', 'production_order']):
-        key = (partno, production_order)
-        if key in active_parts:
-            part_operations[key] = group.to_dict('records')
 
     # Get order information for setup and cycle times
     order_info = {}
@@ -129,9 +170,47 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
                 'priority': order.project.priority if order.project else float('inf')
             }
 
-    # Sort by priority
+    # Sort by priority (same logic as scheduling.py)
     sorted_parts = sorted(active_parts.keys(),
                           key=lambda x: part_activation_times.get(x, datetime.now()))
+
+    # Reorder the dataframe based on sorted parts (same logic as scheduling.py)
+    # Create a mapping of parts to sort order indices
+    part_to_idx = {part: idx for idx, part in enumerate(sorted_parts)}
+
+    # Add a sort_order column to the dataframe
+    # Create a copy to avoid pandas SettingWithCopyWarning
+    df = df.copy()
+    df['sort_order'] = df.apply(
+        lambda row: part_to_idx.get((row['partno'], row['production_order']), float('inf')),
+        axis=1
+    )
+
+    # Sort the dataframe and filter for active parts (same as scheduling.py)
+    df_sorted = df[
+        df.apply(lambda row: (row['partno'], row['production_order']) in active_parts, axis=1)
+    ].sort_values(by=['sort_order', 'sequence']).drop('sort_order', axis=1)
+
+    # Update part_operations to use the sorted dataframe with proper sequence order
+    part_operations = {}
+    for (partno, production_order), group in df_sorted.groupby(['partno', 'production_order']):
+        key = (partno, production_order)
+        if key in active_parts:
+            part_operations[key] = group.to_dict('records')
+
+    # Enhanced Debug Logging (same as scheduling.py)
+    # print("\n==== OPERATION SEQUENCE DIAGNOSTIC ====")
+    # for (partno, production_order) in sorted_parts:
+    #     if (partno, production_order) in part_operations:
+    #         operations = part_operations[(partno, production_order)]
+    #         print(f"\nPart {partno} (PO: {production_order}) Operations:")
+    #         print(f"Operations Count: {len(operations)}")
+    #         if operations:
+    #             # Show operations in sequence order
+    #             for op in operations:
+    #                 print(f"  Sequence {op['sequence']}: {op['operation']} on Machine {op['machine_id']}")
+    #     else:
+    #         print(f"\nPart {partno} (PO: {production_order}): No operations found")
 
     schedule = []
     part_status = {}
@@ -161,12 +240,20 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
         # print(
         #     f"Initial current_time for {partno}: {current_time.strftime('%Y-%m-%d %H:%M:%S')} ({current_time.strftime('%A')})")
 
+        # Validate that activation time respects shift hours
+        validated_start, _ = validate_shift_timing(activation_time, activation_time)
+        if validated_start != activation_time:
+            # print(f"    Shift timing adjustment: {activation_time} -> {validated_start}")
+            current_time = validated_start
+
         # Process each operation sequentially from activation time
+        # CRITICAL: Operations are processed in strict sequence order (op['sequence'])
+        # This matches the exact logic from scheduling.py
         for op_idx, op in enumerate(operations):
             machine_id = op['machine_id']
 
             # print(
-            #     f"  Operation {op_idx + 1} ({op['operation']}): Starting at {current_time.strftime('%Y-%m-%d %H:%M:%S')} ({current_time.strftime('%A')})")
+            #     f"  Operation {op_idx + 1} (Sequence {op['sequence']} - {op['operation']}): Starting at {current_time.strftime('%Y-%m-%d %H:%M:%S')} ({current_time.strftime('%A')})")
 
             # Get operation details for timing
             order_id = order_info.get(key, {}).get('order_id')
@@ -191,9 +278,12 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
 
             # Apply working day and shift adjustment if needed
             operation_start_time = adjust_to_shift_hours(operation_start_time)
-            # if operation_start_time != current_time:
-            #     print(
-            #         f"    Adjusted start time to: {operation_start_time.strftime('%Y-%m-%d %H:%M:%S')} ({operation_start_time.strftime('%A')})")
+            if operation_start_time != current_time:
+                print(
+                    f"    Adjusted start time to: {operation_start_time.strftime('%Y-%m-%d %H:%M:%S')} ({operation_start_time.strftime('%A')})")
+
+            # NOTE: No shift timing validation - all operations are scheduled regardless of timing
+            # This ensures no operations are invalidated due to shift hour constraints
 
             # Schedule setup with shift and working day constraints
             setup_start = operation_start_time
@@ -237,7 +327,7 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
                         current_time = current_end
                         break
             else:
-                # Setup fits within current shift
+                # Setup fits within current shift (including ending exactly at shift end)
                 schedule.append([
                     partno, op['operation'], machine_id,
                     setup_start, setup_end,
@@ -254,6 +344,7 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
             shift_end = get_shift_end(production_start)
 
             # Check if production crosses shift boundaries
+            # Include operations that end exactly at 22:00 (10:00 PM)
             if production_end > shift_end:
                 # Calculate production in current shift
                 work_minutes_today = (shift_end - production_start).total_seconds() / 60
@@ -306,7 +397,7 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
                         current_time = current_end
                         break
             else:
-                # Production fits within current shift
+                # Production fits within current shift (including ending exactly at shift end)
                 schedule.append([
                     partno, op['operation'], machine_id,
                     production_start, production_end,
@@ -361,19 +452,9 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
     if schedule_df.empty:
         return schedule_df, datetime.now(), 0.0, daily_production, part_status, []
 
-    # Verify that all scheduled times are on working days
-    invalid_schedules = []
-    for idx, row in schedule_df.iterrows():
-        start_time = row['start_time']
-        end_time = row['end_time']
-
-        if not is_working_day(start_time) or not is_working_day(end_time):
-            invalid_schedules.append(f"Row {idx}: {row['partno']} operation on non-working day")
-
-    if invalid_schedules:
-        print("WARNING: Found schedules on non-working days:")
-        for invalid in invalid_schedules[:5]:  # Show first 5
-            print(f"  {invalid}")
+    # NOTE: No validation is performed - all operations are scheduled regardless of timing
+    # This ensures no operations are invalidated due to shift hours or working day constraints
+    # print("âœ“ All operations are scheduled regardless of timing constraints")
 
     overall_end_time = max(schedule_df['end_time'])
 
@@ -395,5 +476,11 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
     # print(
     #     f"Schedule spans from {earliest_activation.strftime('%Y-%m-%d %H:%M:%S')} ({earliest_activation.strftime('%A')}) to {overall_end_time.strftime('%Y-%m-%d %H:%M:%S')} ({overall_end_time.strftime('%A')})")
     # print(f"Working days used: {working_days_used}")
+    # print(f"Shift timing constraints: 6:00 AM to 10:00 PM (16 hours per working day)")
+    # print(f"Note: Operations ending exactly at 10:00 PM (22:00) are considered valid")
+    # print(f"IMPORTANT: No operations are invalidated - all operations are scheduled regardless of timing")
+    # print(f"Note: Shift timing functions are used for guidance but do not prevent scheduling")
+    # print(f"Default machines excluded: {len(default_machine_ids)}")
+    # print(f"Operations scheduled: {len(schedule_df)}")
 
     return schedule_df, overall_end_time, overall_time, daily_production, part_status, []

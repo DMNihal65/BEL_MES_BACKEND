@@ -1,4 +1,5 @@
 
+
 from datetime import datetime, timedelta, date
 import pandas as pd
 from typing import Dict, Tuple, List
@@ -77,13 +78,12 @@ def get_shift_end(dt: datetime) -> datetime:
     return dt.replace(hour=22, minute=0, second=0, microsecond=0)
 
 
-@db_session
 def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, str], int],
                         lead_times: Dict[str, datetime] = None) -> \
         Tuple[pd.DataFrame, datetime, float, Dict, Dict, List[str]]:
     """Main scheduling function that creates a production schedule based on operations data"""
 
-    # # COMPREHENSIVE DIAGNOSTIC LOGGING
+    # COMPREHENSIVE DIAGNOSTIC LOGGING
     # print("\n==== SCHEDULING FUNCTION: COMPREHENSIVE DIAGNOSTIC ====")
     # print(f"Total Parts Requested: {len(component_quantities)}")
     # print(f"Component Quantities: {component_quantities}")
@@ -95,12 +95,32 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
         part_df = df[(df['partno'] == partno) & (df['production_order'] == production_order)]
         # print(f"\nPart {partno} Debug:")
         # print(f"Operations Count: {len(part_df)}")
-        if not part_df.empty:
-            print(part_df[['operation', 'machine_id', 'sequence', 'time']].to_string())
+        # if not part_df.empty:
+            # print(part_df[['operation', 'machine_id', 'sequence', 'time']].to_string())
 
     if df.empty:
-        print("ERROR: Input DataFrame is empty!")
+        # print("ERROR: Input DataFrame is empty!")
         return pd.DataFrame(), datetime.now(), 0.0, {}, {}, ["Empty input DataFrame"]
+
+    # EARLY FILTERING: Remove default machines before any scheduling logic
+    # print("\n==== FILTERING DEFAULT MACHINES ====")
+    default_machine_ids = [
+        m.id for m in Machine.select()
+        if m.type == "Default" and m.make == "Default" and m.model == "Default"
+    ]
+    # print(f"Default Machine IDs to exclude: {default_machine_ids}")
+
+    if default_machine_ids:
+        original_shape = df.shape
+        df = df[~df['machine_id'].isin(default_machine_ids)]
+        # print(f"Filtered DataFrame: {original_shape} -> {df.shape}")
+
+        if df.empty:
+            # print("WARNING: No operations remain after filtering out default machines!")
+            return pd.DataFrame(), datetime.now(), 0.0, {}, {}, [
+                "No operations remain after filtering default machines"]
+    else:
+        print("No default machines found to filter")
 
     # Filter operations based on WorkCenter's is_schedulable flag
     schedulable_work_centers = [wc.id for wc in WorkCenter.select() if wc.is_schedulable]
@@ -117,11 +137,11 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
     filtered_df = df[
         df['machine_id'].apply(lambda m_id: machine_to_work_center.get(m_id) in schedulable_work_centers)]
 
-    # print(f"Original DataFrame Shape: {df.shape}, Filtered DataFrame Shape: {filtered_df.shape}")
+    # print(f"After WorkCenter filtering: {df.shape} -> {filtered_df.shape}")
 
     # If filtering removed all operations, return empty
     if filtered_df.empty:
-        print("WARNING: No operations remain after filtering for schedulable work centers!")
+        # print("WARNING: No operations remain after filtering for schedulable work centers!")
         return pd.DataFrame(), datetime.now(), 0.0, {}, {}, ["No operations in schedulable work centers"]
 
     # Replace original df with filtered version
@@ -251,11 +271,12 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
         ) for part_number, rm, ist, available_from in raw_materials_query
     }
 
-    # Fetch machine statuses with their status details
+    # Fetch machine statuses with their status details (excluding default machines)
     machine_statuses_query = select((m, ms, s, ms.available_from, ms.available_to)
                                     for m in Machine
                                     for ms in m.status
-                                    for s in Status if ms.status == s)
+                                    for s in Status
+                                    if ms.status == s and m.id not in default_machine_ids)
     machine_statuses = {
         m.id: {
             'machine_make': m.make,
@@ -292,11 +313,12 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
         global_start_date = default_start_date
 
     # Log the global start date used for scheduling
-    print(
-        f"Global start date (IST, Working Day): {global_start_date.strftime('%Y-%m-%d %H:%M:%S')} ({global_start_date.strftime('%A')})")
+    # print(
+    #     f"Global start date (IST, Working Day): {global_start_date.strftime('%Y-%m-%d %H:%M:%S')} ({global_start_date.strftime('%A')})")
 
-    # Initialize machine end times with the earliest start date
-    machine_end_times = {machine: global_start_date for machine in df_sorted["machine_id"].unique()}
+    # Initialize machine end times with the earliest start date (excluding default machines)
+    non_default_machines = [m for m in df_sorted["machine_id"].unique() if m not in default_machine_ids]
+    machine_end_times = {machine: global_start_date for machine in non_default_machines}
 
     schedule = []
     daily_production = {}
@@ -306,8 +328,12 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
     def check_machine_status(machine_id: int, time: datetime) -> Tuple[bool, datetime]:
         """
         Check if a machine is available at a given time.
-        Now also considers working days.
+        Now also considers working days and excludes default machines.
         """
+        # Skip check for default machines (they shouldn't be scheduled anyway)
+        if machine_id in default_machine_ids:
+            return False, None
+
         # First check if it's a working day
         if not is_working_day(time):
             next_working = get_next_working_day(time.replace(hour=6, minute=0, second=0, microsecond=0))
@@ -361,12 +387,17 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
         return True, time
 
     def find_last_available_operation(operations: List[dict], current_time: datetime) -> int:
-        """Find the last operation that can be performed in sequence"""
+        """Find the last operation that can be performed in sequence (excluding default machines)"""
         last_available = -1
         current_op_time = current_time
 
         for idx, op in enumerate(operations):
             machine_id = op['machine_id']
+
+            # Skip default machines
+            if machine_id in default_machine_ids:
+                continue
+
             machine_available, available_time = check_machine_status(machine_id, current_op_time)
 
             if not machine_available and available_time is None:
@@ -384,10 +415,17 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
     def schedule_batch_operations(partno: str, operations: List[dict], quantity: int, start_time: datetime,
                                   order_id: int = None, production_order: str = None, order_raw_material=None) -> Tuple[
         List[list], int, Dict[int, datetime]]:
-        """Schedule operations for a batch of components with working day validation"""
+        """Schedule operations for a batch of components with working day validation (excluding default machines)"""
 
         # Ensure start_time is on a working day
         start_time = adjust_to_shift_hours(start_time)
+
+        # Filter out operations on default machines
+        operations = [op for op in operations if op['machine_id'] not in default_machine_ids]
+
+        if not operations:
+            print(f"No non-default machine operations found for part {partno}")
+            return [], 0, {}
 
         # Use the provided order details or find the order
         if order_id is None:
@@ -432,7 +470,7 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
 
         # Comprehensive availability check
         if raw_material_status.name != 'Available':
-            print(f"Raw material for {partno} (Production Order: {production_order}) is not in 'Available' status")
+            # print(f"Raw material for {partno} (Production Order: {production_order}) is not in 'Available' status")
             return [], 0, {}
 
         # If raw material is available from a future time
@@ -471,6 +509,11 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
 
         for op_idx, op in enumerate(available_operations):
             machine_id = op['machine_id']
+
+            # Double check - skip default machines
+            if machine_id in default_machine_ids:
+                continue
+
             operation_key = f"{op['operation']}_{machine_id}"
 
             if operation_key not in cumulative_pieces:
@@ -543,12 +586,12 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
 
                         if not machine_available:
                             if next_available_time is None:
-                                print(f"Machine {machine_id} is permanently unavailable for remaining setup")
+                                # print(f"Machine {machine_id} is permanently unavailable for remaining setup")
                                 break  # Can't complete setup
                             else:
                                 # Adjust next start time to when machine becomes available
                                 next_start = adjust_to_shift_hours(next_available_time)
-                                print(f"Next setup will start at {next_start} when machine becomes available")
+                                # print(f"Next setup will start at {next_start} when machine becomes available")
 
                         current_shift_end = get_shift_end(next_start)
                         setup_possible = min(remaining_setup, (current_shift_end - next_start).total_seconds() / 60)
@@ -588,6 +631,9 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
             # Function to check for machine unavailability windows within a time period
             def find_machine_off_periods(machine_id, start_time, end_time):
                 """Find periods when the machine is OFF within the given time range"""
+                if machine_id in default_machine_ids:
+                    return [(start_time, end_time)]  # Treat entire period as unavailable
+
                 ms = machine_statuses.get(machine_id)
                 off_periods = []
 
@@ -687,12 +733,12 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
 
                     if not machine_available:
                         if next_available_time is None:
-                            # print(f"Machine {machine_id} is permanently unavailable for remaining pieces")
+                            print(f"Machine {machine_id} is permanently unavailable for remaining pieces")
                             break  # Can't complete production
                         else:
                             # Adjust next start time to when machine becomes available
                             next_start = adjust_to_shift_hours(next_available_time)
-                            # print(f"Next processing will start at {next_start} when machine becomes available")
+                            print(f"Next processing will start at {next_start} when machine becomes available")
 
                     current_shift_end = get_shift_end(next_start)
                     work_possible = min(remaining_time, (current_shift_end - next_start).total_seconds() / 60)
@@ -1037,24 +1083,11 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
     # print(f"  Working Days Used: {working_days_used}")
     # print(f"  Total Schedule Duration: {overall_time:.1f} minutes")
 
-    # Compute and store PDC per (partno, production_order), excluding default machines
+    # PDC computation is now only done on non-default machines (which are already filtered out)
     try:
-        # Build list of default machine ids to exclude
-        default_machine_ids = [
-            m.id for m in Machine.select()
-            if m.type == "Default" and m.make == "Default" and m.model == "Default"
-        ]
-
-        # Filter out default machines from schedule before computing PDC
-        schedule_df_non_default = schedule_df[~schedule_df['machine_id'].isin(default_machine_ids)]
-
-        if schedule_df_non_default.empty:
-            print("No non-default machine operations found for PDC computation. Skipping PDC storage.")
-            return schedule_df, overall_end_time, overall_time, daily_production, part_status, partially_completed
-
-        # Group by part and production order to find latest end time = PDC (non-default machines only)
+        # Group by part and production order to find latest end time = PDC
         part_production_end_times = (
-            schedule_df_non_default.groupby(['partno', 'production_order'])['end_time'].max()
+            schedule_df.groupby(['partno', 'production_order'])['end_time'].max()
         )
 
         for (part_number, production_order), pdc_time in part_production_end_times.items():
@@ -1074,7 +1107,7 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
                 )
                 # print(f"Upserted PDC: {part_number} - {production_order} -> {pdc_time} ({pdc_time.strftime('%A')})")
             except Exception as e:
-                # print(f"Error storing PDC for {part_number} - {production_order}: {str(e)}")
+                print(f"Error storing PDC for {part_number} - {production_order}: {str(e)}")
                 continue
     except Exception as e:
         print(f"Error computing/storing PDCs from schedule: {str(e)}")
