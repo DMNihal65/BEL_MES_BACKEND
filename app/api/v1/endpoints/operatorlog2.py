@@ -85,7 +85,7 @@ def validate_operation_sequence(operation_id: int) -> tuple[bool, str]:
             total_completed = sum(log.quantity_completed or 0 for log in prev_logs)
 
             # Get the required quantity from the order
-            required_quantity = order.required_quantity
+            required_quantity = order.launched_quantity
 
             # If the previous operation doesn't have enough completed quantity, reject
             if total_completed < required_quantity:
@@ -126,7 +126,7 @@ def get_operation_sequence_info(operation_id: int) -> Dict:
                 logs = select(log for log in ProductionLog if log.operation == op)
                 total_completed = sum(log.quantity_completed or 0 for log in logs)
 
-                if total_completed < order.required_quantity:
+                if total_completed < order.launched_quantity:
                     incomplete_operations.append({
                         "operation_number": op.operation_number,
                         "operation_id": op.id,
@@ -134,8 +134,8 @@ def get_operation_sequence_info(operation_id: int) -> Dict:
                         "work_center": op.work_center.work_center_name or op.work_center.code,
                         "work_center_schedulable": op.work_center.is_schedulable,
                         "completed_quantity": total_completed,
-                        "required_quantity": order.required_quantity,
-                        "remaining_quantity": order.required_quantity - total_completed
+                        "required_quantity": order.launched_quantity,
+                        "remaining_quantity": order.launched_quantity - total_completed
                     })
 
         return {
@@ -205,7 +205,7 @@ def create_production_log(log_data: ProductionLogCreate):
         total_completed_so_far = sum(log.quantity_completed or 0 for log in existing_logs)
 
         # Calculate remaining quantity needed for this operation
-        required_quantity = operation.order.required_quantity
+        required_quantity = operation.order.launched_quantity
         remaining_quantity = required_quantity - total_completed_so_far
 
         # Check if the new quantity exceeds what's remaining
@@ -322,16 +322,16 @@ def get_order_operations_status(order_id: int):
             "machine": machine_info,
             "setup_time": float(op.setup_time),
             "ideal_cycle_time": float(op.ideal_cycle_time),
-            "operation_time": float(op.ideal_cycle_time) * order.required_quantity,
+            "operation_time": float(op.ideal_cycle_time) * order.launched_quantity,
             "can_log": can_log,
             "validation_reason": validation_reason,
             "completed_quantity": total_completed,
             "rejected_quantity": total_rejected,
-            "required_quantity": order.required_quantity,
-            "remaining_quantity": max(0, order.required_quantity - total_completed),
-            "is_complete": total_completed >= order.required_quantity,
+            "required_quantity": order.launched_quantity,
+            "remaining_quantity": max(0, order.launched_quantity - total_completed),
+            "is_complete": total_completed >= order.launched_quantity,
             "completion_percentage": (
-                        total_completed / order.required_quantity * 100) if order.required_quantity > 0 else 0
+                        total_completed / order.launched_quantity * 100) if order.launched_quantity > 0 else 0
         })
 
     # Get raw material information
@@ -388,7 +388,7 @@ def get_order_operations_status(order_id: int):
             "part_number": order.part_number,
             "part_description": order.part_description,
             "total_operations": order.total_operations,
-            "required_quantity": order.required_quantity,
+            "required_quantity": order.launched_quantity,
             "launched_quantity": order.launched_quantity,
             "plant_id": order.plant_id
         },
@@ -483,12 +483,12 @@ def get_operation_sequence_status(operation_id: int):
 #             "validation_reason": validation_reason,
 #             "completed_quantity": total_completed,
 #             "rejected_quantity": total_rejected,
-#             "required_quantity": order.required_quantity,
-#             "remaining_quantity": max(0, order.required_quantity - total_completed),
-#             "is_complete": total_completed >= order.required_quantity,
+#             "required_quantity": order.launched_quantity,
+#             "remaining_quantity": max(0, order.launched_quantity - total_completed),
+#             "is_complete": total_completed >= order.launched_quantity,
 #             "setup_time": float(op.setup_time),
 #             "ideal_cycle_time": float(op.ideal_cycle_time),
-#             "total_operation_time": float(op.setup_time + (op.ideal_cycle_time * order.required_quantity))
+#             "total_operation_time": float(op.setup_time + (op.ideal_cycle_time * order.launched_quantity))
 #         })
 #
 #     # Get raw material information
@@ -525,7 +525,7 @@ def get_operation_sequence_status(operation_id: int):
 #
 #     # Calculate total production time
 #     total_setup_time = sum(op["setup_time"] for op in operation_statuses)
-#     total_cycle_time = sum(float(op["ideal_cycle_time"]) * order.required_quantity for op in operation_statuses)
+#     total_cycle_time = sum(float(op["ideal_cycle_time"]) * order.launched_quantity for op in operation_statuses)
 #     total_production_time = total_setup_time + total_cycle_time
 #
 #     return {
@@ -536,7 +536,7 @@ def get_operation_sequence_status(operation_id: int):
 #         "part_description": order.part_description,
 #         "plant_id": order.plant_id,
 #         "total_operations": order.total_operations,
-#         "required_quantity": order.required_quantity,
+#         "required_quantity": order.launched_quantity,
 #         "launched_quantity": order.launched_quantity,
 #         "raw_material": raw_material_info,
 #         "project": project_info,
@@ -646,7 +646,7 @@ def get_production_order_operations_status(work_center_id: int, production_order
         logs = select(log for log in ProductionLog if log.operation == op)
         total_completed = sum(log.quantity_completed or 0 for log in logs)
         total_rejected = sum(log.quantity_rejected or 0 for log in logs)
-        is_complete = total_completed >= order.required_quantity
+        is_complete = total_completed >= order.launched_quantity
 
         # Get validation from sequence check
         can_log, validation_reason = validate_operation_sequence(op.id)
@@ -672,12 +672,12 @@ def get_production_order_operations_status(work_center_id: int, production_order
             "validation_reason": validation_reason,
             "completed_quantity": total_completed,
             "rejected_quantity": total_rejected,
-            "required_quantity": order.required_quantity,
-            "remaining_quantity": max(0, order.required_quantity - total_completed),
+            "required_quantity": order.launched_quantity,
+            "remaining_quantity": max(0, order.launched_quantity - total_completed),
             "is_complete": is_complete,
             "setup_time": float(op.setup_time),  # Convert Decimal to float
             "ideal_cycle_time": float(op.ideal_cycle_time),  # Convert Decimal to float
-            "operation_time": float(op.ideal_cycle_time) * order.required_quantity  # Calculate total operation time
+            "operation_time": float(op.ideal_cycle_time) * order.launched_quantity  # Calculate total operation time
         })
 
     return {
@@ -688,7 +688,7 @@ def get_production_order_operations_status(work_center_id: int, production_order
         "part_number": order.part_number,
         "priority": order.project.priority,
         "project": order.project.name,
-        "required_quantity": order.required_quantity,
+        "required_quantity": order.launched_quantity,
         "sale_order": order.sale_order,
         "total_operations_in_work_center": len(operation_statuses),
         "operations": operation_statuses
