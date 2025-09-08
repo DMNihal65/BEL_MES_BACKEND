@@ -15,6 +15,7 @@ dist-ssr
 .venv
 .tar
 *.tar
+venv
 
 # Lock files
 package-lock.json
