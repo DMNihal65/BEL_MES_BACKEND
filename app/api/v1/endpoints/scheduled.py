@@ -24,7 +24,7 @@ from app.schemas.operations import WorkCenterMachine
 from app.schemas.scheduled1 import ScheduleResponse, ProductionLogsResponse, ProductionLogResponse, ScheduledOperation, \
     CombinedScheduleProductionResponse, PartProductionResponse, PartProductionTimeline, PartStatusUpdate, \
     MachineUtilization, OrderCompletionRequest, OrderCompletionResponse, OrderCompletionStatus, \
-    AllCompletionStatusResponse, OrderCompletionRecord
+    AllCompletionStatusResponse, OrderCompletionRecord, PartScheduleStartDateResponse
 from app.models.master_order import OrderCompleted
 
 from datetime import time as dt_time
@@ -2560,7 +2560,11 @@ async def update_schedule():
         # Fetch operations dataframe
         df = fetch_operations()
         if df.empty:
-            return await get_latest_schedule()
+            return ScheduleUpdateResult(
+                version=next_version,
+                inserted_count=0,
+                deleted_history_ids=[]
+            )
 
         # Build mapping of active POs per part number and a part_po to quantity using same approach as schedule-batch
         po_to_part_mapping = {}
@@ -2604,8 +2608,12 @@ async def update_schedule():
             df = pd.DataFrame()
 
         if df.empty:
-            # Nothing to schedule; return latest (empty)
-            return await get_latest_schedule()
+            # Nothing to schedule; return empty result
+            return ScheduleUpdateResult(
+                version=next_version,
+                inserted_count=0,
+                deleted_history_ids=[]
+            )
 
         # Filter to active POs
         df = df[df['production_order'].isin(active_production_orders)]
@@ -2633,6 +2641,27 @@ async def update_schedule():
                 schedule_history_id=new_history.id if new_history else None,
             )
 
+        # Update start_date in part_schedule_status table with first operation start_time
+        if not schedule_df.empty:
+            with db_session:
+                # Group by production_order and find the first operation (earliest start_time) for each order
+                first_operations = schedule_df.groupby('production_order').apply(
+                    lambda group: group.loc[group['start_time'].idxmin()]
+                ).reset_index(drop=True)
+                
+                # Update PartScheduleStatus records with the first operation start_time
+                for _, row in first_operations.iterrows():
+                    production_order = row['production_order']
+                    first_start_time = row['start_time']
+                    
+                    # Find the PartScheduleStatus record for this production order
+                    part_schedule_status = PartScheduleStatus.get(production_order=production_order)
+                    if part_schedule_status:
+                        part_schedule_status.start_date = first_start_time
+                        # print(f"Updated start_date for production order {production_order} to {first_start_time}")
+                    else:
+                        print(f"Warning: No PartScheduleStatus record found for production order {production_order}")
+
         # After successful insert, delete all previous histories and their related data
         deleted_ids: List[int] = []
         with db_session:
@@ -2655,3 +2684,32 @@ async def update_schedule():
         print(f"Error in update schedule endpoint: {str(e)}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/part-schedule-start-date/{production_order}/{part_number}", response_model=PartScheduleStartDateResponse)
+async def get_part_schedule_start_date(production_order: str, part_number: str):
+    """Get the start_date for a specific production order and part number"""
+    try:
+        with db_session:
+            # Find the PartScheduleStatus record for the given production order and part number
+            part_schedule = PartScheduleStatus.get(
+                production_order=production_order, 
+                part_number=part_number
+            )
+            
+            if not part_schedule:
+                raise HTTPException(
+                    status_code=404, 
+                    detail=f"No schedule status found for production order {production_order} and part number {part_number}"
+                )
+            
+            # Return the start_date (can be None if not set)
+            return PartScheduleStartDateResponse(
+                start_date=part_schedule.start_date
+            )
+            
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+

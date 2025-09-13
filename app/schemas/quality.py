@@ -213,6 +213,7 @@ class MasterBocIPIDInfo(BaseModel):
 
 class IPIDInfo(BaseModel):
     """Information for a specific IPID"""
+    id: int
     zone: str
     dimension_type: str
     nominal: str
@@ -225,6 +226,11 @@ class OperationIPIDGroup(BaseModel):
     op_no: int
     ipid: str
     details: IPIDInfo
+
+
+class FTPStatusUpdateRequest(BaseModel):
+    is_completed: bool
+
 
 class OrderIPIDResponse(BaseModel):
     """Response schema for Order IPID information"""

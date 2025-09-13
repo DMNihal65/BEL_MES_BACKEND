@@ -2470,7 +2470,7 @@ async def get_ipid_documents_by_po(
 #             detail=f"An error occurred: {str(e)}"
 #         )
 
-
+bucket_name = os.getenv("MINIO_BUCKET_NAME", "documents")
 
 @router.get("/documents/download-latest_new/{part_number}/{doc_type}")
 async def download_latest_document_new_endpoint(
@@ -2500,7 +2500,7 @@ async def download_latest_document_new_endpoint(
                 
                 try:
                     # List all objects in the base path to find version folders
-                    objects = minio.client.list_objects(bucket_name="documents3", prefix=base_path + "/")
+                    objects = minio.client.list_objects(bucket_name, prefix=base_path + "/")
                     version_folders = set()
                     for obj in objects:
                         # Extract version folder from path
@@ -2524,7 +2524,7 @@ async def download_latest_document_new_endpoint(
                         try:
                             path = f"{base_path}/{v}"
                             # List files in this version folder
-                            version_objects = minio.client.list_objects(bucket_name="documents3", prefix=path + "/")
+                            version_objects = minio.client.list_objects(bucket_name, prefix=path + "/")
                             for obj in version_objects:
                                 try:
                                     print(f"Checking path: {obj.object_name}")

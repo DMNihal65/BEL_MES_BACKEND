@@ -14,6 +14,8 @@ from app.models import (
 )
 from app.schemas.planning import CreateOperationRequest, CreateOrderRequest, OrderUpdateRequest, OperationUpdateRequest, \
     SaveDataRequest, ProjectPriorityUpdateRequest, OrderUpdate_Response, OrderUpdate_Request, CreateOrderRequest_new
+from app.models.master_order import OrderCompleted
+
 
 router = APIRouter(prefix="/api/v1/planning", tags=["planning"])
 
@@ -378,6 +380,25 @@ from pony.orm import db_session, select
 # Create a thread pool executor for database operations
 executor = ThreadPoolExecutor(max_workers=10)
 
+def _determine_order_status(order, completed_order_ids, schedule_statuses, current_time_ist):
+    """
+    Helper function to determine order status based on completion and schedule status
+    """
+    # Determine status efficiently
+    if order.id in completed_order_ids:
+        return "completed"
+    else:
+        schedule_key = (order.part_number, order.production_order)
+        if schedule_key in schedule_statuses:
+            schedule_data = schedule_statuses[schedule_key]
+            if schedule_data['status'] == 'active':
+                start_date = schedule_data['start_date']
+                return "in_progress" if (start_date and current_time_ist >= start_date) else "scheduled"
+            else:
+                return "created"
+        else:
+            return "created"
+
 
 @router.get("/all_orders")
 async def get_all_orders():
@@ -385,7 +406,63 @@ async def get_all_orders():
         # Run the database query in a thread pool to avoid blocking
         def get_orders_sync():
             with db_session:
+                # Calculate current time once
+                current_time_ist = datetime.utcnow() + timedelta(hours=5, minutes=30)
+                
+                # Pre-load all completed order IDs for O(1) lookup
+                completed_order_ids = {
+                    record.order_id.id 
+                    for record in OrderCompleted.select() 
+                    if record.is_completed
+                }
+                
+                # Pre-load all schedule statuses for O(1) lookup
+                schedule_statuses = {
+                    (record.part_number, record.production_order): {
+                        'status': record.status,
+                        'start_date': record.start_date
+                    }
+                    for record in PartScheduleStatus.select()
+                }
+                
                 orders = select(o for o in Order)[:]
+                # print(f"DEBUG: Retrieved {len(orders)} orders from database")
+                # print(f"DEBUG: Completed order IDs: {completed_order_ids}")
+                # print(f"DEBUG: Schedule statuses: {len(schedule_statuses)} records")
+                
+                # # Count orders by status in the result
+                # completed_in_result = 0
+                # scheduled_in_result = 0
+                # in_progress_in_result = 0
+                # created_in_result = 0
+                
+                # completed_orders = []
+                # scheduled_orders = []
+                # in_progress_orders = []
+                # created_orders = []
+                
+                # for order in orders:
+                #     status = _determine_order_status(order, completed_order_ids, schedule_statuses, current_time_ist)
+                #     if status == "completed":
+                #         completed_in_result += 1
+                #         completed_orders.append(f"{order.id}({order.production_order})")
+                #     elif status == "scheduled":
+                #         scheduled_in_result += 1
+                #         scheduled_orders.append(f"{order.id}({order.production_order})")
+                #     elif status == "in_progress":
+                #         in_progress_in_result += 1
+                #         in_progress_orders.append(f"{order.id}({order.production_order})")
+                #     elif status == "created":
+                #         created_in_result += 1
+                #         created_orders.append(f"{order.id}({order.production_order})")
+                
+                # print(f"DEBUG: Orders by status in result:")
+                # print(f"  - Completed: {completed_in_result} - {completed_orders}")
+                # print(f"  - Scheduled: {scheduled_in_result} - {scheduled_orders}")
+                # print(f"  - In Progress: {in_progress_in_result} - {in_progress_orders}")
+                # print(f"  - Created: {created_in_result} - {created_orders}")
+                # print(f"  - Total: {completed_in_result + scheduled_in_result + in_progress_in_result + created_in_result}")
+                
                 return [
                     {
                         "id": order.id,
@@ -403,7 +480,10 @@ async def get_all_orders():
                             "name": order.project.name,
                             "priority": order.project.priority,
                             "delivery_date": order.project.delivery_date
-                        } if order.project else None
+                        } if order.project else None,
+                        "status": _determine_order_status(
+                            order, completed_order_ids, schedule_statuses, current_time_ist
+                        )
                     }
                     for order in orders
                 ]
@@ -415,7 +495,6 @@ async def get_all_orders():
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @router.get("/search_order")
 async def search_order(
@@ -1542,3 +1621,5 @@ def update_order(order_id: int, order_update: OrderUpdate_Request):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Depends, Path, Query
+from fastapi import APIRouter, HTTPException, Depends, Path, Query, Body
 from typing import Any, List
 import os
 import subprocess
@@ -10,7 +10,7 @@ from app.models import Operation, Order, User
 from app.schemas.quality import MasterBocCreate, MasterBocResponse, StageInspectionResponse, \
     StageInspectionCreate, QualityInspectionResponse, DetailedQualityInspectionResponse, \
     OrderIPIDResponse, MasterBocIPIDInfo, MeasurementInstrumentsResponse, \
-    ConnectivityCreate, ConnectivityResponse, StageInspectionDetail, FTPResponse, StageInspectionWithUserResponse
+    ConnectivityCreate, ConnectivityResponse, StageInspectionDetail, FTPResponse, StageInspectionWithUserResponse,FTPStatusUpdateRequest
 from app.crud.quality import MasterBocCRUD, StageInspectionCRUD, QualityInspectionCRUD, FTPCRUD
 from app.models.quality import Connectivity, StageInspection
 from app.models.inventoryv1 import InventoryItem
@@ -492,7 +492,6 @@ def get_connectivity_by_instrument(
             detail=f"An error occurred while retrieving connectivity information: {str(e)}"
         )
 
-
 @router.post(
     "/ftp/{order_id}/{ipid}/update",
     response_model=FTPResponse,
@@ -501,16 +500,15 @@ def get_connectivity_by_instrument(
 async def update_ftp_status(
         order_id: int = Path(..., gt=0),
         ipid: str = Path(..., min_length=1),
+        request: FTPStatusUpdateRequest = Body(...),
         current_user=Depends(get_current_user)
 ) -> Any:
     """
     Update the FTP status for a given order_id and IPID.
-
-    This endpoint explicitly sets the FTP status to completed (is_completed=true).
-    FTP status must be completed before adding quantities > 1.
+    The client can send true/false for `is_completed`.
     """
     try:
-        ftp_status = FTPCRUD.update_ftp_status(order_id, ipid)
+        ftp_status = FTPCRUD.update_ftp_status(order_id, ipid, request.is_completed)
         return ftp_status
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -519,6 +517,7 @@ async def update_ftp_status(
             status_code=500,
             detail=f"Error updating FTP status: {str(e)}"
         )
+
 
 
 @router.get(
@@ -656,3 +655,35 @@ def get_stage_inspections_by_filter(
             detail=f"Error retrieving stage inspection data: {str(e)}"
         )
 
+
+# Add this to your router file (quality.py - first document)
+
+@router.delete(
+    "/master-boc/{id}",
+    status_code=204,
+    summary="Delete a Master BOC entry"
+)
+async def delete_master_boc(
+        id: int = Path(..., gt=0, description="Master BOC ID to delete"),
+        current_user=Depends(get_current_user)
+) -> None:
+    """
+    Delete a Master BOC entry by ID
+
+    This will permanently remove the Master BOC record from the database.
+    Use with caution as this action cannot be undone.
+    """
+    try:
+        deleted = MasterBocCRUD.delete_master_boc(id)
+        if not deleted:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Master BOC with ID {id} not found"
+            )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error deleting Master BOC: {str(e)}"
+        )

@@ -693,3 +693,94 @@ def get_production_order_operations_status(work_center_id: int, production_order
         "total_operations_in_work_center": len(operation_statuses),
         "operations": operation_statuses
     }
+
+def format_duration(total_seconds: int) -> str:
+    """Convert seconds into human-readable duration like '2 days 3 hr 25 min'."""
+    days, remainder = divmod(total_seconds, 86400)  # 1 day = 86400 sec
+    hours, remainder = divmod(remainder, 3600)
+    minutes, _ = divmod(remainder, 60)
+
+    parts = []
+    if days:
+        parts.append(f"{days} day{'s' if days > 1 else ''}")
+    if hours:
+        parts.append(f"{hours} hr")
+    if minutes:
+        parts.append(f"{minutes} min")
+    if not parts:
+        parts.append("0 min")
+    return " ".join(parts)
+
+
+
+@router.get("/production-order-report/{production_order}")
+@db_session
+def get_production_order_operations_status(production_order: str):
+    """
+    Get the status of all operations for a specific production order.
+    Shows which operations are ready for logging,
+    including operators, machine make, and total time invested.
+    """
+    order = Order.get(production_order=production_order)
+    if not order:
+        raise HTTPException(status_code=404, detail="Production order not found")
+
+    operations = select(op for op in Operation if op.order == order).order_by(Operation.operation_number)
+    operation_statuses = []
+
+    for op in operations:
+        logs = select(log for log in ProductionLog if log.operation == op)
+
+        total_completed = sum(log.quantity_completed or 0 for log in logs)
+        total_rejected = sum(log.quantity_rejected or 0 for log in logs)
+
+        # Operators involved
+        operators = list({log.operator.username for log in logs if log.operator})
+
+        # Total time invested (in seconds)
+        total_time_seconds = sum(
+            ((log.end_time - log.start_time).total_seconds() if log.start_time and log.end_time else 0)
+            for log in logs
+        )
+
+        # Machine makes used
+        machine_makes = list({
+            Machine.get(id=log.machine_id).make
+            for log in logs
+            if log.machine_id and Machine.get(id=log.machine_id)
+        })
+
+        can_log, validation_reason = validate_operation_sequence(op.id)
+
+        operation_statuses.append({
+            "operation_id": op.id,
+            "operation_number": op.operation_number,
+            "description": op.operation_description,
+            "work_center": op.work_center.work_center_name or op.work_center.code,
+            "work_center_schedulable": op.work_center.is_schedulable,
+            "can_log": can_log,
+            "validation_reason": validation_reason,
+            "completed_quantity": total_completed,
+            "rejected_quantity": total_rejected,
+            "required_quantity": order.launched_quantity,
+            "remaining_quantity": max(0, order.launched_quantity - total_completed),
+            "is_complete": total_completed >= order.launched_quantity,
+            "setup_time": float(op.setup_time),  # Convert Decimal to float
+            "ideal_cycle_time": float(op.ideal_cycle_time),  # Convert Decimal to float
+            "operation_time": float(op.ideal_cycle_time) * order.launched_quantity,  # Total operation time
+            # New fields
+            "operators": operators,
+            "total_time_invested_seconds": total_time_seconds,
+            "total_time_invested_hours": format_duration(int(total_time_seconds)),
+            "machines_used": machine_makes,
+        })
+
+    return {
+        "production_order": order.production_order,
+        "part_number": order.part_number,
+        "priority": order.project.priority,
+        "project": order.project.name,
+        "required_quantity": order.launched_quantity,
+        "sale_order": order.sale_order,
+        "operations": operation_statuses
+    }

@@ -2288,6 +2288,26 @@ async def get_all_machines_status_timeline(
                 "timeline_data": []
             }
 
+            # Helper to split a time range into non-Sunday segments
+            def split_excluding_sundays(range_start: datetime, range_end: datetime):
+                segments = []
+                if not range_start or not range_end or range_start >= range_end:
+                    return segments
+                current = range_start
+                while current < range_end:
+                    day_start = current.replace(hour=0, minute=0, second=0, microsecond=0)
+                    # If current is not at start of day, use current as segment start
+                    segment_start = current
+                    # End of the current day
+                    day_end = day_start.replace(hour=23, minute=59, second=59, microsecond=999999)
+                    segment_end = min(day_end, range_end)
+                    # Include segment only if not Sunday
+                    if segment_start.weekday() != 6:
+                        segments.append((segment_start, segment_end))
+                    # Move to next day
+                    current = segment_end + timedelta(microseconds=1)
+                return segments
+
             # Process each machine's status changes
             for machine in machines:
                 try:
@@ -2301,15 +2321,17 @@ async def get_all_machines_status_timeline(
                     # print(f"Found {len(records)} records for machine {machine.id}")
 
                     if not records:
-                        # Add a default "UNKNOWN" status for machines with no data
-                        response["timeline_data"].append({
-                            "machine_id": machine.id,
-                            "machine_name": f"{machine.work_center.code}-{machine.make}",
-                            "start_time": start_date,
-                            "end_time": end_date,
-                            "status": "UNKNOWN",
-                            "program": None
-                        })
+                        # Add default "UNKNOWN" segments for non-Sunday periods only
+                        unknown_segments = split_excluding_sundays(start_date, end_date)
+                        for seg_start, seg_end in unknown_segments:
+                            response["timeline_data"].append({
+                                "machine_id": machine.id,
+                                "machine_name": f"{machine.work_center.code}-{machine.make}",
+                                "start_time": seg_start,
+                                "end_time": seg_end,
+                                "status": "UNKNOWN",
+                                "program": None
+                            })
                         continue
 
                     current_status = None
@@ -2319,14 +2341,16 @@ async def get_all_machines_status_timeline(
                         if current_status != record.status.status_name:
                             # If there was a previous status, add it to timeline_data
                             if current_status and status_start:
-                                response["timeline_data"].append({
-                                    "machine_id": machine.id,
-                                    "machine_name": f"{machine.work_center.code}-{machine.make}",
-                                    "start_time": status_start,
-                                    "end_time": record.timestamp,
-                                    "status": current_status,
-                                    "program": record.program_number if hasattr(record, 'program_number') else None
-                                })
+                                # Split the period into non-Sunday segments
+                                for seg_start, seg_end in split_excluding_sundays(status_start, record.timestamp):
+                                    response["timeline_data"].append({
+                                        "machine_id": machine.id,
+                                        "machine_name": f"{machine.work_center.code}-{machine.make}",
+                                        "start_time": seg_start,
+                                        "end_time": seg_end,
+                                        "status": current_status,
+                                        "program": record.program_number if hasattr(record, 'program_number') else None
+                                    })
 
                             # Start new status period
                             current_status = record.status.status_name
@@ -2334,14 +2358,15 @@ async def get_all_machines_status_timeline(
 
                         # Handle the last record
                         if i == len(records) - 1:
-                            response["timeline_data"].append({
-                                "machine_id": machine.id,
-                                "machine_name": f"{machine.work_center.code}-{machine.make}",
-                                "start_time": status_start,
-                                "end_time": end_date,
-                                "status": current_status,
-                                "program": record.program_number if hasattr(record, 'program_number') else None
-                            })
+                            for seg_start, seg_end in split_excluding_sundays(status_start, end_date):
+                                response["timeline_data"].append({
+                                    "machine_id": machine.id,
+                                    "machine_name": f"{machine.work_center.code}-{machine.make}",
+                                    "start_time": seg_start,
+                                    "end_time": seg_end,
+                                    "status": current_status,
+                                    "program": record.program_number if hasattr(record, 'program_number') else None
+                                })
 
                 except Exception as machine_error:
                     print(f"Error processing machine {machine.id}: {str(machine_error)}")
