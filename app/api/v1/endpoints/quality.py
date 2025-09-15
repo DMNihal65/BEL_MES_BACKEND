@@ -10,7 +10,8 @@ from app.models import Operation, Order, User
 from app.schemas.quality import MasterBocCreate, MasterBocResponse, StageInspectionResponse, \
     StageInspectionCreate, QualityInspectionResponse, DetailedQualityInspectionResponse, \
     OrderIPIDResponse, MasterBocIPIDInfo, MeasurementInstrumentsResponse, \
-    ConnectivityCreate, ConnectivityResponse, StageInspectionDetail, FTPResponse, StageInspectionWithUserResponse,FTPStatusUpdateRequest
+    ConnectivityCreate, ConnectivityResponse, StageInspectionDetail, FTPResponse, StageInspectionWithUserResponse, \
+    FTPStatusUpdateRequest
 from app.crud.quality import MasterBocCRUD, StageInspectionCRUD, QualityInspectionCRUD, FTPCRUD
 from app.models.quality import Connectivity, StageInspection
 from app.models.inventoryv1 import InventoryItem
@@ -504,11 +505,16 @@ async def update_ftp_status(
         current_user=Depends(get_current_user)
 ) -> Any:
     """
-    Update the FTP status for a given order_id and IPID.
-    The client can send true/false for `is_completed`.
+    Update the FTP status and completion status for a given order_id and IPID.
+    The client can send true/false for `is_completed` and a string for `status`.
     """
     try:
-        ftp_status = FTPCRUD.update_ftp_status(order_id, ipid, request.is_completed)
+        ftp_status = FTPCRUD.update_ftp_status(
+            order_id,
+            ipid,
+            request.is_completed,
+            request.status
+        )
         return ftp_status
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -517,8 +523,6 @@ async def update_ftp_status(
             status_code=500,
             detail=f"Error updating FTP status: {str(e)}"
         )
-
-
 
 @router.get(
     "/ftp/{order_id}/{ipid}",

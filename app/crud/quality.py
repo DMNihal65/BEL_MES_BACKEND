@@ -314,7 +314,8 @@ class StageInspectionCRUD:
                     ftp = FTP(
                         order_id=data.order_id,
                         ipid=master_boc.ipid,
-                        is_completed=False  # Initially set to false
+                        is_completed=False,  # Initially set to false
+                        Status="NA"  # Initially set as Not Approved
                     )
                 # Do not overwrite existing FTP entries
 
@@ -454,10 +455,10 @@ class QualityInspectionCRUD:
 class FTPCRUD:
     @staticmethod
     @db_session
-    def update_ftp_status(order_id: int, ipid: str, is_completed: bool) -> Optional[FTPResponse]:
+    def update_ftp_status(order_id: int, ipid: str, is_completed: bool, status: str) -> Optional[FTPResponse]:
         """
         Update or create FTP status for a given order_id and ipid.
-        Sets is_completed based on user input.
+        Sets is_completed and status based on user input.
         """
         try:
             order = Order.get(id=order_id)
@@ -475,10 +476,12 @@ class FTPCRUD:
                 ftp = FTP(
                     order_id=order_id,
                     ipid=ipid,
-                    is_completed=is_completed
+                    is_completed=is_completed,
+                    Status=status  # Note: using Status with capital S as per your model
                 )
             else:
                 ftp.is_completed = is_completed
+                ftp.Status = status  # Note: using Status with capital S as per your model
                 ftp.updated_at = datetime.now()
 
             commit()
@@ -486,7 +489,7 @@ class FTPCRUD:
 
         except Exception as e:
             raise ValueError(f"Failed to update FTP status: {str(e)}")
-            
+
     @staticmethod
     @db_session
     def get_ftp_status(order_id: int, ipid: str) -> Optional[FTPResponse]:

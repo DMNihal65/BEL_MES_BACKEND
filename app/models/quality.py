@@ -110,6 +110,7 @@ class FTP(db.Entity):
     order_id = Required(int, size=64)  # Added size specification
     ipid = Required(str, max_len=255)  # Added max length
     is_completed = Required(bool, default=False)
+    Status=Required(str, max_len=255)
     created_at = Required(datetime, default=lambda: datetime.now())
     updated_at = Required(datetime, default=lambda: datetime.now())
 
