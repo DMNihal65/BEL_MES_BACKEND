@@ -19,11 +19,11 @@ class PartScheduleStatus(db.Entity):
     part_number = Required(str)
     production_order = Required(str, unique=True)  # Add this line
     status = Required(str, default='inactive')  # 'active' or 'inactive'
+    start_date = Optional(datetime)  # New column for start date
     created_at = Required(datetime, default=datetime.utcnow)
     updated_at = Required(datetime, default=datetime.utcnow)
 
-    def before_update(self):
-        self.updated_at = datetime.utcnow()
+    
 
 class PlannedScheduleItem(db.Entity):
     """Stores the actual schedule results"""

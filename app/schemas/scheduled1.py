@@ -8,6 +8,10 @@ from app.schemas.operations import WorkCenterMachine
 class PartStatusUpdate(BaseModel):
     status: str
 
+class PartScheduleStartDateResponse(BaseModel):
+    start_date: Optional[datetime]
+
+
 class ScheduledOperation(BaseModel):
     component: str
     part_description: str  # Added part description field

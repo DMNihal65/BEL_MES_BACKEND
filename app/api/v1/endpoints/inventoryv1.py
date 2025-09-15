@@ -642,9 +642,6 @@ def create_return_request(
     Create a new inventory return request.
     """
     try:
-        # Get current time in UTC
-        current_time = datetime.now(timezone.utc)
-
         # Get the inventory item within the current session
         item = InventoryItem.get(id=return_request.inventory_item_id)
         if not item:
@@ -691,7 +688,7 @@ def create_return_request(
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
 
-        # Create new return request with explicit timestamps
+        # Create new return request - let Pony ORM handle timestamps automatically
         new_return_request = InventoryReturnRequest(
             inventory_item=item,
             original_request=original_request,
@@ -700,8 +697,6 @@ def create_return_request(
             return_reason=return_request.return_reason,
             status="Pending",
             remarks=return_request.remarks,
-            created_at=current_time,
-            updated_at=current_time,
             approved_by=None,
             approved_at=None,
             actual_return_date=None

@@ -114,7 +114,36 @@ class MasterBocCRUD:
         except Exception as e:
             raise ValueError(f"Failed to get Master BOCs: {str(e)}")
 
+    @staticmethod
+    @db_session
+    def delete_master_boc(id: int) -> bool:
+        """
+        Delete a Master BOC entry by ID
 
+        Args:
+            id: The ID of the Master BOC to delete
+
+        Returns:
+            bool: True if deleted successfully, False if not found
+
+        Raises:
+            ValueError: If deletion fails due to constraints or other issues
+        """
+        try:
+            master_boc = MasterBoc.get(id=id)
+            if not master_boc:
+                return False
+
+            # Check if there are any related stage inspections that might depend on this
+            # You might want to add validation here based on your business logic
+
+            # Delete the record
+            master_boc.delete()
+            commit()
+            return True
+
+        except Exception as e:
+            raise ValueError(f"Failed to delete Master BOC with ID {id}: {str(e)}")
 
     @staticmethod
     @db_session
@@ -140,6 +169,7 @@ class MasterBocCRUD:
         operation_groups = []
         for boc in master_bocs:
             ipid_info = IPIDInfo(
+                id=boc.id,  # <-- include ID here
                 zone=boc.zone,
                 dimension_type=boc.dimension_type,
                 nominal=boc.nominal,
@@ -421,29 +451,23 @@ class QualityInspectionCRUD:
             inspection_data=inspection_groups  # Only operations with inspections
         )
 
-
 class FTPCRUD:
     @staticmethod
     @db_session
-    def update_ftp_status(order_id: int, ipid: str) -> Optional[FTPResponse]:
+    def update_ftp_status(order_id: int, ipid: str, is_completed: bool) -> Optional[FTPResponse]:
         """
         Update or create FTP status for a given order_id and ipid.
-        Sets is_completed to True for all FTP entries.
+        Sets is_completed based on user input.
         """
         try:
-            # Get the order first
             order = Order.get(id=order_id)
             if not order:
                 raise ValueError(f"Order with ID {order_id} not found")
 
-            # Get the master_boc entry for this ipid using the part number
             part_number = order.part_number
             master_boc = select(m for m in MasterBoc if m.part_number == part_number and m.ipid == ipid).first()
             if not master_boc:
                 raise ValueError(f"No master_boc found for order_id {order_id} and ipid {ipid}")
-
-            # Explicitly set is_completed to True when updating FTP status
-            is_completed = True
 
             # Get or create FTP entry
             ftp = FTP.get(order_id=order_id, ipid=ipid)
@@ -462,7 +486,7 @@ class FTPCRUD:
 
         except Exception as e:
             raise ValueError(f"Failed to update FTP status: {str(e)}")
-
+            
     @staticmethod
     @db_session
     def get_ftp_status(order_id: int, ipid: str) -> Optional[FTPResponse]:
