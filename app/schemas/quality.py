@@ -227,11 +227,6 @@ class OperationIPIDGroup(BaseModel):
     ipid: str
     details: IPIDInfo
 
-
-class FTPStatusUpdateRequest(BaseModel):
-    is_completed: bool
-
-
 class OrderIPIDResponse(BaseModel):
     """Response schema for Order IPID information"""
     order_id: int
@@ -266,6 +261,7 @@ class FTPBase(BaseModel):
     order_id: int = Field(..., description="Order ID", gt=0)
     ipid: str = Field(..., description="IPID from master_boc", min_length=1)
     is_completed: bool = Field(False, description="Whether all stage inspections for this IPID are completed")
+    Status: str
 
 class FTPCreate(FTPBase):
     pass
@@ -277,6 +273,10 @@ class FTPResponse(FTPBase):
 
     class Config:
         from_attributes = True
+
+class FTPStatusUpdateRequest(BaseModel):
+    is_completed: bool
+    status: str
 
 class StageInspectionWithUserResponse(StageInspectionBase):
     """Response schema for Stage Inspection with User details"""
