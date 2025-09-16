@@ -1769,13 +1769,13 @@ def get_machine_utilization(
 
     # print(f"\n=== MACHINE UTILIZATION DEBUG (Month: {month}/{year}) ===")
 
-    # Calculate working days in the month (excluding weekends)
+    # Calculate working days in the month (excluding Sundays only)
     _, days_in_month = calendar.monthrange(year, month)
     working_days = 0
     for day in range(1, days_in_month + 1):
         weekday = datetime(year, month, day).weekday()
-        # 0-4 are Monday to Friday (working days)
-        if weekday < 5:
+        # 0-5 are Monday to Saturday (working days), 6 is Sunday
+        if weekday < 6:
             working_days += 1
 
     # print(f"Working days in {month}/{year}: {working_days}")
@@ -1788,7 +1788,7 @@ def get_machine_utilization(
     # Monthly calculation based on working days only
     available_hours = working_days * daily_working_hours * efficiency_factor
     # print(
-    #     f"Base available hours: {working_days} days Ãƒâ€” {daily_working_hours} hours Ãƒâ€” {efficiency_factor} = {available_hours}")
+    #     f"Base available hours: {working_days} days Ãƒâ€" {daily_working_hours} hours Ãƒâ€" {efficiency_factor} = {available_hours}")
 
     # Set date range for the month
     start_date = datetime(year, month, 1)
@@ -1814,8 +1814,10 @@ def get_machine_utilization(
     # Pre-fetch all machine status records for the date range to avoid multiple database queries
     machine_statuses = select(ms for ms in MachineStatus
                               if ms.available_from is not None
-                              and ((
-                ms.available_from <= end_date and (ms.available_to is None or ms.available_to >= start_date))))[:]
+                              and (
+                                  ms.available_from < end_date and 
+                                  (ms.available_to is None or ms.available_to > start_date)
+                              ))[:]
 
     # print(f"Found {len(machine_statuses)} machine status records in date range")
 
@@ -1934,28 +1936,52 @@ def get_machine_utilization(
                     break
 
             if current_status and current_status.status.id == 2:  # Machine is OFF
-                print(f"Machine {machine.id} is OFF at {current_time}")
-                print(f"Status record: from={current_status.available_from}, to={current_status.available_to}")
+                # print(f"Machine {machine.id} is OFF at {current_time}")
+                # print(f"Status record: from={current_status.available_from}, to={current_status.available_to}")
 
                 # Machine is unavailable
                 if current_status.available_to:
-                    # Machine will be available again
-                    downtime_interval_end = current_status.available_to
-                    hours_to_add = overlap_with_shift(current_time, downtime_interval_end, 6, 22)
-                    downtime_hours += hours_to_add
-                    print(f"Will be available again at: {current_status.available_to}")
-                    print(f"Downtime hours added: {hours_to_add}")
-                    current_time = downtime_interval_end
+                    # Machine will be available again - check if downtime overlaps with user's range
+                    actual_downtime_start = current_status.available_from
+                    actual_downtime_end = current_status.available_to
+                    
+                    # Only calculate downtime if it overlaps with the user's date range
+                    if actual_downtime_end > start_date and actual_downtime_start < end_date:
+                        # Calculate the overlap between actual downtime and user's range
+                        downtime_start = max(actual_downtime_start, start_date)
+                        downtime_interval_end = min(actual_downtime_end, end_date)
+                        hours_to_add = overlap_with_shift(downtime_start, downtime_interval_end, 6, 22)
+                        downtime_hours += hours_to_add
+                        # print(f"Actual downtime: {actual_downtime_start} to {actual_downtime_end}")
+                        # print(f"Overlap with user range: {downtime_start} to {downtime_interval_end}")
+                        # print(f"Will be available again at: {current_status.available_to}")
+                        # print(f"Downtime hours added: {hours_to_add}")
+                    else:
+                        # print(f"Downtime period {actual_downtime_start} to {actual_downtime_end} does not overlap with user range {start_date} to {end_date}")
+                        pass
+
+                    current_time = min(actual_downtime_end, end_date)
                     # Move to next status if this one ends
                     if current_status.available_to <= current_time:
                         status_index += 1
                         current_status = None
                 else:
-                    # Machine is permanently unavailable
-                    downtime_interval_end = end_date
-                    hours_to_add = overlap_with_shift(current_time, downtime_interval_end, 6, 22)
-                    downtime_hours += hours_to_add
-                    print(f"Machine permanently unavailable, adding {hours_to_add} hours")
+                    # Machine is permanently unavailable - check if downtime overlaps with user's range
+                    actual_downtime_start = current_status.available_from
+                    
+                    # Only calculate downtime if it overlaps with the user's date range
+                    if actual_downtime_start < end_date:
+                        # Calculate the overlap between actual downtime and user's range
+                        downtime_start = max(actual_downtime_start, start_date)
+                        downtime_interval_end = end_date
+                        hours_to_add = overlap_with_shift(downtime_start, downtime_interval_end, 6, 22)
+                        downtime_hours += hours_to_add
+                        # print(f"Actual downtime: {actual_downtime_start} to permanent")
+                        # print(f"Overlap with user range: {downtime_start} to {downtime_interval_end}")
+                        # print(f"Machine permanently unavailable, adding {hours_to_add} hours")
+                    else:
+                        # print(f"Downtime period {actual_downtime_start} to permanent does not overlap with user range {start_date} to {end_date}")
+                        pass
                     break
             else:
                 # Machine is available, move to next hour
@@ -1983,7 +2009,7 @@ def get_machine_utilization(
             utilization_percentage=round(utilization_percentage, 2)
         ))
 
-    print(f"\n=== END MACHINE UTILIZATION DEBUG ===")
+    # print(f"\n=== END MACHINE UTILIZATION DEBUG ===")
     return result
 
 
@@ -2005,26 +2031,27 @@ def get_machine_utilization_by_range(
     if start_date > end_date:
         raise HTTPException(status_code=400, detail="End date must be after start date")
 
-    print(f"\n=== MACHINE UTILIZATION RANGE DEBUG ===")
-    print(f"Date range: {start_date} to {end_date}")
+    # print(f"\n=== MACHINE UTILIZATION RANGE DEBUG ===")
+    # print(f"Date range: {start_date} to {end_date}")
 
-    # Calculate working days in the range (excluding weekends) - optimized
+    # Calculate working days in the range (excluding Sundays only) - optimized
     working_days = 0
     current_date = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
-    end_day = end_date.replace(hour=23, minute=59, second=0, microsecond=0)
-
+    # Treat end_date as inclusive by using an exclusive upper bound at next midnight
+    range_end = end_date.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+ 
     # Optimize: Calculate working days more efficiently
-    days_diff = (end_day - current_date).days + 1
+    days_diff = (range_end - current_date).days
     if days_diff > 0:
         # Calculate full weeks
         full_weeks = days_diff // 7
-        working_days = full_weeks * 5
+        working_days = full_weeks * 6  # 6 working days per week (Monday to Saturday)
 
         # Calculate remaining days
         remaining_days = days_diff % 7
         for i in range(remaining_days):
             weekday = (current_date + timedelta(days=i)).weekday()
-            if weekday < 5:  # Monday to Friday
+            if weekday < 6:  # Monday to Saturday
                 working_days += 1
 
     # print(f"Working days in range: {working_days}")
@@ -2037,7 +2064,7 @@ def get_machine_utilization_by_range(
     # Base available hours for the date range based on working days
     base_available_hours = working_days * daily_working_hours * efficiency_factor
     # print(
-    #     f"Base available hours: {working_days} days Ãƒâ€” {daily_working_hours} hours Ãƒâ€” {efficiency_factor} = {base_available_hours}")
+    #     f"Base available hours: {working_days} days Ãƒâ€" {daily_working_hours} hours Ãƒâ€" {efficiency_factor} = {base_available_hours}")
 
     # Get all active production orders first
     active_production_orders = select(ps.production_order for ps in PartScheduleStatus if ps.status == 'active')[:]
@@ -2054,8 +2081,10 @@ def get_machine_utilization_by_range(
     # Pre-fetch all machine status records for the date range to avoid multiple database queries
     machine_statuses = select(ms for ms in MachineStatus
                               if ms.available_from is not None
-                              and ((
-                ms.available_from <= end_date and (ms.available_to is None or ms.available_to >= start_date))))[:]
+                              and (
+                                  ms.available_from < range_end and 
+                                  (ms.available_to is None or ms.available_to > start_date)
+                              ))[:]
 
     # print(f"Found {len(machine_statuses)} machine status records in date range")
 
@@ -2073,9 +2102,9 @@ def get_machine_utilization_by_range(
     # Pre-fetch all schedule items for the date range to avoid multiple database queries
     all_schedule_items = select(p for p in PlannedScheduleItem
                                 if p.order.production_order in active_production_orders
-                                and ((p.initial_start_time >= start_date and p.initial_start_time < end_date) or
-                                     (p.initial_end_time > start_date and p.initial_end_time <= end_date) or
-                                     (p.initial_start_time <= start_date and p.initial_end_time >= end_date)))[:]
+                                and ((p.initial_start_time >= start_date and p.initial_start_time < range_end) or
+                                     (p.initial_end_time > start_date and p.initial_end_time <= range_end) or
+                                     (p.initial_start_time <= start_date and p.initial_end_time >= range_end)))[:]
 
     # print(f"Found {len(all_schedule_items)} schedule items in date range")
 
@@ -2107,7 +2136,7 @@ def get_machine_utilization_by_range(
         current_status = None
         status_index = 0
 
-        while current_time < end_date:
+        while current_time < range_end:
             # Early exit: If no more statuses to check and machine is available
             if status_index >= len(machine_statuses_list) and not current_status:
                 break
@@ -2130,23 +2159,48 @@ def get_machine_utilization_by_range(
 
                 # Machine is unavailable
                 if current_status.available_to:
-                    # Machine will be available again
-                    downtime_interval_end = current_status.available_to
-                    hours_to_add = overlap_with_shift(current_time, downtime_interval_end, 6, 22)
-                    downtime_hours += hours_to_add
-                    # print(f"Will be available again at: {current_status.available_to}")
-                    # print(f"Downtime hours added (with efficiency): {hours_to_add}")
-                    current_time = downtime_interval_end
+                    # Machine will be available again - check if downtime overlaps with user's range
+                    actual_downtime_start = current_status.available_from
+                    actual_downtime_end = current_status.available_to
+                    
+                    # Only calculate downtime if it overlaps with the user's date range
+                    if actual_downtime_end > start_date and actual_downtime_start < range_end:
+                        # Calculate the overlap between actual downtime and user's range
+                        downtime_start = max(actual_downtime_start, start_date)
+                        downtime_interval_end = min(actual_downtime_end, range_end)
+                        hours_to_add = overlap_with_shift(downtime_start, downtime_interval_end, 6, 22)
+                        downtime_hours += hours_to_add
+                        # print(f"Actual downtime: {actual_downtime_start} to {actual_downtime_end}")
+                        # print(f"Overlap with user range: {downtime_start} to {downtime_interval_end}")
+                        # print(f"Will be available again at: {current_status.available_to}")
+                        # print(f"Downtime hours added (with efficiency): {hours_to_add}")
+                    else:
+                        # print(f"Downtime period {actual_downtime_start} to {actual_downtime_end} does not overlap with user range {start_date} to {range_end}")
+                        pass
+
+                    current_time = min(actual_downtime_end, range_end)
                     # Move to next status if this one ends
                     if current_status.available_to <= current_time:
                         status_index += 1
                         current_status = None
                 else:
-                    # Machine is permanently unavailable
-                    downtime_interval_end = end_date
-                    hours_to_add = overlap_with_shift(current_time, downtime_interval_end, 6, 22)
-                    downtime_hours += hours_to_add
-                    # print(f"Machine permanently unavailable, adding {hours_to_add} hours (with efficiency)")
+                    # Machine is permanently unavailable - check if downtime overlaps with user's range
+                    actual_downtime_start = current_status.available_from
+                    
+                    # Only calculate downtime if it overlaps with the user's date range
+                    if actual_downtime_start < range_end:
+                        # Calculate the overlap between actual downtime and user's range
+                        downtime_start = max(actual_downtime_start, start_date)
+                        downtime_interval_end = range_end
+                        hours_to_add = overlap_with_shift(downtime_start, downtime_interval_end, 6, 22)
+                        downtime_hours += hours_to_add
+                        # print(f"Actual downtime: {actual_downtime_start} to {actual_downtime_end}")
+                        # print(f"Overlap with user range: {downtime_start} to {downtime_interval_end}")
+                        # print(f"Will be available again at: {current_status.available_to}")
+                        # print(f"Downtime hours added (with efficiency): {hours_to_add}")
+                    else:
+                        # print(f"Downtime period {actual_downtime_start} to {actual_downtime_end} does not overlap with user range {start_date} to {range_end}")
+                        pass
                     break
             else:
                 # Machine is available, move to next hour
@@ -2165,7 +2219,7 @@ def get_machine_utilization_by_range(
         for item in schedule_items:
             # Handle cases where schedule item spans across the date range boundaries
             actual_start = max(item.initial_start_time, start_date)
-            actual_end = min(item.initial_end_time, end_date)
+            actual_end = min(item.initial_end_time, range_end)
 
             # Process each day within the schedule item separately
             current_day = actual_start.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -2203,11 +2257,19 @@ def get_machine_utilization_by_range(
 
         # Adjust for downtime and calculate final metrics
         available_hours = max(0, base_available_hours - downtime_hours)
-        utilized_hours = min(utilized_hours, available_hours)
-        remaining_hours = max(0, available_hours - utilized_hours)
-        utilization_percentage = (utilized_hours / available_hours * 100) if available_hours > 0 else 0
+        
+        # If downtime exceeds available hours for the given range, return 0
+        if base_available_hours < downtime_hours:
+            available_hours = 0
+            utilized_hours = 0
+            remaining_hours = 0
+            utilization_percentage = 0
+        else:
+            utilized_hours = min(utilized_hours, available_hours)
+            remaining_hours = max(0, available_hours - utilized_hours)
+            utilization_percentage = (utilized_hours / available_hours * 100) if available_hours > 0 else 0
         # print(
-        #     f"Final metrics for Machine {machine.id}: {downtime_hours} {available_hours} {utilized_hours} {remaining_hours}")
+        #      f"Final metrics for Machine {machine.id}: {downtime_hours} {available_hours} {utilized_hours} {remaining_hours}")
 
         # Get the work center name from the related work center
         work_center_name = machine.work_center.code if machine.work_center else None
@@ -2227,7 +2289,6 @@ def get_machine_utilization_by_range(
 
     # print(f"\n=== END MACHINE UTILIZATION RANGE DEBUG ===")
     return result
-
 
 @router.post("/set-order-completion/{order_id}", response_model=OrderCompletionResponse)
 async def set_order_completion(order_id: int, request: OrderCompletionRequest):
