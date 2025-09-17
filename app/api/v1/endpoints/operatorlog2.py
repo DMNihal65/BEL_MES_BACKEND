@@ -937,3 +937,101 @@ def get_production_order_machines_status(production_order: str):
 
 
 
+
+@router.get("/production-order-daily-report/{production_order}")
+@db_session
+def get_production_order_daily_report(production_order: str):
+    """
+    Get daily report for a specific production order across all available dates.
+    Aggregates production logs by operation and date based on start_time.
+    Includes summed quantities, total time invested, unique machines, and unique operators.
+    """
+    order = Order.get(production_order=production_order)
+    if not order:
+        raise HTTPException(status_code=404, detail="Production order not found")
+
+    # Fetch all logs for the production order
+    logs = select(
+        log for log in ProductionLog
+        if log.operation.order == order
+        and log.start_time is not None
+    ).order_by(lambda log: log.start_time)
+
+    if not logs.exists():
+        return {
+            "production_order": production_order,
+            "part_number": order.part_number,
+            "part_description": order.part_description,
+            "daily_reports": []
+        }
+
+    # Aggregate by date and operation
+    daily_data = {}
+
+    for log in logs:
+        # Extract date from start_time
+        date_str = log.start_time.strftime("%Y-%m-%d")
+        
+        if date_str not in daily_data:
+            daily_data[date_str] = {
+                "date": date_str,
+                "operations": {}
+            }
+
+        op_number = log.operation.operation_number
+        if op_number not in daily_data[date_str]["operations"]:
+            daily_data[date_str]["operations"][op_number] = {
+                "operation_number": op_number,
+                "accepted_quantity": 0,
+                "rejected_quantity": 0,
+                "total_time_seconds": 0,
+                "machines": set(),
+                "operators": set()
+            }
+
+        entry = daily_data[date_str]["operations"][op_number]
+        entry["accepted_quantity"] += log.quantity_completed or 0
+        entry["rejected_quantity"] += log.quantity_rejected or 0
+
+        # Calculate duration
+        if log.start_time and log.end_time:
+            duration_seconds = (log.end_time - log.start_time).total_seconds()
+            entry["total_time_seconds"] += duration_seconds
+
+        # Machine name
+        if log.machine_id:
+            machine = Machine.get(id=log.machine_id)
+            if machine and machine.make:
+                entry["machines"].add(machine.make)
+
+        # Operator name
+        if log.operator and log.operator.username:
+            entry["operators"].add(log.operator.username)
+
+    # Convert to final response format
+    daily_reports = []
+    for date_str, data in sorted(daily_data.items()):  # Sort by date
+        operations_list = []
+        for op_data in sorted(data["operations"].values(), key=lambda x: x["operation_number"]):  # Sort by operation_number
+            operations_list.append({
+                "operation_number": op_data["operation_number"],
+                "accepted_quantity": op_data["accepted_quantity"],
+                "rejected_quantity": op_data["rejected_quantity"],
+                "total_hours": format_duration(int(op_data["total_time_seconds"])),
+                "machines": list(op_data["machines"]),
+                "operators": list(op_data["operators"])
+            })
+
+        daily_reports.append({
+            "date": date_str,
+            "operations": operations_list
+        })
+
+    return {
+        "production_order": production_order,
+        "part_number": order.part_number,
+        "part_description": order.part_description,
+        "daily_reports": daily_reports
+    }
+
+

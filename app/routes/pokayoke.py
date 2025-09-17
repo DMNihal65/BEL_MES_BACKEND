@@ -76,6 +76,30 @@ def get_checklist(checklist_id: int):
     
     return checklist.to_dict()
 
+@router.put("/checklists/{checklist_id}/deactivate", response_model=dict)
+@db_session
+def deactivate_checklist(checklist_id: int, current_user=Depends(get_current_user)):
+    """Deactivate a PokaYoke checklist template"""
+    checklist = PokaYokeChecklist.get(id=checklist_id)
+    if not checklist:
+        raise HTTPException(status_code=404, detail="Checklist not found")
+    
+    if not checklist.is_active:
+        raise HTTPException(status_code=400, detail="Checklist is already deactivated")
+    
+    # Deactivate the checklist
+    checklist.is_active = False
+    
+    # Also deactivate all active machine assignments for this checklist
+    assignments = select(a for a in PokaYokeChecklistMachineAssignment 
+                        if a.checklist.id == checklist_id and a.is_active)
+    for assignment in assignments:
+        assignment.is_active = False
+    
+    commit()
+    
+    return {"message": "Checklist deactivated successfully", "checklist_id": checklist_id}
+
 @router.post("/checklists/items/", response_model=dict)
 @db_session
 def add_checklist_item(item: ChecklistItemCreate, current_user=Depends(get_current_user)):
@@ -140,6 +164,51 @@ def get_machine_checklists(machine_id: int, active_only: bool = True):
                            if a.machine_id == machine_id)
     
     return [a.to_dict() for a in assignments]
+
+@router.put("/assignments/{assignment_id}/deactivate", response_model=dict)
+@db_session
+def deactivate_machine_assignment(assignment_id: int, current_user=Depends(get_current_user)):
+    """Deactivate a specific checklist assignment for a machine"""
+    assignment = PokaYokeChecklistMachineAssignment.get(id=assignment_id)
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+    
+    if not assignment.is_active:
+        raise HTTPException(status_code=400, detail="Assignment is already deactivated")
+    
+    # Deactivate the assignment
+    assignment.is_active = False
+    commit()
+    
+    return {
+        "message": "Machine assignment deactivated successfully", 
+        "assignment_id": assignment_id,
+        "machine_id": assignment.machine_id,
+        "checklist_id": assignment.checklist.id
+    }
+
+@router.put("/assignments/machine/{machine_id}/checklist/{checklist_id}/deactivate", response_model=dict)
+@db_session
+def deactivate_machine_checklist_assignment(machine_id: int, checklist_id: int, current_user=Depends(get_current_user)):
+    """Deactivate checklist assignment for a particular machine and checklist combination"""
+    assignment = select(a for a in PokaYokeChecklistMachineAssignment 
+                       if a.machine_id == machine_id 
+                       and a.checklist.id == checklist_id 
+                       and a.is_active).first()
+    
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Active assignment not found for this machine and checklist combination")
+    
+    # Deactivate the assignment
+    assignment.is_active = False
+    commit()
+    
+    return {
+        "message": "Machine checklist assignment deactivated successfully", 
+        "assignment_id": assignment.id,
+        "machine_id": machine_id,
+        "checklist_id": checklist_id
+    }
 
 # Operator Checklist Completion
 

@@ -74,6 +74,7 @@ def overlap_with_shift(downtime_start: datetime, downtime_end: datetime, shift_s
     return total_overlap
 
 
+
 @router.post("/set-part-status/{production_order}")
 async def set_part_status(production_order: str, status_update: PartStatusUpdate = None, status: str = None):
     """
@@ -132,6 +133,8 @@ async def set_part_status(production_order: str, status_update: PartStatusUpdate
 
                 # If creating with inactive status, delete corresponding PDC records
                 if final_status == 'inactive':
+                    # Ensure start_date is cleared when made inactive
+                    status_record.start_date = None
                     try:
                         delete_pdc_by_production_order(production_order)
                     except Exception as pdc_error:
@@ -147,6 +150,8 @@ async def set_part_status(production_order: str, status_update: PartStatusUpdate
 
                 # If status is being set to inactive, delete corresponding PDC records
                 if final_status == 'inactive':
+                    # Ensure start_date is cleared when made inactive
+                    status_record.start_date = None
                     try:
                         delete_pdc_by_production_order(production_order)
                     except Exception as pdc_error:
@@ -1753,7 +1758,7 @@ def get_machine_utilization(
     Get machine utilization metrics.
 
     Calculates:
-    - Available hours: working hours (8) * working days in month * 0.85 (efficiency)
+    - Available hours: working hours (16) * working days in month * 0.85 (efficiency)
     - Utilized hours: Sum of scheduled time from planned schedule items for active production orders, capped at available hours
     - Remaining hours: Available - Utilized
     """
@@ -1989,10 +1994,12 @@ def get_machine_utilization(
 
         # print(f"Machine {machine.id} total downtime hours: {downtime_hours}")
 
-        # Subtract downtime hours from available, utilized, and remaining hours
-        available_hours = max(0, available_hours - downtime_hours)
+        # Subtract efficiency-adjusted downtime hours from available, then recalc metrics
+        adjusted_downtime_hours = downtime_hours * efficiency_factor
+        available_hours = max(0, available_hours - adjusted_downtime_hours)
         utilized_hours = min(utilized_hours, available_hours)
         remaining_hours = max(0, available_hours - utilized_hours)
+        utilization_percentage = (utilized_hours / available_hours * 100) if available_hours > 0 else 0
         # print(
             # f"Final metrics for Machine {machine.id}: {downtime_hours} {available_hours} {utilized_hours} {remaining_hours}")
 
@@ -2255,11 +2262,12 @@ def get_machine_utilization_by_range(
 
         # print(f"Machine {machine.id} utilized hours: {utilized_hours}")
 
-        # Adjust for downtime and calculate final metrics
-        available_hours = max(0, base_available_hours - downtime_hours)
+        # Adjust for downtime (efficiency-adjusted) and calculate final metrics
+        adjusted_downtime_hours = downtime_hours * efficiency_factor
+        available_hours = max(0, base_available_hours - adjusted_downtime_hours)
         
-        # If downtime exceeds available hours for the given range, return 0
-        if base_available_hours < downtime_hours:
+        # If adjusted downtime exceeds available hours for the given range, return 0
+        if base_available_hours < adjusted_downtime_hours:
             available_hours = 0
             utilized_hours = 0
             remaining_hours = 0
