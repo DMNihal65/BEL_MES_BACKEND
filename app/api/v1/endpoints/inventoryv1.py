@@ -1529,7 +1529,8 @@ def delete_subcategory(subcategory_id: int):
 @router.get("/items/", response_model=List[InventoryItemResponse])
 @db_session
 def get_all_items():
-    items = select(i for i in InventoryItem)[:]
+    # Sort by id in ascending order
+    items = select(i for i in InventoryItem).order_by(lambda i: i.id)[:]
     response_data = []
     for item in items:
         response_data.append({

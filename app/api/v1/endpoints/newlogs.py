@@ -1,12 +1,12 @@
 from fastapi import APIRouter, HTTPException, Query, logger, Depends
-from pony.orm import db_session, select, desc, get_current_user
+from pony.orm import db_session, select, desc, get_current_user, flush
 from datetime import datetime, date, timedelta
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 
 from app.models import User
 from app.models.inventoryv1 import InventoryItem, CalibrationSchedule
-from app.models.logs import MachineStatusLog, MachineCalibrationLog, InstrumentCalibrationLog, RawMaterialStatusLog
+from app.models.logs import MachineStatusLog, MachineCalibrationLog, InstrumentCalibrationLog, RawMaterialStatusLog, AssetLog
 from app.schemas.comp_maintainance import RawMaterialNotificationsResponse, RawMaterialNotification, \
     MachineNotification, MachineNotificationsResponse
 
@@ -521,3 +521,86 @@ async def send_notification(prefix: str, data: dict):
     print(f"Sending notification with prefix: {prefix}")
     print(f"Notification data: {data}")
     # Your notification sending logic here
+
+
+# -------------------- Asset Logs --------------------
+
+class AssetLogCreate(BaseModel):
+    machine_name: str
+    from_time: datetime
+    to_time: datetime
+    status: str
+    remarks: Optional[str] = None
+
+
+class AssetLogResponse(BaseModel):
+    id: int
+    machine_name: str
+    from_time: datetime
+    to_time: datetime
+    status: str
+    remarks: Optional[str] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+@router.post("/asset-logs", response_model=AssetLogResponse)
+def create_asset_log(payload: AssetLogCreate, current_user=Depends(get_current_user)):
+    try:
+        with db_session:
+            log = AssetLog(
+                machine_name=payload.machine_name,
+                from_time=payload.from_time,
+                to_time=payload.to_time,
+                status=payload.status,
+                remarks=payload.remarks,
+            )
+            flush()  # Ensure ID is generated before returning
+            return log.to_dict()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error creating asset log: {str(e)}")
+
+
+@router.get("/asset-logs", response_model=List[AssetLogResponse])
+def list_asset_logs(
+    machine_name: Optional[str] = None,
+    start: Optional[datetime] = None,
+    end: Optional[datetime] = None,
+    current_user=Depends(get_current_user),
+):
+    try:
+        with db_session:
+            query = select(l for l in AssetLog)
+
+            if machine_name:
+                name_lower = machine_name.lower()
+                query = query.filter(lambda l: name_lower in l.machine_name.lower())
+
+            if start is not None:
+                query = query.filter(lambda l: l.from_time >= start)
+
+            if end is not None:
+                query = query.filter(lambda l: l.to_time <= end)
+
+            query = query.order_by(lambda l: desc(l.created_at))
+
+            return [AssetLogResponse(**l.to_dict()) for l in query]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching asset logs: {str(e)}")
+
+
+@router.delete("/asset-logs/{log_id}")
+def delete_asset_log(log_id: int, current_user=Depends(get_current_user)):
+    try:
+        with db_session:
+            log = AssetLog.get(id=log_id)
+            if not log:
+                raise HTTPException(status_code=404, detail="Asset log not found")
+            log.delete()
+            return {"message": "Asset log deleted successfully", "id": log_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error deleting asset log: {str(e)}")

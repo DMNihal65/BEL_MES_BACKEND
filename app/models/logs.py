@@ -308,3 +308,25 @@ class InstrumentCalibrationLog(db.Entity):
             import traceback
             traceback.print_exc()
 
+
+
+class AssetLog(db.Entity):
+    _table_ = ("logs", "asset_logs")
+    id = PrimaryKey(int, auto=True)
+    machine_name = Required(str)
+    from_time = Required(datetime)
+    to_time = Required(datetime)
+    status = Required(str)
+    remarks = Optional(str)
+    created_at = Required(datetime, default=datetime.now)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "machine_name": self.machine_name,
+            "from_time": self.from_time,
+            "to_time": self.to_time,
+            "status": self.status,
+            "remarks": self.remarks,
+            "created_at": self.created_at
+        }
