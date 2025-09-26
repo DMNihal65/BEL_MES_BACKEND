@@ -1590,27 +1590,25 @@ async def get_part_production_timeline():
                     total_parts=0
                 )
 
-            # Get all active ScheduleVersions with related data, filtered by active parts
-            versions_query = select((
-                                        version,
-                                        version.schedule_item,
-                                        version.schedule_item.order,
-                                        version.schedule_item.operation,
-                                        version.schedule_item.machine
-                                    ) for version in ScheduleVersion
-                                    if version.is_active == True and
-                                    version.schedule_item.order.part_number in active_parts)
+            # Get planned schedule items with related data, filtered by active parts (no version tracking)
+            items_query = select((
+                                        item,
+                                        item.order,
+                                        item.operation,
+                                        item.machine
+                                    ) for item in PlannedScheduleItem
+                                    if item.order.part_number in active_parts and item.schedule_history is not None)
 
             # Dictionary to store all operations by part number and production order
             part_operations = defaultdict(list)
 
             # Group operations by part number and production order
-            for (version, schedule_item, order, operation, machine) in versions_query:
+            for (schedule_item, order, operation, machine) in items_query:
                 # Use a composite key of part_number and production_order
                 key = (order.part_number, order.production_order)
 
-                # Extract the proper quantity from the version
-                total_qty = version.planned_quantity
+                # Extract the proper quantity from the planned item
+                total_qty = schedule_item.total_quantity
 
                 # In case the quantity is still 1, try to get a more accurate quantity
                 if total_qty == 1:
@@ -1627,12 +1625,11 @@ async def get_part_production_timeline():
                 part_operations[key].append({
                     'operation_description': operation.operation_description,
                     'operation_number': operation.operation_number if hasattr(operation, 'operation_number') else 0,
-                    'start_time': version.planned_start_time,
-                    'end_time': version.planned_end_time,
+                    'start_time': schedule_item.initial_start_time,
+                    'end_time': schedule_item.initial_end_time,
                     'total_quantity': total_qty,
-                    'remaining_quantity': version.remaining_quantity,
-                    'completed_quantity': version.completed_quantity,
-                    'version_number': version.version_number,
+                    'remaining_quantity': schedule_item.remaining_quantity,
+                    'completed_quantity': max(0, (schedule_item.total_quantity or 0) - (schedule_item.remaining_quantity or 0)),
                     'status': schedule_item.status,
                     'production_order': order.production_order
                 })
@@ -2714,9 +2711,8 @@ async def update_schedule():
         if not schedule_df.empty:
             with db_session:
                 # Group by production_order and find the first operation (earliest start_time) for each order
-                first_operations = schedule_df.groupby('production_order').apply(
-                    lambda group: group.loc[group['start_time'].idxmin()]
-                ).reset_index(drop=True)
+                idx = schedule_df.groupby('production_order')['start_time'].idxmin()
+                first_operations = schedule_df.loc[idx].reset_index(drop=True)
                 
                 # Update PartScheduleStatus records with the first operation start_time
                 for _, row in first_operations.iterrows():

@@ -1415,7 +1415,7 @@ async def upload_document_by_type(
                 commit()
 
             # Get or create root folder for document types
-            root_folder = FolderV2.get(name="Document Types", parent_folder=None)
+            root_folder = FolderV2.get(path="Document Types")
             if not root_folder:
                 root_folder = FolderV2(
                     name="Document Types",

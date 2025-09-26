@@ -4,6 +4,7 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime
 
 from app.models.master_order import Program, Operation, Order, OrderTool
+from app.models.inventoryv1 import InventoryItem
 from app.schemas.toolsprograms import (
     ProgramCreate, ProgramResponse, ProgramUpdate,
     OrderToolCreate, OrderToolResponse, OrderToolUpdate,
@@ -283,10 +284,21 @@ def create_order_tool(tool: OrderToolCreate):
                 detail=f"Operation {operation.id} does not belong to Order {order.id}"
             )
 
+    # Check if tool_id exists in InventoryItem if provided
+    inventory_item = None
+    if tool.tool_id:
+        inventory_item = InventoryItem.get(id=tool.tool_id)
+        if not inventory_item:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Inventory item with ID {tool.tool_id} not found"
+            )
+
     # Create new tool
     new_tool = OrderTool(
         order=order,
         operation=operation,
+        tool_id=inventory_item,
         tool_name=tool.tool_name,
         tool_number=tool.tool_number,
         bel_partnumber=tool.bel_partnumber,
@@ -300,6 +312,7 @@ def create_order_tool(tool: OrderToolCreate):
         "id": new_tool.id,
         "order_id": new_tool.order.id,
         "operation_id": new_tool.operation.id if new_tool.operation else None,
+        "tool_id": new_tool.tool_id.id if new_tool.tool_id else None,
         "tool_name": new_tool.tool_name,
         "tool_number": new_tool.tool_number,
         "bel_partnumber": new_tool.bel_partnumber,
@@ -310,14 +323,15 @@ def create_order_tool(tool: OrderToolCreate):
     }
 
 
-@router.get("/ordertools/", response_model=List[OrderToolResponse])
+
+@router.get("/ordertools/")
 @db_session
 def get_order_tools(
         order_id: Optional[int] = Query(None, description="Filter by order ID"),
         operation_id: Optional[int] = Query(None, description="Filter by operation ID")
 ):
     """
-    Get all tools with optional filtering.
+    Get all tools with optional filtering, including item_status and available_quantity from InventoryItem.
     """
     try:
         # Get all tools first
@@ -333,21 +347,30 @@ def get_order_tools(
             if matches_order and matches_operation:
                 filtered_tools.append(tool)
 
-        # Convert to response format
-        return [{
-            "id": tool.id,
-            "order_id": tool.order.id,
-            "operation_id": tool.operation.id if tool.operation else None,
-            "tool_name": tool.tool_name,
-            "tool_number": tool.tool_number,
-            "bel_partnumber": tool.bel_partnumber,
-            "description": tool.description,
-            "quantity": tool.quantity,
-            "created_at": tool.created_at,
-            "updated_at": tool.updated_at
-        } for tool in filtered_tools]
+        # Convert to response format, fetching item_status and available_quantity from InventoryItem
+        response = []
+        for tool in filtered_tools:
+            inventory_item = tool.tool_id  # May be None
+            response.append({
+                "id": tool.id,
+                "order_id": tool.order.id,
+                "operation_id": tool.operation.id if tool.operation else None,
+                "tool_id": inventory_item.id if inventory_item else None,
+                "tool_name": tool.tool_name,
+                "tool_number": tool.tool_number,
+                "bel_partnumber": tool.bel_partnumber,
+                "description": tool.description,
+                "quantity": tool.quantity,
+                "item_status": inventory_item.status if inventory_item else None,
+                "available_quantity": inventory_item.available_quantity if inventory_item else None,
+                "created_at": tool.created_at,
+                "updated_at": tool.updated_at
+            })
+
+        return response
+
     except Exception as e:
-        print(f"Error in get_order_tools: {str(e)}")  # Add logging
+        print(f"Error in get_order_tools: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error retrieving tools: {str(e)}"

@@ -573,7 +573,7 @@ def get_operation_quantities(operation_id: int):
         logs_list = list(logs_query)
         total_completed = sum((log.quantity_completed or 0) for log in logs_list)
 
-        total_quantity = operation.order.required_quantity
+        total_quantity = operation.order.launched_quantity
         remaining_quantity = max(0, total_quantity - total_completed)
 
         response = OperationQuantityResponse(

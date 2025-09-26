@@ -44,6 +44,7 @@ class InventoryItem(db.Entity):
     requests = Set('InventoryRequest', reverse='inventory_item')
     return_requests = Set('InventoryReturnRequest', reverse='inventory_item')  # New relationship
     connectivity = Set('Connectivity', reverse='inventory_item')  # Added reverse relationship
+    order_tools = Set('OrderTool', reverse='tool_id')
     status = Required(str)  # Active, Inactive, Under Maintenance, etc.
     created_at = Required(datetime, default=datetime.utcnow)
     updated_at = Required(datetime, default=datetime.utcnow)

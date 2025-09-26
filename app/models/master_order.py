@@ -174,6 +174,7 @@ class OrderTool(db.Entity):
     id = PrimaryKey(int, auto=True)
     order = Required("Order", reverse="order_tools")
     operation = Optional("Operation", reverse="order_tools")
+    tool_id = Optional("InventoryItem", reverse="order_tools")
     tool_name = Required(str)
     tool_number = Required(str)
     bel_partnumber = Optional(str)

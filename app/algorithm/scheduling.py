@@ -1,4 +1,5 @@
 
+
 from datetime import datetime, timedelta, date
 import pandas as pd
 from typing import Dict, Tuple, List
@@ -12,7 +13,6 @@ from app.crud.pdc import (
     get_pdc_by_part_number_and_po,
     upsert_pdc_record,
 )
-from app.models import ProductionLog
 
 
 def is_working_day(dt: datetime) -> bool:
@@ -160,49 +160,24 @@ def schedule_operations(df: pd.DataFrame, component_quantities: Dict[Tuple[str, 
             part_activation_times[key] = activation_time_ist
 
     # Enhanced Filtering for Active Parts
-    completed_quantities = {}
-    with db_session:
-        for (partno, production_order) in component_quantities.keys():
-            # Get the order for this part and production order
-            order = Order.get(part_number=partno, production_order=production_order)
-            if not order:
-                continue
-                
-            # Sum up quantity_completed from ProductionLog for operations linked to this order
-            total_completed = sum(
-                log.quantity_completed or 0
-                for log in ProductionLog.select(
-                    lambda pl: pl.operation.order.id == order.id
-                )
-            )
-            completed_quantities[(partno, production_order)] = total_completed
-
-    # Adjust active_parts to use remaining quantities
     active_parts = {
-        (partno, po): max(0, qty - completed_quantities.get((partno, po), 0))
+        (partno, po): qty
         for (partno, po), qty in component_quantities.items()
         if part_status_map.get((partno, po), 'inactive') == 'active'
     }
 
-    # Skip parts where remaining quantity is 0 or negative
-    active_parts = {
-        k: v for k, v in active_parts.items() if v > 0
-    }
-
-    # Update diagnostic logging for active parts
-    # print("\n==== ACTIVE PARTS WITH REMAINING QUANTITIES ====")
+    # print("\n==== ACTIVE PARTS DIAGNOSTIC ====")
     for (partno, production_order), qty in active_parts.items():
         activation_time = part_activation_times.get((partno, production_order))
         activation_time_str = activation_time.strftime("%Y-%m-%d %H:%M:%S") if activation_time else "None"
-        original_qty = component_quantities.get((partno, production_order), 0)
-        completed_qty = completed_quantities.get((partno, production_order), 0)
+
+        # Additional Part Validation
         part_df = df[df['partno'] == partno]
-        # print(f"Part: {partno} (PO: {production_order})")
-        # print(f"  Original Quantity: {original_qty}")
-        # print(f"  Completed Quantity: {completed_qty}")
-        # print(f"  Remaining Quantity: {qty}")
+        # print(f"Part: {partno}")
+        # print(f"  Quantity: {qty}")
         # print(f"  Activation Time (IST): {activation_time_str}")
         # print(f"  Operations Count: {len(part_df)}")
+
         if part_df.empty:
             print(f"  WARNING: No operations found for part {partno}")
 

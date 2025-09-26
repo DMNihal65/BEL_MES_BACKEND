@@ -116,6 +116,7 @@ class OrderToolBase(BaseModel):
 class OrderToolCreate(OrderToolBase):
     order_id: int
     operation_id: Optional[int] = None
+    tool_id: Optional[int] = None
 
 
 class OrderToolUpdate(BaseModel):
