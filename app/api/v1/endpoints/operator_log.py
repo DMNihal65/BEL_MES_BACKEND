@@ -100,8 +100,10 @@ def update_machine_status(data: MachineStatusInput):
 
     # Update only if machine exists
     machine_entry.actual_job = operation
-    # machine_entry.status = 1  # plain text status
 
+    if machine_id in [1,2,3,5]:
+        machine_entry.part_count = 0
+    # machine_entry.status = 1  # plain text status
 
     return {"message": "Machine status updated successfully"}
 

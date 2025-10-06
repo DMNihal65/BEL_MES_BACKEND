@@ -126,3 +126,5 @@ class IssueIn(BaseModel):
     description: str
     machine: int
     reported_by: int
+    timestamp: datetime
+    end_timestamp: datetime

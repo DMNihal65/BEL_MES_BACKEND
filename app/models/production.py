@@ -329,5 +329,6 @@ class OEEIssue(db.Entity):
     category = Required(str)
     description = Required(str)
     machine = Required(int)  # just an ID, not a foreign key
-    timestamp = Required(datetime, default=datetime.utcnow)
+    timestamp = Required(datetime)
     reported_by = Required(int)
+    end_timestamp = Required(datetime)

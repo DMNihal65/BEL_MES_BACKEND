@@ -1211,8 +1211,9 @@ def create_issue(issue: IssueIn):
             category=issue.category,
             description=issue.description,
             machine=issue.machine,
-            reported_by=issue.reported_by
-            # timestamp is automatically added
+            timestamp= issue.timestamp,
+            reported_by=issue.reported_by,
+            end_timestamp= issue.end_timestamp
         )
         return {
             "message": "Issue created successfully",
@@ -1237,6 +1238,7 @@ def get_issues():
             "machine_id": issue.machine,
             "machine_name": f"{machine.work_center.code}-{machine.make}" if machine.work_center else machine.make,
             "timestamp": issue.timestamp.isoformat(),
+            "end_timestamp": issue.end_timestamp,
             "reported_by": user.username
         } for issue, machine, user in issues]
         
