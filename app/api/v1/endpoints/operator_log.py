@@ -99,11 +99,12 @@ def update_machine_status(data: MachineStatusInput):
         raise HTTPException(status_code=404, detail="Machine not found in MachineRawLive")
 
     # Update only if machine exists
+    if machine_entry.actual_job is not operation:
+        machine_entry.part_count = 0
+        
     machine_entry.actual_job = operation
 
-    if machine_id in [1,2,3,5]:
-        machine_entry.part_count = 0
-    # machine_entry.status = 1  # plain text status
+    machine_entry.part_count = 0
 
     return {"message": "Machine status updated successfully"}
 
