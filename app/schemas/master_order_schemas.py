@@ -38,6 +38,7 @@ class MachineBase(BaseModel):
     calibration_date: Optional[datetime] = Field(None, description="Last calibration date")
     calibration_due_date: Optional[datetime] = Field(None, description="Next calibration due date")  # Added this field
     last_maintenance_date: Optional[datetime] = Field(None, description="Last maintenance date")
+    pm_due_date: Optional[datetime] = Field(None, description="PM due date")
 
 class MachineCreate(MachineBase):
     pass
@@ -53,6 +54,7 @@ class MachineUpdate(BaseModel):
     calibration_date: Optional[datetime] = None
     calibration_due_date: Optional[datetime] = None  # Added this field
     last_maintenance_date: Optional[datetime] = None
+    pm_due_date: Optional[datetime] = None
 
 class MachineResponse(MachineBase):
     id: int

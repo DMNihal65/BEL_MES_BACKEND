@@ -1574,6 +1574,7 @@ async def get_combined_schedule_production():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+
 @router.get("/part-production-timeline/", response_model=PartProductionResponse)
 async def get_part_production_timeline():
     """Retrieve the production timeline for each part number using schedule_versions table.
@@ -1707,7 +1708,7 @@ async def get_part_production_timeline():
             return PartProductionResponse(
                 items=filtered_results,
                 total_parts=len(filtered_results)
-            )
+            )                                                                                                                                                                                                                                                                                                                                                                                                                                   
 
 
     except Exception as e:

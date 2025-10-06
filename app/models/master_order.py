@@ -32,6 +32,7 @@ class Machine(db.Entity):
     calibration_date = Optional(datetime)
     calibration_due_date = Optional(datetime)  # Added this field
     last_maintenance_date = Optional(datetime)
+    pm_due_date = Optional(datetime)  # Added PM due date field
     shifts = Set('MachineShift')
     downtimes = Set('MachineDowntime')
     status = Set('MachineStatus')
@@ -104,6 +105,7 @@ class Order(db.Entity):
     raw_material = Required('RawMaterial')  # Linked to RawMaterial table
     plant_id = Required(str)
     project = Required('Project')  # ProjectID linked here
+    created_at = Required(datetime, default=datetime.now)  # New timestamp field
     operations = Set('Operation')
     documents = Set('Document', reverse='part_number_id')  # Match the field name in Document
     tools = Set('ToolList')

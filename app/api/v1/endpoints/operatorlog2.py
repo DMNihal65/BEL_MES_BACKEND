@@ -230,6 +230,17 @@ def create_production_log(log_data: ProductionLogCreate):
         if log_data.start_time >= log_data.end_time:
             raise HTTPException(status_code=400, detail="Start time must be before end time")
 
+    if log_data.machine_id not in [1,2,3,5]:
+        past_log = ProductionLog.select(operation=operation, machine_id=log_data.machine_id)[:]
+        if past_log:
+            completed_qty = sum(i.quantity_completed for i in past_log)
+        else:
+            completed_qty = 0
+
+        machine_raw_live = MachineRawLive.get(machine_id=log_data.machine_id)
+        if machine_raw_live:
+            machine_raw_live.part_count = log_data.quantity_completed + completed_qty
+
     # Create ProductionLog
     new_log = ProductionLog(
         operator=operator,
@@ -241,7 +252,6 @@ def create_production_log(log_data: ProductionLogCreate):
         quantity_rejected=log_data.quantity_rejected,
         notes=log_data.notes
     )
-
     # Commit to ensure the ID is generated
     commit()
 

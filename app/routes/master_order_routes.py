@@ -232,7 +232,8 @@ def create_machine(machine: MachineCreate):
             remarks=machine.remarks,
             calibration_date=machine.calibration_date,
             calibration_due_date=machine.calibration_due_date,
-            last_maintenance_date=machine.last_maintenance_date
+            last_maintenance_date=machine.last_maintenance_date,
+            pm_due_date=machine.pm_due_date
         )
         commit()
 
@@ -258,6 +259,7 @@ def create_machine(machine: MachineCreate):
             "calibration_date": db_machine.calibration_date,
             "calibration_due_date": db_machine.calibration_due_date,
             "last_maintenance_date": db_machine.last_maintenance_date,
+            "pm_due_date": db_machine.pm_due_date,
             "work_center_boolean": True,
             "work_center": {
                 "id": work_center.id,
@@ -307,6 +309,7 @@ def get_machines(work_center_code: Optional[str] = None):
                 calibration_date=machine.calibration_date,
                 calibration_due_date=machine.calibration_due_date,  # Added this field
                 last_maintenance_date=machine.last_maintenance_date,
+                pm_due_date=machine.pm_due_date,
                 work_center=WorkCenterResponse(
                     id=machine.work_center.id,
                     code=machine.work_center.code,
@@ -350,6 +353,7 @@ def get_machine(
             calibration_date=machine.calibration_date,
             calibration_due_date=machine.calibration_due_date,  # Added this field
             last_maintenance_date=machine.last_maintenance_date,
+            pm_due_date=machine.pm_due_date,
             work_center=WorkCenterResponse(
                 id=machine.work_center.id,
                 code=machine.work_center.code,
@@ -399,6 +403,7 @@ def update_machine(
             calibration_date=db_machine.calibration_date,
             calibration_due_date=db_machine.calibration_due_date,
             last_maintenance_date=db_machine.last_maintenance_date,
+            pm_due_date=db_machine.pm_due_date,
             work_center_boolean=bool(db_machine.work_center),  # Adjust logic if needed
             work_center=WorkCenterResponse(
                 id=db_machine.work_center.id,
@@ -453,6 +458,7 @@ def get_all_machines():
                 calibration_date=machine.calibration_date,
                 calibration_due_date=machine.calibration_due_date,  # Added this field
                 last_maintenance_date=machine.last_maintenance_date,
+                pm_due_date=machine.pm_due_date,
                 work_center=WorkCenterResponse(
                     id=machine.work_center.id,
                     code=machine.work_center.code,

@@ -195,7 +195,6 @@ def extract_oarc_details(pdf_content):
     return data
 
 
-@db_session
 def save_to_database(data):
     try:
         # Check if order exists
@@ -254,6 +253,7 @@ def save_to_database(data):
             )
 
         # Create master order
+        current_time = datetime.now()
         master_order = Order(
             production_order=data["Prod Order No"],
             sale_order=data["Sale Order"],
@@ -265,7 +265,8 @@ def save_to_database(data):
             launched_quantity=int(float(data["Launched Qty"])),
             project=project,
             plant_id=data["Plant"],
-            raw_material=raw_material
+            raw_material=raw_material,
+            created_at=current_time
         )
 
         # Create initial 'inactive' status for scheduling - FIX: Use both part_number and production_order
@@ -371,7 +372,6 @@ def save_to_database(data):
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
 
-
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from fastapi import HTTPException
@@ -475,6 +475,7 @@ async def get_all_orders():
                         "required_quantity": order.required_quantity,
                         "launched_quantity": order.launched_quantity,
                         "plant_id": order.plant_id,
+                        "created_at": order.created_at.isoformat() if order.created_at else None,
                         "project": {
                             "id": order.project.id,
                             "name": order.project.name,
@@ -495,6 +496,7 @@ async def get_all_orders():
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.get("/search_order")
 async def search_order(
@@ -699,7 +701,6 @@ async def update_operation(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-
 @router.post("/create_order1")
 async def create_order(order_data: CreateOrderRequest_new):
     """Create a new order"""
@@ -783,12 +784,12 @@ async def create_order(order_data: CreateOrderRequest_new):
             print(
                 f"DEBUG: Found {len(existing_raw_materials)} existing raw materials with part number '{order_data.raw_material_part_number}'")
 
-            if existing_raw_materials:
-                print(f"DEBUG: Raw material already exists with part number: {order_data.raw_material_part_number}")
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Raw material with part number '{order_data.raw_material_part_number}' already exists"
-                )
+            # if existing_raw_materials:
+            #     print(f"DEBUG: Raw material already exists with part number: {order_data.raw_material_part_number}")
+            #     raise HTTPException(
+            #         status_code=400,
+            #         detail=f"Raw material with part number '{order_data.raw_material_part_number}' already exists"
+            #     )
 
             # Get or create default inventory status
             print("DEBUG: Looking for default inventory status 'Available'")
@@ -821,6 +822,7 @@ async def create_order(order_data: CreateOrderRequest_new):
 
             # Create new order
             print("DEBUG: Creating new order")
+            current_time = datetime.now()
             order = Order(
                 production_order=order_data.production_order,
                 sale_order=order_data.sale_order,
@@ -832,7 +834,8 @@ async def create_order(order_data: CreateOrderRequest_new):
                 launched_quantity=order_data.launched_quantity,
                 plant_id=str(order_data.plant_id),  # Convert to string as required by model
                 project=project,
-                raw_material=raw_material  # Link the raw material to the order
+                raw_material=raw_material,  # Link the raw material to the order
+                created_at=current_time
             )
             print(f"DEBUG: Created order with ID: {order.id}")
 
@@ -908,6 +911,7 @@ async def create_order(order_data: CreateOrderRequest_new):
                 "required_quantity": order.required_quantity,
                 "launched_quantity": order.launched_quantity,
                 "plant_id": order.plant_id,
+                "created_at": order.created_at.isoformat() if order.created_at else None,
                 "project": {
                     "id": order.project.id,
                     "name": order.project.name,
@@ -1215,6 +1219,7 @@ async def search_order(
                     "required_quantity": order.required_quantity,
                     "launched_quantity": order.launched_quantity,
                     "plant_id": order.plant_id,
+                    "created_at": order.created_at.isoformat() if order.created_at else None,
                     "project": {
                         "id": order.project.id,
                         "name": order.project.name,
@@ -1266,6 +1271,11 @@ async def search_order(
                         for op in order.operations
                     ]
                 }
+                # print(f"DEBUG: Order data: {order_data}")
+                # print("****" * 50)
+                # print(f"DEBUG: Operations: {order_data['operations']}")
+                # print("****" * 50)
+                # print(f"DEBUG: operations description: {order_data['operations[{operation_description]}']}")
 
                 response_data["orders"].append(order_data)
 
@@ -1273,6 +1283,7 @@ async def search_order(
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
+
 
 
 @router.post("/upload-pdf")

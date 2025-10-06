@@ -850,7 +850,7 @@ async def websocket_live_status(websocket: WebSocket):
                             }
 
                             # Get order details if any of the job references are available
-                            if status.actual_job or status.scheduled_job or status.job_in_progress:
+                            if status.actual_job:
                                 try:
                                     order_details = status.get_order_details()
                                     if order_details:
