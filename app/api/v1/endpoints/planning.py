@@ -195,9 +195,9 @@ def extract_oarc_details(pdf_content):
     return data
 
 
+@db_session
 def save_to_database(data):
     try:
-        # Check if order exists
         existing_order = Order.get(production_order=data["Prod Order No"])
         if existing_order:
             raise HTTPException(status_code=400, detail=f"Production order '{data['Prod Order No']}' already exists.")
@@ -222,16 +222,17 @@ def save_to_database(data):
             )
 
         # Get or create default unit
-        default_unit = Unit.get(name="EA")
+        default_unit = select(u for u in Unit if u.name == "EA").first()
         if not default_unit:
             default_unit = Unit(name="EA")  # EA for "Each"
 
         # Create raw material - Modified part
         if "Raw Materials" in data and data["Raw Materials"] and len(data["Raw Materials"]) > 0:
             # Create raw material from provided data
-            unit = Unit.get(name=data["Raw Materials"][0]["UoM"])
-            if not unit:
-                unit = Unit(name=data["Raw Materials"][0]["UoM"])
+            unit_name = data["Raw Materials"][0]["UoM"]
+            unit = select(u for u in Unit if u.name == unit_name).first()
+            if not unit and unit_name:  # Only create if unit_name is not empty
+                unit = Unit(name=unit_name)
 
             raw_material = RawMaterial(
                 child_part_number=data["Raw Materials"][0]["Child Part No"],
@@ -253,7 +254,6 @@ def save_to_database(data):
             )
 
         # Create master order
-        current_time = datetime.now()
         master_order = Order(
             production_order=data["Prod Order No"],
             sale_order=data["Sale Order"],
@@ -265,8 +265,7 @@ def save_to_database(data):
             launched_quantity=int(float(data["Launched Qty"])),
             project=project,
             plant_id=data["Plant"],
-            raw_material=raw_material,
-            created_at=current_time
+            raw_material=raw_material
         )
 
         # Create initial 'inactive' status for scheduling - FIX: Use both part_number and production_order
@@ -371,6 +370,7 @@ def save_to_database(data):
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
+
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
