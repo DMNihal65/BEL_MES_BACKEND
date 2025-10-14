@@ -39,3 +39,5 @@ opcua~=0.98.13
 uvicorn[standard]>=0.24.0
 websockets>=11.0.3
 reportlab
+psutil
+pydantic[email]

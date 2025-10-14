@@ -104,8 +104,6 @@ def update_machine_status(data: MachineStatusInput):
         
     machine_entry.actual_job = operation
 
-    machine_entry.part_count = 0
-
     return {"message": "Machine status updated successfully"}
 
 
