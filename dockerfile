@@ -1,0 +1,32 @@
+FROM python:3.10-slim
+
+WORKDIR /app
+
+# Install dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY . .
+
+# Create .env file with the provided settings
+RUN echo "DB_HOST=172.16.0.203" > .env && \
+    echo "DB_PORT=5432" >> .env && \
+    echo "DB_NAME=BEL_MES4" >> .env && \
+    echo "DB_USER=cmtismc" >> .env && \
+    echo "DB_PASSWORD=cmtismc@2025" >> .env && \
+    echo "SECRET_KEY=BEL_MES_25" >> .env && \
+    echo "ALGORITHM=HS256" >> .env && \
+    echo "ACCESS_TOKEN_EXPIRE_MINUTES=99999" >> .env && \
+    echo "REFRESH_TOKEN_EXPIRE_DAYS=30" >> .env && \
+    echo "MINIO_ENDPOINT=172.16.0.203:9000" >> .env && \
+    echo "MINIO_ACCESS_KEY=MrKxgiZXGyBArDz8bEnl" >> .env && \
+    echo "MINIO_SECRET_KEY=DJnTcMpypd6x75DlQfCM2MocFIjRON0jU06OgKnn" >> .env && \
+    echo "MINIO_BUCKET_NAME=documents" >> .env && \
+    echo "MINIO_SECURE=false" >> .env
+
+# Expose port 8002
+EXPOSE 8002
+
+# Command to run the application - updated to use package structure
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8002", "--workers", "4"]

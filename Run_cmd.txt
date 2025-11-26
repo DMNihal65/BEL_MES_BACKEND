@@ -1,0 +1,17 @@
+use this cmd for the deployment just run the cmd and change the version everytime the deployment is done
+local in pycharm
+password : smc
+check old docker and note down the contatiner id
+
+connect winscp check home/bel/current - updated tar file
+check docker ps (stop)
+
+
+
+
+./backend-deploy.ps1 -RemoteHost "172.16.0.203" -Port "8002" -Version "4.2.0"
+
+
+docker load -i image_name.tar
+
+docker run cmd
